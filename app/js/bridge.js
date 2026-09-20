@@ -116,6 +116,8 @@ var AR = window.AR || (window.AR = {});
   }
 
   function visualPulse(kind, el) {
+    // el === false：只震动、不要视觉脉冲（弹窗自己已经有进出场动画，叠加会打架）
+    if (el === false) { return; }
     var t = el || document.getElementById('zoneNext');
     if (!t) { return; }
     var cls = (kind === 'warn') ? 'shake' : 'pulse';
@@ -175,6 +177,26 @@ var AR = window.AR || (window.AR = {});
     return Promise.resolve(null);
   }
 
+  /**
+   * 导出到微信 / 其它 App：
+   *   Android —— 先把文件写进「下载/Abbey Road」，再拉起系统分享面板（选微信即可发文件）；
+   *   Windows —— 没有「发到微信」的接口，降级为存到「下载」目录 + 复制内容（拖进微信或直接粘贴）；
+   *   浏览器  —— 直接下载。
+   */
+  function shareFile(fileName, content, mime, title) {
+    if (hasAndroid || hasWebView2) {
+      return call('shareFile', [fileName, content, mime || 'application/json', title || '']).then(function (res) {
+        if (typeof res === 'string' && res) {
+          if (AR.UI && AR.UI.toast) { AR.UI.toast(res); }
+        } else if (hasAndroid && AR.UI && AR.UI.toast) {
+          AR.UI.toast('选微信就能把配置文件发出去');
+        }
+        return res;
+      });
+    }
+    return exportText(fileName, content, mime);
+  }
+
   function importText() {
     if (hasAndroid || hasWebView2) { return call('importText', []); }
     // 浏览器：用 input[type=file] 兜底
@@ -195,6 +217,31 @@ var AR = window.AR || (window.AR = {});
   }
 
   function openUrl(url) { return call('openUrl', [url]); }
+
+  /**
+   * 列出「导出目录」里 App 自己导出的配置文件。
+   * Android：媒体库里的 下载/Abbey Road；Windows：用户「下载」目录。
+   * 返回 [{name, uri, size, modified}]，浏览器端没有这个能力就返回空数组。
+   */
+  function listExports() {
+    if (!hasAndroid && !hasWebView2) { return Promise.resolve([]); }
+    return call('listExports', []).then(function (res) {
+      if (Array.isArray(res)) { return res; }
+      if (typeof res === 'string' && res.length) {
+        try { var arr = JSON.parse(res); return Array.isArray(arr) ? arr : []; } catch (e) { return []; }
+      }
+      return [];
+    });
+  }
+
+  /** 读取清单里某个文件的文本（Android 是 content://，Windows 是本地路径） */
+  function readTextUri(uri) {
+    if (!uri) { return Promise.resolve(''); }
+    if (!hasAndroid && !hasWebView2) { return Promise.resolve(''); }
+    return call('readTextUri', [uri]).then(function (res) {
+      return typeof res === 'string' ? res : '';
+    });
+  }
 
   function openMap(pref, query, webFallback) {
     return call('openMap', [pref || 'system', query, webFallback || '']);
@@ -237,6 +284,9 @@ var AR = window.AR || (window.AR = {});
     visualPulse: visualPulse,
     copy: copy,
     share: share,
+    shareFile: shareFile,
+    listExports: listExports,
+    readTextUri: readTextUri,
     exportText: exportText,
     importText: importText,
     openUrl: openUrl,

@@ -19,25 +19,22 @@ const includeFiles = ['README.md', 'CHANGELOG.md', 'LICENSE', '.gitignore'];
 
 // 目录内要剔除的：构建产物、私有配置、签名
 const skipDirNames = new Set(['build', 'dist', 'node_modules', '.vs', '.git', '__pycache__', 'obj']);
-const skipFileNames = new Set(['build.local.ps1', 'make-src-zip.local.js']);
+const skipFileNames = new Set(['build.local.ps1']);
 const skipFileExt = new Set(['.keystore', '.jks', '.idsig', '.log']);
 
-/**
- * 会泄露本机信息的字符串（打包前必须为 0）。
- * 默认只查本机用户目录；自己的口令等私密串写在 tools/make-src-zip.local.js（不入库）里：
- *   module.exports = { privatePatterns: ['你的口令'] };
- */
-const localConfigPath = path.join(__dirname, 'make-src-zip.local.js');
-const localConfig = fs.existsSync(localConfigPath) ? require(localConfigPath) : {};
-const privatePatterns = ['C:\\\\Users\\\\[^\\\\/]+']
-  .concat(localConfig.privatePatterns || [])
-  .map(function (p) { return new RegExp(p, 'i'); });
+/** 会泄露本机信息的字符串（打包前必须为 0） */
+const privatePatterns = [/abbeyroad123/, /C:\\Users\\Etoile/];
+
+/** 自身带这些模式串，扫描时跳过自己 */
+const selfFile = 'tools/make-src-zip.js';
 
 let copied = 0;
 const leaks = [];
 
-function shouldSkip(name) {
+function shouldSkip(name, parentDir) {
   if (skipDirNames.has(name)) { return true; }
+  // android/assets 是构建脚本从 app/ 复制出来的副本，不进源码包
+  if (name === 'assets' && /[\\/]android$/.test(parentDir || '')) { return true; }
   if (skipFileNames.has(name)) { return true; }
   return skipFileExt.has(path.extname(name).toLowerCase());
 }
@@ -47,6 +44,7 @@ function copyFile(from, to) {
   fs.copyFileSync(from, to);
   copied++;
   const rel = path.relative(projRoot, from).replace(/\\/g, '/');
+  if (rel === selfFile) { return; }
   const ext = path.extname(from).toLowerCase();
   if (['.ps1', '.js', '.cs', '.java', '.md', '.txt', '.xml', '.html', '.css', '.json'].indexOf(ext) >= 0) {
     const text = fs.readFileSync(from, 'utf8');
@@ -58,7 +56,7 @@ function copyFile(from, to) {
 
 function walk(fromDir, toDir) {
   for (const entry of fs.readdirSync(fromDir, { withFileTypes: true })) {
-    if (shouldSkip(entry.name)) { continue; }
+    if (shouldSkip(entry.name, fromDir)) { continue; }
     const from = path.join(fromDir, entry.name);
     const to = path.join(toDir, entry.name);
     if (entry.isDirectory()) { walk(from, to); }

@@ -29,9 +29,9 @@
       <button class="nav-btn" data-nav="today" type="button"><i class="ico ico-today"></i><span>今日</span></button>
       <button class="nav-btn" data-nav="week" type="button"><i class="ico ico-week"></i><span>周表</span></button>
       <button class="nav-btn" data-nav="import" type="button"><i class="ico ico-import"></i><span>导入</span></button>
-      <button class="nav-btn" data-nav="settings" type="button"><i class="ico ico-settings"></i><span>设置</span></button>
-    </nav>
-    <div class="rail-foot">
+        <button class="nav-btn" data-nav="settings" type="button"><i class="ico ico-settings"></i><span>设置</span></button>
+      </nav>
+      <div class="rail-foot">
       <span id="railWeekInfo">—</span>
       <span class="muted" id="railVersion">v0.1.7</span>
     </div>
@@ -62,40 +62,52 @@
 
       <div class="layout" id="todayLayout">
         <!-- 本周概览 -->
-        <section class="zone zone-week glass" id="zoneWeek">
-          <header class="zone-head">
-            <h2 class="zone-title">本周概览</h2>
-            <div class="zone-head-right">
-              <span class="zone-badge" id="weekBadge">—</span>
-              <button class="zone-toggle" data-zone-toggle="week" type="button" title="展开本周">⤢</button>
-            </div>
-          </header>
-          <div class="zone-body scroll" id="weekBody"></div>
+        <section class="zone zone-week" id="zoneWeek">
+          <!-- 毛玻璃独立一层：动画时只移动不改尺寸，模糊只算一次 -->
+          <div class="zone-glass" aria-hidden="true"></div>
+          <!-- 内容和栏框分开：聚焦放大时内容整层按"最终尺寸"排版好，
+               栏框从旧矩形长到新矩形，内容只被裁剪、不跟着重排 -->
+          <div class="zone-inner">
+            <header class="zone-head">
+              <h2 class="zone-title">本周概览</h2>
+              <div class="zone-head-right">
+                <span class="zone-badge" id="weekBadge">—</span>
+                <button class="zone-toggle" data-zone-toggle="week" type="button" title="展开本周">⤢</button>
+              </div>
+            </header>
+            <div class="zone-body scroll" id="weekBody"></div>
+          </div>
         </section>
 
         <!-- 今日时间线 -->
-        <section class="zone zone-today glass" id="zoneToday">
-          <header class="zone-head">
-            <h2 class="zone-title">今日日程</h2>
-            <div class="zone-head-right">
-              <span class="zone-badge" id="todayBadge">—</span>
-              <button class="zone-toggle" data-zone-toggle="today" type="button" title="展开今日">⤢</button>
-            </div>
-          </header>
-          <div class="zone-body scroll" id="todayBody"></div>
+        <section class="zone zone-today" id="zoneToday">
+          <div class="zone-glass" aria-hidden="true"></div>
+          <div class="zone-inner">
+            <header class="zone-head">
+              <h2 class="zone-title">今日日程</h2>
+              <div class="zone-head-right">
+                <span class="zone-badge" id="todayBadge">—</span>
+                <button class="zone-toggle" data-zone-toggle="today" type="button" title="展开今日">⤢</button>
+              </div>
+            </header>
+            <div class="zone-body scroll" id="todayBody"></div>
+          </div>
         </section>
 
         <!-- 最近的课 -->
-        <section class="zone zone-next glass" id="zoneNext" tabindex="0" role="button"
+        <section class="zone zone-next" id="zoneNext" tabindex="0" role="button"
                  aria-label="查看最近的课程详情">
-          <header class="zone-head">
-            <h2 class="zone-title">最近的课</h2>
-            <div class="zone-head-right">
-              <span class="zone-badge" id="nextBadge">—</span>
-              <button class="zone-toggle" data-zone-toggle="next" type="button" title="展开详情">⤢</button>
-            </div>
-          </header>
-          <div class="zone-body scroll" id="nextBody"></div>
+          <div class="zone-glass" aria-hidden="true"></div>
+          <div class="zone-inner">
+            <header class="zone-head">
+              <h2 class="zone-title">最近的课</h2>
+              <div class="zone-head-right">
+                <span class="zone-badge" id="nextBadge">—</span>
+                <button class="zone-toggle" data-zone-toggle="next" type="button" title="展开详情">⤢</button>
+              </div>
+            </header>
+            <div class="zone-body scroll" id="nextBody"></div>
+          </div>
         </section>
 
       </div>
@@ -109,25 +121,24 @@
           <p class="view-sub" id="weekSub">—</p>
         </div>
         <div class="head-right">
+          <button class="chip-btn" id="btnDayShift" type="button" title="把某一天的课搬到 / 复制到另一天">调休</button>
+          <button class="chip-btn" id="btnConflicts" type="button" title="查看时间冲突">冲突 <span class="zone-badge" id="conflictCount">0</span></button>
+          <button class="chip-btn sem-btn" id="weekSemBtn" type="button" title="切换学期">我的学期</button>
           <button class="chip-btn" id="btnPrevWeek" type="button">‹ 上一周</button>
           <button class="chip-btn" id="btnThisWeek" type="button">本周</button>
           <button class="chip-btn" id="btnNextWeek" type="button">下一周 ›</button>
         </div>
       </header>
-      <div class="week-mode" id="weekMode" hidden></div>
-      <div class="week-strip glass" id="weekStrip"></div>
+      <!-- 周视图/月视图 + 周次快切：挤在一行里，把纵向空间让给课表 -->
+      <div class="week-bar">
+        <div class="segmented seg-compact" id="weekMode">
+          <button class="seg active" type="button" data-mode="week">周视图</button>
+          <button class="seg" type="button" data-mode="month">月视图</button>
+        </div>
+        <div class="week-strip glass" id="weekStrip"></div>
+      </div>
       <div class="glass panel week-panel">
         <div class="week-grid-wrap scroll-x" id="weekGridWrap"></div>
-      </div>
-      <div class="glass panel conflict-panel" id="conflictPanel" hidden>
-        <header class="panel-head compact-head">
-          <h2 class="panel-title">冲突检测</h2>
-          <div class="row" style="gap:8px;align-items:center">
-            <span class="zone-badge" id="conflictCount">0</span>
-            <button class="chip-btn" id="conflictToggle" type="button">查看</button>
-          </div>
-        </header>
-        <div id="conflictList" class="list scroll" hidden></div>
       </div>
     </section>
 
@@ -215,26 +226,34 @@
         <!-- 配置文件（本地 JSON 文件，手机 / 电脑手动同步用） -->
         <div class="tab-body" data-tab-body="json" hidden>
           <p class="muted">
-            配置文件是 App 自己的数据文件（.json）。导出后在另一台设备上用「导入配置文件」打开，
-            App 会先给出预览再合并，冲突会逐条让你确认，不会静默覆盖。
+            配置文件就是 App 自己的数据（.json / .txt）。用法和「课表文本」一模一样：
+            这里复制走 → 在另一台设备整段粘回来 → 点右下角「合并导入」。
+          </p>
+          <p class="muted">
+            换手机最省事的走法：点「复制配置文本」发到微信「文件传输助手」（或点「导出到微信」发文件），
+            在新手机上复制那段文字，粘到下面就能导入；也可以用「选择 .json / .txt 文件」或
+            「从导出目录导入」。
           </p>
           <div class="row gap">
-            <button class="btn primary" id="btnExportJson" type="button">导出配置文件</button>
-            <button class="btn" id="btnImportJson" type="button">导入配置文件</button>
-            <button class="btn" id="btnCopyJson" type="button">复制配置文本</button>
+            <button class="btn primary" id="btnCopyJson" type="button">复制配置文本</button>
+            <button class="btn" id="btnExportJson" type="button">导出为文件</button>
+            <button class="btn" id="btnExportWechat" type="button">导出到微信</button>
+            <button class="btn" id="btnImportJson" type="button">选择 .json / .txt 文件</button>
+            <button class="btn" id="btnImportFromExports" type="button">从导出目录导入</button>
           </div>
-          <details class="fold">
-            <summary>粘贴配置文本导入</summary>
-            <textarea class="input code-area" id="jsonInput" rows="8" placeholder='{"kind":"abbeyroad.sync", …}'></textarea>
-            <div class="row gap end">
-              <button class="btn" id="btnApplyJsonText" type="button">解析并预览</button>
-            </div>
-          </details>
+          <div class="scroll-hint">↓ 继续下滑，把配置内容整段粘贴到下面的输入框（粘贴完自动解析）</div>
+          <div class="fmt-hint">配置内容形如：{"kind":"abbeyroad.sync", …}
+整段复制 / 粘贴即可，内容里换行、缩进乱掉都没关系；粘错成课表文本时会自动转到「课表文本」页。</div>
+          <div class="row gap">
+            <button class="btn" id="btnApplyJsonText" type="button">解析并预览</button>
+            <button class="btn" id="btnClearJson" type="button">清空</button>
+          </div>
+          <textarea class="input code-area" id="jsonInput" rows="10"
+            placeholder='把配置内容整段粘贴到这里，例如：{"kind":"abbeyroad.sync", …}'></textarea>
           <div class="parse-summary" id="jsonSummary"></div>
           <div class="parse-issues" id="jsonIssues"></div>
-          <div class="row gap end">
-            <button class="btn primary" id="btnApplyJson" type="button" disabled>合并导入</button>
-          </div>
+          <!-- 给右下角悬浮按钮留出空间 -->
+          <div class="fab-space"></div>
         </div>
 
         <!-- 手动添加：一门课 / 一个特殊事件 -->
@@ -306,6 +325,8 @@
 
       <!-- 「课表文本」页的悬浮应用按钮：始终钉在右下角，不用滚到底部才能点 -->
       <button class="btn primary fab" id="btnApplyMd" type="button" disabled hidden>应用到课表</button>
+      <!-- 「配置文件」页的悬浮合并按钮：和上面那个同一个位置、同一套动效 -->
+      <button class="btn primary fab" id="btnApplyJson" type="button" disabled hidden>合并导入</button>
     </section>
 
     <!-- 设置 -->
@@ -350,9 +371,14 @@
 
 <script src="js/core.js"></script>
 <script src="js/mdparse.js"></script>
-<script src="js/bridge.js"></script>
-<script src="js/ui.js"></script>
+  <script src="js/bridge.js"></script>
+  <!-- 过渡动画注册表：ui.js 里的所有动效都从这里取参数（开发者模式可换样式） -->
+  <script src="js/motion.js"></script>
+  <!-- 课程配色：按文理/公共/体育/水课分色系（设置里可一键应用） -->
+  <script src="js/palette.js"></script>
+  <script src="js/ui.js"></script>
 <script src="js/widgetdata.js"></script>
+<script src="js/configio.js"></script>
 <script src="js/panels.js"></script>
 <script src="js/boot.js"></script>
 </body>

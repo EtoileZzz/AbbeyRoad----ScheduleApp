@@ -12,8 +12,6 @@ var AR = window.AR || (window.AR = {});
   var U = null;
   var S = null;
   var lastParsed = null;
-  var pendingJson = null;
-  var lastJsonReport = null;
   var boundOnce = false;
 
   function $(id) { return document.getElementById(id); }
@@ -137,9 +135,10 @@ var AR = window.AR || (window.AR = {});
     }
     var mode = S.settings.schedule.autoMergeConsecutive === 'never' ? 'never' : 'auto';
     var entities = AR.MdParse.toEntities(parsed, S, { mergeMode: mode });
-    AR.MdParse.applyEntities(entities, S);
+    var res = AR.MdParse.applyEntities(entities, S);
     AR.Bridge.haptic('medium', $('btnManualAdd'));
     AR.UI.toast('已添加：' + name + '（' + (parsed.issues.length ? '已按规则对齐字段' : 'OK') + '）');
+    if (res && res.periodsAdded) { toastPeriodsAdded(res.periodsAdded); }
     $('manName').value = '';
     $('manPlace').value = '';
     $('manNote').value = '';
@@ -166,12 +165,54 @@ var AR = window.AR || (window.AR = {});
     refreshAll();
   }
 
+  /**
+   * 快速新增（周表长按空白处用）：字段对象进来，走和"粘贴导入 / 手动添加"
+   * 完全相同的一条链路（AR-TXT 解析 → toEntities → applyEntities），
+   * 所以连堂合并、节次自动补全、同名同色这些规则一个都不会漏。
+   */
+  function quickAddCourse(f) {
+    ensure();
+    var sem = AR.Store.currentSemester();
+    var p1 = Math.max(1, Number(f.p1) || 1);
+    var p2 = Math.max(p1, Number(f.p2) || p1);
+    var lines = ['AbbeyRoad 课表 v1', '开学日期：' + ((sem && sem.startDate) || '?')];
+    lines.push([String(f.name || '').trim(), U.WEEKDAY_NAMES[f.weekday] || '周一', p1 + '-' + p2,
+      (f.weeks || '全周'), f.place || '', f.teacher || '', f.note || '', f.color || ''].join('｜'));
+    var parsed = AR.MdParse.parse(lines.join('\n'), importOptions());
+    // 解析结果里课程在 rows / summary.courses（不是 courses 数组）
+    if (!parsed || !parsed.summary || !parsed.summary.courses) {
+      return { ok: false, message: '没解析出课程，检查一下课程名' };
+    }
+    if (parsed.summary && parsed.summary.errors) {
+      return { ok: false, message: '还有 ' + parsed.summary.errors + ' 处需要修正' };
+    }
+    var mode = S.settings.schedule.autoMergeConsecutive === 'never' ? 'never' : 'auto';
+    var entities = AR.MdParse.toEntities(parsed, S, { mergeMode: mode });
+    var res = AR.MdParse.applyEntities(entities, S);
+    refreshAll();
+    return { ok: true, periodsAdded: res && res.periodsAdded };
+  }
+
+  /** 快速新增特殊事件（考试 / 讲座 / 活动） */
+  function quickAddEvent(f) {
+    ensure();
+    if (!f || !f.title || !f.date) { return { ok: false, message: '标题和日期都要填' }; }
+    AR.Store.saveEvent({
+      title: String(f.title), type: f.type || 'other', date: f.date,
+      start: f.start || '', end: f.end || '', place: f.place || '', note: f.note || ''
+    });
+    refreshAll();
+    return { ok: true };
+  }
+
   function bindImport() {
     tabwires(document.querySelector('#view-import .tabs-panel'));
 
     $('btnCopyPrompt').addEventListener('click', function () {
       AR.Bridge.haptic('medium', $('btnCopyPrompt'));
       AR.Bridge.copy(AR.Prompt.text);
+      // v0.2.2：复制完直接把用户带到下一步（「2 课表文本」），并在那里给一句明确引导
+      goToTextStep();
     });
     $('btnSharePrompt').addEventListener('click', function () {
       AR.Bridge.haptic('medium', $('btnSharePrompt'));
@@ -205,36 +246,39 @@ var AR = window.AR || (window.AR = {});
     if ($('btnManualAdd')) { $('btnManualAdd').addEventListener('click', addManualCourse); }
     if ($('btnAddEvent')) { $('btnAddEvent').addEventListener('click', addManualEvent); }
 
-    $('btnExportJson').addEventListener('click', function () {
-      AR.Bridge.haptic('medium', $('btnExportJson'));
-      var payload = AR.Store.exportPayload();
-      payload.exportedAt = new Date().toISOString();
-      S.exportedAt = payload.exportedAt;
-      AR.Store.save(true);
-      AR.Bridge.exportText(AR.Store.exportFileName(), JSON.stringify(payload, null, 2), 'application/json');
-    });
-    $('btnImportJson').addEventListener('click', function () { AR.Bridge.importText(); });
-    $('btnCopyJson').addEventListener('click', function () {
-      AR.Bridge.copy(JSON.stringify(AR.Store.exportPayload(), null, 2));
-    });
+    /* 配置文件：整块交给 AR.ConfigIO（见 js/configio.js） */
+    $('btnExportJson').addEventListener('click', function () { AR.ConfigIO.exportFile($('btnExportJson')); });
+    if ($('btnExportWechat')) {
+      $('btnExportWechat').addEventListener('click', function () { AR.ConfigIO.exportToApp($('btnExportWechat')); });
+    }
+    $('btnImportJson').addEventListener('click', function () { AR.ConfigIO.openFromFile(); });
+    if ($('btnImportFromExports')) {
+      $('btnImportFromExports').addEventListener('click', function () { AR.ConfigIO.openFromExports($('btnImportFromExports')); });
+    }
+    $('btnCopyJson').addEventListener('click', function () { AR.ConfigIO.copyText($('btnCopyJson')); });
+
+    // 粘贴完自动解析出预览（写成文本也一样，都在 ConfigIO 里处理）
+    var jsonLive = AR.Util.debounce(function () {
+      var txt = $('jsonInput').value;
+      if (!String(txt || '').trim()) { return; }
+      AR.ConfigIO.previewText(txt, '粘贴的配置文本');
+    }, 400);
+    $('jsonInput').addEventListener('input', jsonLive);
     $('btnApplyJsonText').addEventListener('click', function () {
-      var txt = ($('jsonInput').value || '').trim();
-      if (!txt) { AR.UI.toast('请先粘贴配置文本'); return; }
-      handleJsonText(txt, '粘贴的配置文本');
+      var txt = $('jsonInput').value;
+      if (!String(txt || '').trim()) { AR.UI.toast('请先粘贴配置文本'); return; }
+      AR.Bridge.haptic('light', $('btnApplyJsonText'));
+      AR.ConfigIO.previewText(txt, '粘贴的配置文本');
     });
-    $('btnApplyJson').addEventListener('click', function () {
-      if (!pendingJson) { return; }
-      AR.Bridge.haptic('medium', $('btnApplyJson'));
-      AR.Store.applyMerge(pendingJson, {});
-      pendingJson = null;
-      lastJsonReport = null;
-      $('btnApplyJson').disabled = true;
-      if ($('jsonInput')) { $('jsonInput').value = ''; }   // 导入成功后清空粘贴区
-      $('jsonSummary').innerHTML = '<span class="tag success">合并完成</span>';
-      $('jsonIssues').innerHTML = '';
-      refreshAll();
-      AR.UI.toast('配置文件已合并导入');
-    });
+    if ($('btnClearJson')) {
+      $('btnClearJson').addEventListener('click', function () {
+        $('jsonInput').value = '';
+        $('jsonSummary').innerHTML = '';
+        $('jsonIssues').innerHTML = '';
+        AR.ConfigIO.reset();
+      });
+    }
+    $('btnApplyJson').addEventListener('click', function () { AR.ConfigIO.apply($('btnApplyJson')); });
   }
 
   /**
@@ -276,9 +320,11 @@ var AR = window.AR || (window.AR = {});
       for (var b = 0; b < bodies.length; b++) {
         bodies[b].hidden = (bodies[b].getAttribute('data-tab-body') !== name);
       }
-      // 「应用到课表」是右下角悬浮按钮，只在「课表文本」页出现
-      var fab = $('btnApplyMd');
-      if (fab) { fab.hidden = (name !== 'md'); }
+      // 右下角悬浮按钮：「应用到课表」只在课表文本页出现，「合并导入」只在配置文件页出现
+      var fabMd = $('btnApplyMd');
+      if (fabMd) { fabMd.hidden = (name !== 'md'); }
+      var fabJson = $('btnApplyJson');
+      if (fabJson) { fabJson.hidden = (name !== 'json'); }
       if (fromNode) { AR.Bridge.haptic('light', fromNode); }
     }
 
@@ -480,12 +526,13 @@ var AR = window.AR || (window.AR = {});
     if (!p || p.summary.errors > 0) { return; }
     var mode = S.settings.schedule.autoMergeConsecutive === 'never' ? 'never' : 'auto';
     var entities = AR.MdParse.toEntities(p, S, { mergeMode: mode });
-    AR.MdParse.applyEntities(entities, S);
+    var res = AR.MdParse.applyEntities(entities, S);
     AR.Bridge.haptic('medium', $('btnApplyMd'));
 
     var msg = '导入完成：课程 ' + entities.courses.length + ' 门、时段 ' + entities.blocks.length + ' 条';
     if (entities.mergedCount) { msg += '，自动合并 ' + entities.mergedCount + ' 组连堂'; }
     AR.UI.toast(msg);
+    if (res && res.periodsAdded) { toastPeriodsAdded(res.periodsAdded); }
 
     // 导入成功后自动清空输入区与解析结果，避免误点"再导入一次"
     $('mdInput').value = '';
@@ -574,58 +621,44 @@ var AR = window.AR || (window.AR = {});
 
   /* ── JSON 文本导入 ───────────────────────────────────────── */
 
-  function handleJsonText(text, sourceName) {
-    ensure();
-    var data = null;
-    try {
-      data = JSON.parse(text);
-    } catch (e) {
-      $('jsonSummary').innerHTML = '<span class="tag danger">解析失败</span>';
-      $('jsonIssues').innerHTML = '<div class="issue error"><span class="code-badge">E100</span>'
-        + '<span class="msg">不是合法的配置文件（JSON 格式）：' + esc(e.message) + '</span></div>';
-      $('btnApplyJson').disabled = true;
-      return;
-    }
-    var report;
-    try {
-      report = AR.Store.previewMerge(data);
-    } catch (err) {
-      $('jsonSummary').innerHTML = '<span class="tag danger">不是 Abbey Road 文件</span>';
-      $('jsonIssues').innerHTML = '<div class="issue error"><span class="code-badge">E101</span>'
-        + '<span class="msg">' + esc(err.message) + '</span></div>';
-      $('btnApplyJson').disabled = true;
-      return;
-    }
-    pendingJson = data;
-    lastJsonReport = report;
-    $('jsonSummary').innerHTML = '';
-    var sum = $('jsonSummary');
-    sum.appendChild(el('<span class="tag success">新增 ' + report.added + '</span>'));
-    sum.appendChild(el('<span class="tag">更新 ' + report.updated + '</span>'));
-    if (report.conflicts) { sum.appendChild(el('<span class="tag warn">冲突 ' + report.conflicts + '</span>')); }
-    if (report.removed) { sum.appendChild(el('<span class="tag warn">删除 ' + report.removed + '</span>')); }
-    sum.appendChild(el('<span class="muted">来源：' + esc(sourceName || '文件') + '</span>'));
+  /**
+   * 导入时检测到晚于原节次表的课 → 节次表已自动补足，
+   * 隔一拍再提示（别把「导入完成」的 toast 顶掉），并告诉用户去哪儿改时间。
+   */
+  function toastPeriodsAdded() {
+    var sem = AR.Store.currentSemester();
+    var total = (AR.Store.periodsOf(sem ? sem.id : null) || []).length;
+    setTimeout(function () {
+      AR.UI.toast('有课排在第 12 节之后，节次表已自动扩到 ' + total + ' 节（时间可在 设置 → 课程与课表 里改）');
+    }, 1900);
+  }
 
-    var list = $('jsonIssues');
-    list.innerHTML = '';
-    if (report.unknown && report.unknown.length) {
-      for (var i = 0; i < report.unknown.length; i++) {
-        list.appendChild(el('<div class="issue"><span class="code-badge">W200</span><span class="msg">'
-          + esc(report.unknown[i]) + '</span></div>'));
-      }
-    }
-    var shown = 0;
-    for (var d = 0; d < report.details.length && shown < 20; d++) {
-      var det = report.details[d];
-      list.appendChild(el('<div class="list-item ' + (det.action === 'conflict' ? '' : '')
-        + '"><span class="code-badge">' + (det.action === 'conflict' ? '冲突' : '更新')
-        + '</span><span class="msg">' + esc(det.table) + ' · ' + esc(det.label) + '</span></div>'));
-      shown++;
-    }
-    if (!report.added && !report.updated && !report.conflicts) {
-      list.appendChild(el('<div class="issue info"><span class="msg">没有需要变更的内容（两边数据一致）。</span></div>'));
-    }
-    $('btnApplyJson').disabled = false;
+  /**
+   * 复制提示词之后：自动切到「2 课表文本」，并在粘贴区闪一下提示框，
+   * 让用户一眼知道下一步该干嘛（不用自己找第二个标签）。
+   */
+  function goToTextStep() {
+    var tab = document.querySelector('[data-tab="md"]');
+    if (tab) { setTimeout(function () { tab.click(); }, 240); }
+    setTimeout(function () {
+      AR.UI.toast('提示词已复制 → 去 DeepSeek / 豆包粘贴并发送课表截图，再把回复整段粘到这里');
+    }, 420);
+    setTimeout(function () {
+      var box = $('mdInput');
+      if (!box) { return; }
+      box.classList.remove('input-flash');
+      void box.offsetWidth;
+      box.classList.add('input-flash');
+      setTimeout(function () { box.classList.remove('input-flash'); }, 2200);
+    }, 560);
+  }
+
+  /* ── 配置文件导入导出 ──────────────────────────────────────
+     v0.2.3 起这块逻辑整体搬到 js/configio.js（AR.ConfigIO）：
+     导出（另存为 / 微信 / 复制）、导入（选择器 / 导出目录 / 粘贴文本）、
+     预览与合并都只有一份实现，这里只留一个旧名字给 boot.js 用。 */
+  function handleJsonText(text, sourceName) {
+    return AR.ConfigIO.importFromText(text, sourceName);
   }
 
   /* ══════════════════════════ 设置页 ══════════════════════════ */
@@ -681,11 +714,53 @@ var AR = window.AR || (window.AR = {});
           setActiveNav(sec.key);
           AR.Bridge.haptic('light', b);
         });
+        // 长按「外观」进入 / 退出开发者模式（不提示、不显眼，避免普通用户误触）
+        if (sec.key === 'appearance') { bindDevModeLongPress(b); }
         nav.appendChild(b);
       })(SETTINGS_SECTIONS[i]);
     }
     bindSettingsScroll();
     setActiveNav(currentVisibleSection() || SETTINGS_SECTIONS[0].key);
+  }
+
+  /**
+   * 长按 800ms 进入开发者模式（再长按一次退出）。
+   * 用 pointerdown/up + 位移取消，避免"想滚动结果被当成长按"。
+   */
+  function bindDevModeLongPress(btn) {
+    var timer = null;
+    function cancel() {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+    btn.addEventListener('pointerdown', function (ev) {
+      cancel();
+      var x0 = ev.clientX, y0 = ev.clientY;
+      timer = setTimeout(function () {
+        timer = null;
+        var on = !(S.settings.appearance.devMode === true);
+        S.settings.appearance.devMode = on;
+        AR.Store.save(true);
+        AR.Bridge.haptic('heavy', btn);
+        renderSettings();
+        if (AR.UI && AR.UI.toast) {
+          AR.UI.toast(on ? '开发者模式已开启：外观页底部可调过渡动画' : '开发者模式已关闭');
+        }
+      }, 800);
+      var move = function (e2) {
+        if (Math.abs(e2.clientX - x0) > 10 || Math.abs(e2.clientY - y0) > 10) { cancel(); }
+      };
+      var up = function () {
+        cancel();
+        btn.removeEventListener('pointermove', move);
+        btn.removeEventListener('pointerup', up);
+        btn.removeEventListener('pointercancel', up);
+      };
+      btn.addEventListener('pointermove', move);
+      btn.addEventListener('pointerup', up);
+      btn.addEventListener('pointercancel', up);
+    });
+    btn.addEventListener('pointerleave', cancel);
+    btn.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
   }
 
   function setActiveNav(key) {
@@ -823,7 +898,162 @@ var AR = window.AR || (window.AR = {});
       AR.Bridge.haptic('heavy', $('settingsGrid'));
       renderSettings();
     }));
+    /**
+     * 磁贴风格：一键把全局进出场动画换成"从点击处翻入"的磁贴翻转。
+     * 开着的时候忽略逐场景的样式选择（但不会清掉它们），关掉就回到各自的选择。
+     */
+    if (AR.Motion) {
+      box.appendChild(rowSwitch('磁贴风格（全局）',
+        '',
+        AR.Motion.tileMode(), function (v) {
+          AR.Motion.setTileMode(v);
+          AR.Bridge.haptic(v ? 'heavy' : 'medium', $('settingsGrid'));
+          AR.UI.toast(v ? '已开启全局磁贴风格' : '已关闭磁贴风格，恢复逐场景设置');
+          renderSettings();
+          if (AR.UI.renderToday) { AR.UI.renderToday(); }
+        }));
+    }
+    if (ap.devMode === true) { box.appendChild(devMotionBox()); }
     return panel('外观', box, 'appearance');
+  }
+
+  /* ── 开发者模式：逐场景挑选过渡动画 ───────────────────────── */
+
+  /**
+   * 每个场景一行：场景名 + 样式下拉 + 「试放」。
+   * 样式表来自 AR.Motion（曲线、时长、位移、缩放、旋转、模糊都在里面描述），
+   * 选中即生效并落盘，不用重启。
+   */
+  function devMotionBox() {
+    var box = el('<div class="dev-motion"></div>');
+    box.appendChild(el('<div class="dev-badge">开发者模式</div>'));
+    box.appendChild(el('<p class="muted" style="margin:6px 0 10px">'
+      + '长按左侧「外观」可退出。这里改的是全局过渡动画，改完立刻生效，'
+      + '每个场景可以先「试放」看一眼。</p>'));
+
+    var order = AR.Motion.order;
+    for (var i = 0; i < order.length; i++) {
+      (function (key) {
+        var sc = AR.Motion.table[key];
+        if (!sc) { return; }
+        var cur = AR.Motion.get(key);
+        var row = el('<div class="dev-row"><div class="dev-name">' + esc(sc.name) + '</div></div>');
+        var sel = el('<select class="dev-select"></select>');
+        for (var j = 0; j < sc.styles.length; j++) {
+          var st = sc.styles[j];
+          sel.appendChild(el('<option value="' + st.k + '"'
+            + (cur && cur.k === st.k ? ' selected' : '') + '>' + esc(st.name) + '</option>'));
+        }
+        sel.addEventListener('change', function () {
+          AR.Motion.set(key, sel.value);
+          AR.Bridge.haptic('light', sel);
+          AR.UI.toast(sc.name + ' → ' + sel.options[sel.selectedIndex].text);
+        });
+        row.appendChild(sel);
+        var play = el('<button class="chip-btn" type="button">试放</button>');
+        play.addEventListener('click', function () { previewMotion(key); });
+        row.appendChild(play);
+        box.appendChild(row);
+      })(order[i]);
+    }
+
+    var foot = el('<div class="row gap" style="margin-top:12px"></div>');
+    var reset = el('<button class="btn" type="button">全部恢复默认</button>');
+    reset.addEventListener('click', function () {
+      AR.Motion.reset();
+      AR.Bridge.haptic('medium', reset);
+      AR.UI.toast('过渡动画已恢复默认');
+      renderSettings();
+    });
+    foot.appendChild(reset);
+    box.appendChild(foot);
+
+    /* ── 开发者工具：随时开关，关掉立刻恢复原样 ─────────────── */
+    box.appendChild(el('<div class="dev-sub">开发者工具</div>'));
+    var flags = AR.UI.devFlags();
+    var tools = [
+      { k: 'fps', t: '帧率悬浮窗', d: '左上角显示实时帧率，低于 50fps 会变红' },
+      { k: 'ripple', t: '点按涟漪', d: '每次点按在落点画一个涟漪，检查热区与命中位置' },
+      { k: 'grid', t: '8px 基线网格', d: '给整页铺一层淡网格，用来对齐间距' },
+      { k: 'outline', t: '布局描边', d: '给所有盒子描一层边，看布局边界' },
+      { k: 'slow', t: '动画慢放 0.25×', d: '把全局动画速度调到 1/4，逐帧看曲线' }
+    ];
+    for (var ti = 0; ti < tools.length; ti++) {
+      (function (tool) {
+        var on = (tool.k === 'slow')
+          ? (Number(S.settings.appearance.animationSpeed) === 0.25)
+          : (flags[tool.k] === true);
+        box.appendChild(rowSwitch(tool.t, tool.d, on, function (v) {
+          if (tool.k === 'slow') {
+            S.settings.appearance.animationSpeed = v ? 0.25 : 1;
+            AR.Store.save(true);
+            AR.UI.applyMotion();
+          } else {
+            flags[tool.k] = v;
+            AR.UI.devApply(true);
+          }
+          AR.Bridge.haptic('light', $('settingsGrid'));
+        }));
+      })(tools[ti]);
+    }
+    var dRow = el('<div class="row gap" style="margin-top:10px"></div>');
+    var copyDiag = el('<button class="btn" type="button">复制诊断信息</button>');
+    copyDiag.addEventListener('click', function () { AR.UI.devDiagnostics(); });
+    var closeAll = el('<button class="btn" type="button">关闭全部开发者工具</button>');
+    closeAll.addEventListener('click', function () {
+      var f = AR.UI.devFlags();
+      for (var k in f) { if (Object.prototype.hasOwnProperty.call(f, k)) { f[k] = false; } }
+      S.settings.appearance.animationSpeed = 1;
+      AR.Store.save(true);
+      AR.UI.devApply(true);
+      AR.UI.applyMotion();
+      AR.Bridge.haptic('medium', closeAll);
+      AR.UI.toast('开发者工具已全部关闭');
+      renderSettings();
+    });
+    dRow.appendChild(copyDiag);
+    dRow.appendChild(closeAll);
+    box.appendChild(dRow);
+    return box;
+  }
+
+  /** 试放：按场景挑一个最贴近的实时预览，不用真的去点那个界面 */
+  function previewMotion(key) {
+    var host = $('settingsBody') || document.body;
+    if (key === 'zoneExpand' || key === 'zoneCollapse' || key === 'contentIn') {
+      // 聚焦放大 / 缩小 / 内容浮入：直接让真正的今日页动一次，观感最准
+      AR.UI.show('today');
+      var zone = document.getElementById('zoneNext');
+      if (zone && zone.classList.contains('expanded')) { zone.querySelector('.zone-toggle').click(); }
+      setTimeout(function () { if (zone) { zone.click(); } }, 260);
+      setTimeout(function () { if (zone && zone.classList.contains('expanded')) { zone.querySelector('.zone-toggle').click(); } }, 1200);
+      return;
+    }
+    if (key === 'modalIn' || key === 'modalOut') {
+      var card = el('<div class="dev-preview-card">弹窗动画预览</div>');
+      host.appendChild(card);
+      card.style.position = 'fixed';
+      card.style.left = '50%'; card.style.top = '50%';
+      card.style.marginLeft = '-110px'; card.style.marginTop = '-40px';
+      AR.UI.popIn(card, 'in');
+      setTimeout(function () {
+        AR.UI.popIn(card, 'out');
+        setTimeout(function () { if (card.parentNode) { card.parentNode.removeChild(card); } }, 420);
+      }, 700);
+      return;
+    }
+    if (key === 'viewIn') {
+      var panel = host.querySelector('.set-section');
+      if (panel) { AR.UI.enterRise(panel.parentNode || host); }
+      return;
+    }
+    if (key === 'listIn') {
+      var items = host.querySelectorAll('.set-section .row, .set-section .slider-row');
+      if (items.length) {
+        var wrap = items[0].parentNode;
+        AR.UI.fadeInList(wrap, '.row, .slider-row');
+      }
+    }
   }
 
   /* 2 · 布局与尺寸（滑块 + 实时预览） */
@@ -1070,6 +1300,55 @@ var AR = window.AR || (window.AR = {});
         renderSettings();
       }));
 
+    /**
+     * 课程配色：课表里是"彩色底 + 白字"，所以预置方案里的颜色都压过亮度，
+     * 保证白字读得清；同一类型的课取同一色系、靠深浅区分。
+     */
+    if (AR.Palette) {
+      var schemeNow = (S.settings.schedule && S.settings.schedule.colorScheme) || 'classic';
+      box.appendChild(el('<div class="field-label" style="margin-top:14px">课程配色方案</div>'));
+      box.appendChild(segmented(AR.Palette.schemeList().map(function (s) {
+        return { label: s.name.replace('（默认）', ''), value: s.key };
+      }), schemeNow, function (v) {
+        S.settings.schedule.colorScheme = v;
+        AR.Store.save(true);
+        renderSettings();
+      }));
+      var desc = AR.Palette.schemes[schemeNow];
+      box.appendChild(el('<p class="muted" style="margin:8px 0 0">' + esc(desc ? desc.desc : '') + '</p>'));
+      var pv = el('<div class="scheme-preview"></div>');
+      var demo = AR.Palette.schemes.tracks.map;
+      var showList = desc && desc.map ? desc.map : demo;
+      ['science', 'arts', 'general', 'pe', 'water'].forEach(function (tk) {
+        var arr = showList[tk] || [];
+        for (var i = 0; i < Math.min(arr.length, 2); i++) {
+          pv.appendChild(el('<i style="background:' + arr[i] + '"></i>'));
+        }
+      });
+      box.appendChild(pv);
+      var applyRow = el('<div class="row gap" style="margin-top:10px"></div>');
+      var applyBtn = el('<button class="btn primary" type="button">按这个方案重排全部课程颜色</button>');
+      applyBtn.addEventListener('click', function () {
+        var res = AR.Palette.applyScheme(schemeNow);
+        AR.Bridge.haptic('medium', applyBtn);
+        if (!res.ok) { AR.UI.toast(res.message || '应用失败'); return; }
+        var parts = [];
+        for (var tk in res.stats) {
+          if (Object.prototype.hasOwnProperty.call(res.stats, tk)) {
+            parts.push(AR.Palette.trackLabel(tk) + ' ' + res.stats[tk]);
+          }
+        }
+        AR.UI.toast('已重排 ' + res.changed + ' 门课的颜色' + (parts.length ? '（' + parts.join(' · ') + '）' : ''));
+        AR.UI.renderToday();
+        AR.UI.renderWeek();
+        renderSettings();
+      });
+      applyRow.appendChild(applyBtn);
+      box.appendChild(applyRow);
+      box.appendChild(el('<p class="muted" style="margin-top:8px">类型按课程名自动识别（数学/物理→理科，'
+        + '文学/历史→文科，思政/通识→公共，体育→体育）；「水课」请在课程编辑器里手动指定。</p>'));
+    }
+
     box.appendChild(el('<div class="field-label" style="margin-top:14px">连堂课自动合并</div>'));
     box.appendChild(segmented([
       { label: '自动合并', value: 'auto' }, { label: '从不合并', value: 'never' }
@@ -1211,7 +1490,9 @@ var AR = window.AR || (window.AR = {});
     box.appendChild(el('<p class="muted">导出一份配置文件，在另一台设备上导入即可同步。App 会在合并前给出预览，'
       + '冲突逐条确认，并在应用前自动保留一份备份。</p>'));
     var row = el('<div class="row gap"><button class="btn primary" type="button" id="stExport">导出配置文件</button>'
+      + '<button class="btn" type="button" id="stWechat">导出到微信</button>'
       + '<button class="btn" type="button" id="stImport">导入配置文件</button>'
+      + '<button class="btn" type="button" id="stFromExports">从导出目录导入</button>'
       + '<button class="btn" type="button" id="stCopy">复制配置文本</button></div>');
     box.appendChild(row);
     row.querySelector('#stExport').addEventListener('click', function () {
@@ -1222,8 +1503,15 @@ var AR = window.AR || (window.AR = {});
       AR.UI.show('import');
       setTimeout(function () { document.querySelector('[data-tab="json"]').click(); $('btnImportJson').click(); }, 120);
     });
+    row.querySelector('#stWechat').addEventListener('click', function () {
+      AR.ConfigIO.exportToApp(row.querySelector('#stWechat'));
+    });
+    row.querySelector('#stFromExports').addEventListener('click', function () {
+      AR.UI.show('import');
+      setTimeout(function () { document.querySelector('[data-tab="json"]').click(); AR.ConfigIO.openFromExports(); }, 140);
+    });
     row.querySelector('#stCopy').addEventListener('click', function () {
-      AR.Bridge.copy(JSON.stringify(AR.Store.exportPayload(), null, 2));
+      AR.ConfigIO.copyText(row.querySelector('#stCopy'));
     });
     box.appendChild(el('<p class="muted">上次导出：' + (S.exportedAt ? esc(S.exportedAt.replace('T', ' ').slice(0, 16)) : '还没导出过')
       + ' · 提示词版本 ' + esc(AR.Prompt.version) + '</p>'));
@@ -1288,6 +1576,7 @@ var AR = window.AR || (window.AR = {});
     var row = el('<div class="row gap">'
       + '<button class="btn" type="button" id="stDemo">载入演示课表</button>'
       + '<button class="btn" type="button" id="stBackup">导出备份</button>'
+      + '<button class="btn" type="button" id="stBackupWechat">导出到微信</button>'
       + '<button class="btn danger" type="button" id="stReset">清空所有数据</button></div>');
     box.appendChild(row);
     row.querySelector('#stDemo').addEventListener('click', function () {
@@ -1298,29 +1587,100 @@ var AR = window.AR || (window.AR = {});
       AR.UI.toast('已载入演示课表');
     });
     row.querySelector('#stBackup').addEventListener('click', function () {
-      AR.Bridge.exportText(AR.Store.exportFileName(), JSON.stringify(AR.Store.exportPayload(), null, 2), 'application/json');
+      AR.ConfigIO.exportFile(row.querySelector('#stBackup'));
     });
-    row.querySelector('#stReset').addEventListener('click', function () {
-      AR.UI.openModal({
-        title: '清空所有数据？', sub: '此操作不可撤销，建议先导出备份',
-        body: '<p class="muted">清空后课程、作息、设置都会恢复初始状态。</p>',
-        actions: [
-          { label: '取消', onClick: function (c) { c(); } },
-          {
-            label: '确认清空', kind: 'danger', onClick: function (c) {
-              AR.Store.reset(true);
-              AR.UI.applyTheme(); AR.UI.applyGlass(); AR.UI.applyMotion();
-              c();
-              AR.Bridge.haptic('warn', $('settingsGrid'));
-              renderSettings();
-              refreshAll();
-              AR.UI.toast('已清空');
-            }
-          }
-        ]
-      });
+    row.querySelector('#stBackupWechat').addEventListener('click', function () {
+      AR.ConfigIO.exportToApp(row.querySelector('#stBackupWechat'));
     });
+    row.querySelector('#stReset').addEventListener('click', function () { openResetHoldModal(); });
     return panel('数据与备份', box, 'data');
+  }
+
+  /**
+   * 清空所有数据：二道确认 —— 必须**按住 3 秒**才会执行，中途松手立刻取消。
+   * （单击不行、连点也不行，避免误触把课表清掉。）
+   */
+  function openResetHoldModal() {
+    var HOLD_MS = 3000;
+    var body = el('<div>'
+      + '<p class="muted">清空后课程、作息、设置都会恢复初始状态，且无法撤销。'
+      + '建议先在「导入与同步」里导出一份配置文件再操作。</p>'
+      + '<button class="hold-btn" type="button" id="resetHold">'
+      + '<span class="hold-fill"></span><span class="hold-label">按住 3 秒清空</span></button>'
+      + '<p class="muted" id="resetHoldTip">按住不放，进度条走满才会执行；中途松手自动取消。</p>'
+      + '</div>');
+    AR.UI.openModal({
+      title: '清空所有数据？', sub: '需要长按 3 秒二次确认',
+      body: body,
+      actions: [{ label: '取消', onClick: function (c) { c(); } }]
+    });
+
+    var btn = $('resetHold');
+    var label = btn.querySelector('.hold-label');
+    var tip = body.querySelector('#resetHoldTip');
+    var raf = null;
+    var startAt = 0;
+    var fired = false;
+
+    function paint(p) {
+      btn.style.setProperty('--hold', (p * 100).toFixed(1) + '%');
+      var left = Math.max(0, Math.ceil((HOLD_MS * (1 - p)) / 1000));
+      label.textContent = p >= 1 ? '正在清空…' : ('按住 3 秒清空' + (p > 0 ? '（' + left + '）' : ''));
+    }
+    function tick() {
+      var p = Math.min(1, (Date.now() - startAt) / HOLD_MS);
+      paint(p);
+      if (p >= 1) {
+        if (!fired) { fired = true; doReset(); }
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    }
+    function start(ev) {
+      if (fired) { return; }
+      if (ev && ev.preventDefault) { ev.preventDefault(); }
+      startAt = Date.now();
+      btn.classList.add('holding');
+      if (tip) { tip.textContent = '松开就会取消，坚持按住 3 秒…'; }
+      if (raf) { cancelAnimationFrame(raf); }
+      raf = requestAnimationFrame(tick);
+      AR.Bridge.haptic('light', btn);
+    }
+    function stop() {
+      if (fired) { return; }
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      btn.classList.remove('holding');
+      paint(0);
+      if (tip) { tip.textContent = '已取消，数据没有变动。可以再按住 3 秒重新确认。'; }
+    }
+    function doReset() {
+      btn.classList.remove('holding');
+      paint(1);
+      AR.Bridge.haptic('warn', btn);
+      AR.Store.reset(true);
+      AR.UI.applyTheme(); AR.UI.applyGlass(); AR.UI.applyMotion();
+      AR.UI.closeModal();
+      renderSettings();
+      refreshAll();
+      AR.UI.toast('已清空所有数据');
+    }
+
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+    // 老 WebView 兜底：没有 Pointer Events 时用 touch/mouse
+    if (!window.PointerEvent) {
+      btn.addEventListener('touchstart', start);
+      btn.addEventListener('touchend', stop);
+      btn.addEventListener('touchcancel', stop);
+      btn.addEventListener('mousedown', start);
+      btn.addEventListener('mouseup', stop);
+      btn.addEventListener('mouseleave', stop);
+    }
+    // 键盘可达性：空格/回车按住也算
+    btn.addEventListener('keydown', function (ev) { if ((ev.key === ' ' || ev.key === 'Enter') && !fired && !raf) { start(ev); } });
+    btn.addEventListener('keyup', function (ev) { if (ev.key === ' ' || ev.key === 'Enter') { stop(); } });
   }
 
   /* 8 · 关于与帮助 */
@@ -1342,6 +1702,32 @@ var AR = window.AR || (window.AR = {});
       AR.UI.show('import');
       setTimeout(function () { document.querySelector('[data-tab="prompt"]').click(); }, 100);
     });
+
+    /**
+     * 开源地址：项目已发布在 GitHub，这里给一个可点的入口
+     * （Android 交给系统浏览器，Windows 交给默认浏览器）。
+     */
+    var REPO_URL = 'https://github.com/EtoileZzz/AbbeyRoad----ScheduleApp';
+    var repoBox = el('<div class="repo-box">'
+      + '<div class="repo-title">项目已开源</div>'
+      + '<div class="repo-url">' + esc(REPO_URL) + '</div>'
+      + '<div class="row gap" style="margin-top:10px">'
+      + '<button class="btn primary" type="button" id="stRepo">在浏览器中打开</button>'
+      + '<button class="btn" type="button" id="stRepoCopy">复制地址</button></div></div>');
+    box.appendChild(repoBox);
+    repoBox.querySelector('#stRepo').addEventListener('click', function () {
+      AR.Bridge.haptic('light', repoBox.querySelector('#stRepo'));
+      AR.Bridge.openUrl(REPO_URL);
+    });
+    repoBox.querySelector('#stRepoCopy').addEventListener('click', function () {
+      AR.Bridge.copy(REPO_URL);
+    });
+    // 地址本身也可以直接点
+    repoBox.querySelector('.repo-url').addEventListener('click', function () {
+      AR.Bridge.haptic('light', repoBox);
+      AR.Bridge.openUrl(REPO_URL);
+    });
+
     box.appendChild(el('<p class="muted" style="margin-top:10px">本应用不联网、不收集数据；'
       + '所有内容保存在本机，导出的配置文件和备份由你自己保管。</p>'));
     return panel('关于与帮助', box, 'about');
@@ -1358,6 +1744,8 @@ var AR = window.AR || (window.AR = {});
     obStep = 0;
     $('onboarding').hidden = false;
     renderOnboarding();
+    // 和弹窗用同一套进场动画（同一个关键帧 / 曲线 / 时长）
+    if (AR.UI.popIn) { AR.UI.popIn($('obCard'), 'in'); }
   }
 
   function renderOnboarding() {
@@ -1594,6 +1982,8 @@ var AR = window.AR || (window.AR = {});
     openSemesterSetup: openSemesterSetup,
     handleJsonText: handleJsonText,
     serializeParsed: serializeParsed,
+    quickAddCourse: quickAddCourse,
+    quickAddEvent: quickAddEvent,
     refreshAll: refreshAll
   };
 })();

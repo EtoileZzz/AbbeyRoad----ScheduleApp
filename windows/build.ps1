@@ -2,8 +2,8 @@
 
 # Abbey Road · Windows 构建
 # 产出：dist\AbbeyRoad.exe（单文件，界面资源内置）
-#       dist\AbbeyRoad-Setup-v0.1.9.exe（安装器）
-#       dist\AbbeyRoad-v0.1.9-portable.zip（绿色版）
+#       dist\AbbeyRoad-Setup-v0.2.4.exe（安装器）
+#       dist\AbbeyRoad-v0.2.4-portable.zip（绿色版）
 
 $root      = $PSScriptRoot
 $projRoot  = Split-Path $root -Parent
@@ -11,7 +11,7 @@ $appDir    = Join-Path $projRoot 'app'
 $dist      = Join-Path $projRoot 'dist'
 $out       = Join-Path $root 'build'
 $assets    = Join-Path $root 'assets'
-$version   = '0.1.9'
+$version   = '0.3.0'
 
 # 工具链目录：环境变量 $env:ABBEYROAD_WIN_TOOLS 或本地 build.local.ps1 覆盖，
 # 仓库里不留私人路径（Roslyn 编译器 + WebView2 SDK 解出来的 DLL）。

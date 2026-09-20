@@ -3,6 +3,7 @@ package com.ganxing.abbeyroad;
 import android.app.Activity;
 import android.content.ClipData;
 import android.content.ClipboardManager;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.res.Configuration;
@@ -10,10 +11,12 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.AlarmClock;
 import android.provider.CalendarContract;
+import android.provider.MediaStore;
 import android.util.Log;
 import android.view.View;
 import android.view.Window;
@@ -32,6 +35,7 @@ import org.json.JSONObject;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
@@ -63,6 +67,9 @@ public class MainActivity extends Activity {
     private String pendingExportContent = null;
     private String pendingExportMime = "application/json";
     private String pendingView = null;
+    /** 「用 Abbey Road 打开」进来的文件（微信里点配置文件 → 用其他应用打开） */
+    private Uri pendingOpenUri = null;
+    private String pendingOpenName = null;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -103,6 +110,7 @@ public class MainActivity extends Activity {
             public void onPageFinished(WebView view, String url) {
                 super.onPageFinished(view, url);
                 flushPendingView();
+                flushPendingOpen();
             }
 
             @Override
@@ -145,6 +153,76 @@ public class MainActivity extends Activity {
 
         web.loadUrl(ORIGIN + "index.html");
         pendingView = viewFromIntent(getIntent());
+        captureOpenIntent(getIntent());
+    }
+
+    /**
+     * 记下启动/切回前台时由系统丢过来的配置文件。
+     * 微信收到的文件在自己的私有目录里，系统文件选择器看不到，
+     * 所以「用其他应用打开 → Abbey Road」是手机上最靠谱的导入路径。
+     */
+    private void captureOpenIntent(Intent intent) {
+        if (intent == null) { return; }
+        Uri uri = null;
+        String name = null;
+        String action = intent.getAction();
+        if (Intent.ACTION_VIEW.equals(action)) {
+            uri = intent.getData();
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            Object extra = intent.getParcelableExtra(Intent.EXTRA_STREAM);
+            if (extra instanceof Uri) { uri = (Uri) extra; }
+            name = intent.getStringExtra(Intent.EXTRA_TITLE);
+        }
+        if (uri == null) { return; }
+        pendingOpenUri = uri;
+        pendingOpenName = (name == null || name.length() == 0) ? displayNameOf(uri) : name;
+    }
+
+    /** content:// 的 lastPathSegment 往往只是一串数字，能查就查真实文件名 */
+    private String displayNameOf(Uri uri) {
+        try {
+            android.database.Cursor c = getContentResolver().query(uri,
+                    new String[]{android.provider.OpenableColumns.DISPLAY_NAME}, null, null, null);
+            if (c != null) {
+                try {
+                    if (c.moveToFirst()) {
+                        int idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                        if (idx >= 0) {
+                            String n = c.getString(idx);
+                            if (n != null && n.length() > 0) { return n; }
+                        }
+                    }
+                } finally {
+                    c.close();
+                }
+            }
+        } catch (Exception ignored) { }
+        return uri.getLastPathSegment();
+    }
+
+    /** 把待导入的文件读出来交给网页（读文件放到后台线程，避免卡住界面） */
+    private void flushPendingOpen() {
+        final Uri uri = pendingOpenUri;
+        final String name = pendingOpenName;
+        if (uri == null) { return; }
+        pendingOpenUri = null;
+        pendingOpenName = null;
+        new Thread(new Runnable() {
+            public void run() {
+                try {
+                    InputStream in = getContentResolver().openInputStream(uri);
+                    ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                    byte[] buf = new byte[16384];
+                    int n;
+                    while ((n = in.read(buf)) > 0) { bos.write(buf, 0, n); }
+                    in.close();
+                    final String text = new String(bos.toByteArray(), StandardCharsets.UTF_8);
+                    callJs("window.AR && AR.onFileText && AR.onFileText(" + q(text) + "," + q(name) + ")");
+                } catch (Exception e) {
+                    toast("读取文件失败");
+                }
+            }
+        }).start();
     }
 
     /** 桌面卡片可能带着「直接打开哪一屏」进来 */
@@ -170,10 +248,12 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
-        String v = viewFromIntent(intent);
-        if (v == null) { return; }
-        pendingView = v;
-        if (web != null) { flushPendingView(); }
+        pendingView = viewFromIntent(intent);
+        captureOpenIntent(intent);
+        if (web != null) {
+            flushPendingView();
+            flushPendingOpen();
+        }
     }
 
     /** 从 assets/web/ 读取被拦截的请求；找不到就返回 404，避免整页白屏。 */
@@ -320,6 +400,60 @@ public class MainActivity extends Activity {
                 return i.resolveActivity(getPackageManager()) != null;
             } catch (Exception e) {
                 return false;
+            }
+        }
+
+        /**
+         * 「导出到微信」：先把配置文件写进系统「下载 / Abbey Road」目录，
+         * 再用 ACTION_SEND 拉起系统分享面板 —— 选微信就是发文件，选别的 App 也一样能用。
+         *
+         * 为什么先落盘：分享面板拿 content:// 地址才能把文件真发出去；
+         * 只发文本的话，几十 KB 的配置在聊天里既难读也容易被编辑器改坏。
+         * Android 10（API 29）以下没有 MediaStore.Downloads，降级成分享文本。
+         */
+        @JavascriptInterface
+        public void shareFile(final String fileName, final String content, final String mime, final String title) {
+            runOnUiThread(new Runnable() {
+                public void run() {
+                    String type = (mime == null || mime.length() == 0) ? "application/json" : mime;
+                    Uri uri = writeToDownloads(fileName, content, type);
+                    try {
+                        Intent i = new Intent(Intent.ACTION_SEND);
+                        i.putExtra(Intent.EXTRA_SUBJECT, title == null ? "Abbey Road 课表配置" : title);
+                        if (uri != null) {
+                            i.setType("*/*");                                  // 微信等 App 只认通用类型
+                            i.putExtra(Intent.EXTRA_STREAM, uri);
+                            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        } else {
+                            i.setType("text/plain");
+                            i.putExtra(Intent.EXTRA_TEXT, content);
+                        }
+                        startActivity(Intent.createChooser(i, "导出到微信 / 分享"));
+                    } catch (Exception e) {
+                        toast("没有可用的分享目标");
+                    }
+                }
+            });
+        }
+
+        /** Android 10+：写进「下载/Abbey Road」，返回可分享的 content:// 地址；失败返回 null */
+        private Uri writeToDownloads(String fileName, String content, String mime) {
+            if (Build.VERSION.SDK_INT < 29 || content == null) { return null; }
+            try {
+                ContentValues cv = new ContentValues();
+                cv.put(MediaStore.MediaColumns.DISPLAY_NAME,
+                        (fileName == null || fileName.length() == 0) ? "AbbeyRoad-backup.json" : fileName);
+                cv.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                cv.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS + "/Abbey Road");
+                Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri == null) { return null; }
+                OutputStream os = getContentResolver().openOutputStream(uri);
+                os.write(content.getBytes(StandardCharsets.UTF_8));
+                os.flush();
+                os.close();
+                return uri;
+            } catch (Exception e) {
+                return null;
             }
         }
 
@@ -496,19 +630,35 @@ public class MainActivity extends Activity {
         public void exportText(final String fileName, final String content, final String mime) {
             runOnUiThread(new Runnable() {
                 public void run() {
+                    String type = (mime == null || mime.length() == 0) ? "application/json" : mime;
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType(type);
+                    i.putExtra(Intent.EXTRA_TITLE, fileName);
+                    // 选择器不可用（个别系统会这样）时不要静默失败：直接存到「下载 / Abbey Road」
+                    if (i.resolveActivity(getPackageManager()) == null) {
+                        fallbackSave(fileName, content, type);
+                        return;
+                    }
                     try {
                         pendingExportContent = content;
-                        pendingExportMime = (mime == null || mime.length() == 0) ? "application/json" : mime;
-                        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
-                        i.addCategory(Intent.CATEGORY_OPENABLE);
-                        i.setType(pendingExportMime);
-                        i.putExtra(Intent.EXTRA_TITLE, fileName);
+                        pendingExportMime = type;
                         startActivityForResult(i, REQ_EXPORT);
                     } catch (Exception e) {
-                        toast("导出失败");
+                        fallbackSave(fileName, content, type);
                     }
                 }
             });
+        }
+
+        /** 选择器用不了时的兜底：写进「下载 / Abbey Road」并告诉用户文件名 */
+        private void fallbackSave(String fileName, String content, String mime) {
+            Uri uri = writeToDownloads(fileName, content, mime);
+            if (uri != null) {
+                toast("已保存到「下载 / Abbey Road」：" + fileName);
+            } else {
+                toast("导出失败，请在「数据与备份」里再试一次");
+            }
         }
 
         /** 导入文本：调用系统「打开文件」选择器，读完后回调网页。 */
@@ -520,14 +670,78 @@ public class MainActivity extends Activity {
                         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                         i.addCategory(Intent.CATEGORY_OPENABLE);
                         i.setType("*/*");
+                        // 只挑文件、不要目录；把 .json 可能被识别成的几种类型都列上，
+                        // 否则某些系统文件管理器会把刚导出的配置文件过滤掉。
                         i.putExtra(Intent.EXTRA_MIME_TYPES,
-                                new String[]{"application/json", "text/plain", "text/markdown", "text/*"});
+                                new String[]{"application/json", "application/x-json", "application/octet-stream",
+                                        "text/plain", "text/markdown", "text/*"});
                         startActivityForResult(i, REQ_IMPORT);
                     } catch (Exception e) {
                         toast("无法打开文件选择器");
                     }
                 }
             });
+        }
+
+        /**
+         * 列出 App 自己导出的配置文件（「下载 / Abbey Road」目录）。
+         * 有些系统的文件选择器很难用（比如找不到刚导出的文件），
+         * 这里给网页一份可直接导入的清单，完全绕开系统选择器。
+         * 返回 JSON 数组字符串：[{name, uri, size, modified}]
+         */
+        @JavascriptInterface
+        public String listExports() {
+            if (Build.VERSION.SDK_INT < 29) { return "[]"; }
+            StringBuilder sb = new StringBuilder("[");
+            android.database.Cursor c = null;
+            try {
+                Uri collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                String[] cols = {MediaStore.MediaColumns._ID, MediaStore.MediaColumns.DISPLAY_NAME,
+                        MediaStore.MediaColumns.SIZE, MediaStore.MediaColumns.DATE_MODIFIED,
+                        MediaStore.MediaColumns.RELATIVE_PATH};
+                String sel = MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?";
+                String[] args = new String[]{Environment.DIRECTORY_DOWNLOADS + "/Abbey Road%"};
+                c = getContentResolver().query(collection, cols, sel, args,
+                        MediaStore.MediaColumns.DATE_MODIFIED + " DESC");
+                boolean first = true;
+                while (c != null && c.moveToNext()) {
+                    long id = c.getLong(0);
+                    String name = c.getString(1);
+                    long size = c.getLong(2);
+                    long modified = c.getLong(3);
+                    if (name == null || name.length() == 0) { continue; }
+                    if (!first) { sb.append(','); }
+                    first = false;
+                    sb.append("{\"name\":").append(JSONObject.quote(name))
+                      .append(",\"uri\":").append(JSONObject.quote(
+                              android.content.ContentUris.withAppendedId(collection, id).toString()))
+                      .append(",\"size\":").append(size)
+                      .append(",\"modified\":").append(modified * 1000L).append('}');
+                }
+            } catch (Exception e) {
+                return "[]";
+            } finally {
+                if (c != null) { c.close(); }
+            }
+            return sb.append(']').toString();
+        }
+
+        /** 读取一个 content:// 文件的文本（给上面的清单用；失败返回空串） */
+        @JavascriptInterface
+        public String readTextUri(final String uriText) {
+            if (uriText == null || uriText.length() == 0) { return ""; }
+            try {
+                Uri uri = Uri.parse(uriText);
+                InputStream in = getContentResolver().openInputStream(uri);
+                ByteArrayOutputStream bos = new ByteArrayOutputStream();
+                byte[] buf = new byte[16384];
+                int n;
+                while ((n = in.read(buf)) > 0) { bos.write(buf, 0, n); }
+                in.close();
+                return new String(bos.toByteArray(), StandardCharsets.UTF_8);
+            } catch (Exception e) {
+                return "";
+            }
         }
 
         /** 系统声音（Windows 端用真实音效，Android 端留给系统反馈，这里只做提示音兜底）。 */

@@ -1578,23 +1578,120 @@ var AR = window.AR || (window.AR = {});
       }
       state.periods = kept.concat(entities.periods);
     }
-    var tables = ['teachers', 'locations', 'courses', 'blocks', 'overrides', 'events'];
-    for (var t = 0; t < tables.length; t++) {
-      var name = tables[t];
+    /**
+     * v0.2.2：老师 / 地点 / 课程按名字（地点按原文）复用，
+     * 并把「对方的 id → 本地 id」记下来 —— 不然同一份课表导入第二遍时，
+     * 课程会被合并、时段却还挂着对方那门课的 id，变成一堆
+     * 「界面上看不见、数据里越攒越多」的孤儿时段。
+     */
+    var simpleTables = ['teachers', 'locations', 'courses'];
+    var keyFns = {
+      teachers: function (r) { return r.name ? ('n:' + r.name) : null; },
+      locations: function (r) { return r.raw ? ('r:' + r.raw) : null; },
+      courses: function (r) { return r.name ? ('n:' + r.name + '|' + (r.semesterId || '')) : null; }
+    };
+    var idMap = { teacher: {}, location: {}, course: {} };
+    for (var t = 0; t < simpleTables.length; t++) {
+      var name = simpleTables[t];
+      var single = name.replace(/s$/, '');
       if (!Array.isArray(state[name])) { state[name] = []; }
-      var byName = {};
+      var byKey = {};
       for (i = 0; i < state[name].length; i++) {
         var rec = state[name][i];
-        byName[rec.name || rec.raw || rec.id] = rec;
+        var rk = keyFns[name](rec);
+        if (rk && byKey[rk] === undefined) { byKey[rk] = rec; }
       }
       for (i = 0; i < entities[name].length; i++) {
         var incoming = entities[name][i];
-        var key = incoming.name || incoming.raw || incoming.id;
-        if (!byName[key]) { state[name].push(incoming); }
+        var ik = keyFns[name](incoming);
+        var hit = ik ? byKey[ik] : null;
+        if (hit) {
+          idMap[single][incoming.id] = hit.id;
+        } else {
+          state[name].push(incoming);
+          if (ik) { byKey[ik] = incoming; }
+          idMap[single][incoming.id] = incoming.id;
+        }
       }
     }
+
+    /** 同一条时段的内容指纹：课程 + 星期 + 节次 + 周次 */
+    function blockFingerprint(b) {
+      return [b.courseId, b.weekday, b.periodStart, b.periodEnd, b.weekMode || 'all',
+        (b.weeks || []).slice().sort(function (x, y) { return x - y; }).join('.')].join('|');
+    }
+
+    // 时段：重复导入同一门课时不再加一条，而是把地点 / 老师 / 备注更新过去
+    if (!Array.isArray(state.blocks)) { state.blocks = []; }
+    var haveBlocks = {};
+    for (i = 0; i < state.blocks.length; i++) {
+      haveBlocks[blockFingerprint(state.blocks[i])] = state.blocks[i];
+    }
+    for (i = 0; i < entities.blocks.length; i++) {
+      var blk = entities.blocks[i];
+      var mapped = {
+        id: blk.id,
+        courseId: idMap.course[blk.courseId] || blk.courseId,
+        weekday: blk.weekday, periodStart: blk.periodStart, periodEnd: blk.periodEnd,
+        weekMode: blk.weekMode, weeks: (blk.weeks || []).slice(),
+        locationIds: (blk.locationIds || []).map(function (x) { return idMap.location[x] || x; }),
+        teacherIds: (blk.teacherIds || []).map(function (x) { return idMap.teacher[x] || x; }),
+        note: blk.note || '', isConsecutive: !!blk.isConsecutive, segments: blk.segments || null,
+        updatedAt: blk.updatedAt
+      };
+      var fp = blockFingerprint(mapped);
+      var exists = haveBlocks[fp];
+      if (exists) {
+        if (mapped.locationIds.length) { exists.locationIds = mapped.locationIds; }
+        if (mapped.teacherIds.length) { exists.teacherIds = mapped.teacherIds; }
+        if (mapped.note) { exists.note = mapped.note; }
+        exists.updatedAt = mapped.updatedAt;
+        continue;
+      }
+      haveBlocks[fp] = mapped;
+      state.blocks.push(mapped);
+    }
+
+    // 变动记录（调课 / 停课 …）：同课程同日期同类型只留一条
+    if (!Array.isArray(state.overrides)) { state.overrides = []; }
+    var haveOv = {};
+    for (i = 0; i < state.overrides.length; i++) {
+      var o0 = state.overrides[i];
+      haveOv[[o0.courseId, o0.date, o0.type].join('|')] = true;
+    }
+    for (i = 0; i < entities.overrides.length; i++) {
+      var ov = entities.overrides[i];
+      var ovCopy = JSON.parse(JSON.stringify(ov));
+      ovCopy.courseId = idMap.course[ov.courseId] || ov.courseId;
+      var ovKey = [ovCopy.courseId, ovCopy.date, ovCopy.type].join('|');
+      if (haveOv[ovKey]) { continue; }
+      haveOv[ovKey] = true;
+      state.overrides.push(ovCopy);
+    }
+
+    // 特殊事件（考试 / 讲座）：同日期同标题同类型只留一条
+    if (!Array.isArray(state.events)) { state.events = []; }
+    var haveEv = {};
+    for (i = 0; i < state.events.length; i++) {
+      var e0 = state.events[i];
+      haveEv[[e0.date, e0.type || '', e0.title || ''].join('|')] = true;
+    }
+    for (i = 0; i < entities.events.length; i++) {
+      var ev = entities.events[i];
+      var evKey = [ev.date, ev.type || '', ev.title || ''].join('|');
+      if (haveEv[evKey]) { continue; }
+      haveEv[evKey] = true;
+      state.events.push(ev);
+    }
+    /**
+     * v0.2.2：课表里有第 13 节甚至更晚的课，但节次表只到第 12 节 ——
+     * 这些课会变成「没有时间」，周表左栏也是空的。这里按实际用到的最大节次自动补齐。
+     */
+    var added = AR.Store.syncPeriodsToUsage();
+    // 导入的课挂在别的学期上（比如刚清空过数据）：把当前学期切过去，别让界面空着
+    AR.Store.ensureCurrentSemesterHasData(entities.semester ? entities.semester.id : null);
     AR.Store.save(true);
-    return state;
+    return { state: state, periodsAdded: added || 0 };
   }
 
   /* ── 示例文本（界面上「填入示例」用） ────────────────────── */

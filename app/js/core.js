@@ -9,7 +9,7 @@ var AR = window.AR || (window.AR = {});
 (function () {
   'use strict';
 
-var APP_VERSION = '0.1.9';
+var APP_VERSION = '0.3.0';
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
@@ -123,11 +123,16 @@ var APP_VERSION = '0.1.9';
   }
 
   /** 默认 12 节作息（可在设置里改） */
+  var OLD_PERIOD_TIMES = [
+    ['08:00', '08:45'], ['08:55', '09:40'], ['10:00', '10:45'], ['10:55', '11:40'],
+    ['14:00', '14:45'], ['14:55', '15:40'], ['16:00', '16:45'], ['16:55', '17:40'],
+    ['19:00', '19:45'], ['19:55', '20:40'], ['20:50', '21:35'], ['21:45', '22:30']
+  ];
   function defaultPeriodTimes() {
     return [
-      ['08:00', '08:45'], ['08:55', '09:40'], ['10:00', '10:45'], ['10:55', '11:40'],
-      ['14:00', '14:45'], ['14:55', '15:40'], ['16:00', '16:45'], ['16:55', '17:40'],
-      ['19:00', '19:45'], ['19:55', '20:40'], ['20:50', '21:35'], ['21:45', '22:30']
+      ['08:00', '08:45'], ['08:50', '09:35'], ['10:00', '10:45'], ['10:50', '11:35'],
+      ['13:30', '14:15'], ['14:20', '15:05'], ['15:30', '16:15'], ['16:20', '17:05'],
+      ['18:00', '18:45'], ['18:50', '19:35'], ['19:40', '20:25'], ['20:30', '22:00']
     ];
   }
 
@@ -142,6 +147,18 @@ var APP_VERSION = '0.1.9';
       });
     }
     return out;
+  }
+
+  /** 现有节次表是不是「上一版默认作息」（是的话升级时可以安全换成新默认） */
+  function isOldDefaultPeriods(periods) {
+    if (!periods || periods.length !== OLD_PERIOD_TIMES.length) { return false; }
+    var sorted = periods.slice().sort(function (a, b) { return a.index - b.index; });
+    for (var i = 0; i < sorted.length; i++) {
+      if (sorted[i].index !== i + 1) { return false; }
+      if (sorted[i].start !== OLD_PERIOD_TIMES[i][0]) { return false; }
+      if (sorted[i].end !== OLD_PERIOD_TIMES[i][1]) { return false; }
+    }
+    return true;
   }
 
   /* ── 固定提示词（与规划文档 §10 一致） ────────────────────── */
@@ -273,6 +290,49 @@ var APP_VERSION = '0.1.9';
     if (!s.periods || !s.periods.length) {
       var sid = (s.semesters && s.semesters[0] && s.semesters[0].id) || uid();
       s.periods = makePeriods(sid);
+    }
+    /**
+     * v0.2.1：默认作息换成新表。
+     * 只有「还是老默认作息」的数据才会被换掉；用户自己改过节次时间就保持原样，
+     * 免得把别人的作息覆盖掉。课程只记节次号，所以换时间不影响任何一节课的位置。
+     */
+    else if (isOldDefaultPeriods(s.periods)) {
+      s.periods = makePeriods((s.semesters && s.semesters[0] && s.semesters[0].id) || uid());
+    }
+    /**
+     * v0.2.2 数据清理：删掉指向「不存在的课程」的孤儿时段 / 变动。
+     * 这些记录界面上永远画不出来（找不到课程直接跳过），但会一直占着文件体积，
+     * 大多是早期版本重复导入同一份课表留下的。
+     */
+    if (Array.isArray(s.blocks) && Array.isArray(s.courses)) {
+      var aliveIds = {};
+      for (var ci = 0; ci < s.courses.length; ci++) { aliveIds[s.courses[ci].id] = true; }
+      var keptBlocks = [];
+      for (var bi = 0; bi < s.blocks.length; bi++) {
+        if (aliveIds[s.blocks[bi].courseId]) { keptBlocks.push(s.blocks[bi]); }
+      }
+      if (keptBlocks.length !== s.blocks.length) { s.blocks = keptBlocks; }
+      if (Array.isArray(s.overrides)) {
+        s.overrides = s.overrides.filter(function (ov) { return aliveIds[ov.courseId]; });
+      }
+    }
+    /**
+     * v0.2.3：节次表如果挂在「已经不存在的学期」上，认领给当前学期。
+     * 否则一旦要补课次，就会出现「只有新补的那几节」的怪现象。
+     */
+    if (Array.isArray(s.periods) && Array.isArray(s.semesters) && s.semesters.length) {
+      var semIds = {};
+      for (var si = 0; si < s.semesters.length; si++) { semIds[s.semesters[si].id] = true; }
+      var curSemId = (s.settings && s.settings.schedule && s.settings.schedule.currentSemesterId) || s.semesters[0].id;
+      var hasOwnPeriods = false;
+      for (var pi = 0; pi < s.periods.length; pi++) {
+        if (s.periods[pi].semesterId === curSemId) { hasOwnPeriods = true; break; }
+      }
+      if (!hasOwnPeriods) {
+        for (var pk = 0; pk < s.periods.length; pk++) {
+          if (!semIds[s.periods[pk].semesterId]) { s.periods[pk].semesterId = curSemId; }
+        }
+      }
     }
     if (!s.promptTemplates || !s.promptTemplates.length) {
       s.promptTemplates = [{ id: 'default', version: PROMPT_VERSION, title: '默认课表整理提示词', body: PROMPT_TEXT, isDefault: true }];
@@ -489,6 +549,376 @@ var APP_VERSION = '0.1.9';
     return out;
   }
 
+  /* ── 编辑入口（v0.2.0：今日页条目 / 周表单节课程都能直接改）───── */
+
+  function blockById(id) {
+    for (var i = 0; i < state.blocks.length; i++) { if (state.blocks[i].id === id) { return state.blocks[i]; } }
+    return null;
+  }
+
+  function overrideById(id) {
+    for (var i = 0; i < state.overrides.length; i++) { if (state.overrides[i].id === id) { return state.overrides[i]; } }
+    return null;
+  }
+
+  /** 按名字找老师；没有就现建一个（周表里直接改老师名时用） */
+  function ensureTeacherByName(name) {
+    var n = String(name == null ? '' : name).trim();
+    if (!n) { return null; }
+    for (var i = 0; i < state.teachers.length; i++) {
+      if (String(state.teachers[i].name || '').trim() === n) { return state.teachers[i]; }
+    }
+    var t = { id: uid(), name: n, note: '', contact: '', updatedAt: new Date().toISOString() };
+    state.teachers.push(t);
+    return t;
+  }
+
+  /** 按原始文本找地点；没有就按地点解析规则新建（和导入时的处理完全一致） */
+  function ensureLocationByRaw(raw) {
+    var v = String(raw == null ? '' : raw).trim();
+    if (!v) { return null; }
+    for (var i = 0; i < state.locations.length; i++) {
+      if (String(state.locations[i].raw || '').trim() === v) { return state.locations[i]; }
+    }
+    var parts = { building: '', campus: '', university: '', city: '', room: '' };
+    if (AR.MdParse && AR.MdParse.parsePlaceParts) {
+      parts = AR.MdParse.parsePlaceParts(v, state.settings.integration) || parts;
+    }
+    var loc = {
+      id: uid(), raw: v, building: parts.building, campus: parts.campus,
+      university: parts.university, city: parts.city, room: parts.room,
+      navQueryOverride: '', updatedAt: new Date().toISOString()
+    };
+    state.locations.push(loc);
+    return loc;
+  }
+
+  /** 把 [1,2,3,5,7,8] 压成 "1-3,5,7-8" */
+  function compressWeeks(list) {
+    var w = (list || []).slice().sort(function (a, b) { return a - b; });
+    if (!w.length) { return ''; }
+    var parts = [], s = w[0], prev = w[0];
+    for (var i = 1; i <= w.length; i++) {
+      var cur = w[i];
+      if (cur !== prev + 1) {
+        parts.push(s === prev ? ('' + s) : (s + '-' + prev));
+        s = cur;
+      }
+      prev = cur;
+    }
+    return parts.join(',');
+  }
+
+  /** block 的周次 → 可直接编辑的文本：全周 / 单周 / 双周 / 1-8,10 */
+  function weeksText(block, weekCount) {
+    if (!block) { return '全周'; }
+    if (block.weekMode === 'odd') { return '单周'; }
+    if (block.weekMode === 'even') { return '双周'; }
+    if (block.weekMode === 'custom' && block.weeks && block.weeks.length) {
+      return compressWeeks(block.weeks);
+    }
+    return '全周';
+  }
+
+  /**
+   * 解析周次文本（和提示词规范里的写法一致）：
+   *   全周 / 每周 / 空     → { weekMode:'all',   weeks:[] }
+   *   单周 / 双周          → { weekMode:'odd'|'even', weeks:[] }
+   *   1-8,10,12           → { weekMode:'custom', weeks:[1..8,10,12] }
+   */
+  function parseWeeksText(text, weekCount) {
+    var n = weekCount || 20;
+    var s = String(text == null ? '' : text).trim().replace(/[，、;；]/g, ',');
+    if (!s) { return { weekMode: 'all', weeks: [] }; }
+    if (/^(全周|每周|全部|all)$/i.test(s)) { return { weekMode: 'all', weeks: [] }; }
+    if (/^(单周|单数周|单)$/.test(s)) { return { weekMode: 'odd', weeks: [] }; }
+    if (/^(双周|双数周|双)$/.test(s)) { return { weekMode: 'even', weeks: [] }; }
+    var out = [];
+    var parts = s.split(',');
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].trim();
+      if (!p) { continue; }
+      var m = /^(\d{1,2})\s*[-~－—至]\s*(\d{1,2})$/.exec(p);
+      if (m) {
+        var a = Number(m[1]), b = Number(m[2]);
+        if (a > b) { var t = a; a = b; b = t; }
+        for (var w = a; w <= b; w++) { if (w >= 1 && w <= n && out.indexOf(w) < 0) { out.push(w); } }
+        continue;
+      }
+      var one = Number(p);
+      if (!isNaN(one) && one >= 1 && one <= n && out.indexOf(one) < 0) { out.push(one); }
+    }
+    out.sort(function (x, y) { return x - y; });
+    if (!out.length) { return { weekMode: 'all', weeks: [] }; }
+    return { weekMode: 'custom', weeks: out };
+  }
+
+  /** 只改一个时段（block）：字段直接合并进去，未传的字段保持原样 */
+  function updateBlock(blockId, patch) {
+    var b = blockById(blockId);
+    if (!b) { return { ok: false, message: '找不到这个时段' }; }
+    var nowIso = new Date().toISOString();
+    for (var k in patch) {
+      if (Object.prototype.hasOwnProperty.call(patch, k)) { b[k] = patch[k]; }
+    }
+    b.updatedAt = nowIso;
+    save(true);
+    return { ok: true, block: b };
+  }
+
+  /** 删掉一个时段（只删这一次排课，不删整门课） */
+  function removeBlock(blockId) {
+    var b = blockById(blockId);
+    if (!b) { return { ok: false }; }
+    markDeleted('blocks', blockId);
+    state.blocks = state.blocks.filter(function (x) { return x.id !== blockId; });
+    // 挂在这个时段上的单次变动也一起清掉，避免留下孤儿记录
+    var keptOv = [];
+    for (var i = 0; i < state.overrides.length; i++) {
+      if (state.overrides[i].blockId === blockId) { markDeleted('overrides', state.overrides[i].id); }
+      else { keptOv.push(state.overrides[i]); }
+    }
+    state.overrides = keptOv;
+    save(true);
+    return { ok: true };
+  }
+
+  /**
+   * 给「某一天的这一次课」写一条变动记录（仅这一次模式）。
+   * 已存在同一天同 block 的记录就直接合并，不会越改越多条。
+   */
+  function upsertOverride(blockId, courseId, dateKey, patch) {
+    var ov = null;
+    for (var i = 0; i < state.overrides.length; i++) {
+      var o = state.overrides[i];
+      if (o.blockId === blockId && o.date === dateKey) { ov = o; break; }
+    }
+    var nowIso = new Date().toISOString();
+    if (!ov) {
+      ov = {
+        id: uid(), courseId: courseId, blockId: blockId, date: dateKey, type: 'edit',
+        newWeekday: null, newDate: null, newPeriodStart: null, newPeriodEnd: null,
+        newStartTime: '', newEndTime: '', newLocationIds: null, newTeacherIds: null,
+        newNote: null, reason: '', updatedAt: nowIso
+      };
+      state.overrides.push(ov);
+    }
+    for (var k in patch) {
+      if (Object.prototype.hasOwnProperty.call(patch, k)) { ov[k] = patch[k]; }
+    }
+    ov.updatedAt = nowIso;
+    save(true);
+    return ov;
+  }
+
+  function removeOverride(id) {
+    var ov = overrideById(id);
+    if (!ov) { return { ok: false }; }
+    markDeleted('overrides', id);
+    state.overrides = state.overrides.filter(function (x) { return x.id !== id; });
+    save(true);
+    return { ok: true };
+  }
+
+  /* ── 节次表自动扩展（v0.2.2：第 13 节及以后的课也要能显示）───── */
+
+  function semesterExists(id) {
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === id) { return true; }
+    }
+    return false;
+  }
+
+  /**
+   * 确保某个学期「拥有自己的节次表」，返回这张表。
+   *
+   * 为什么需要它：历史数据里出现过「节次挂在已经不存在的学期上」的情况，
+   * 平时靠 periodsOf() 的兜底（没找到就用全部节次）勉强显示；
+   * 一旦要补课次，就会凭空多出几条「只属于当前学期」的节次，
+   * 兜底失效 → 课表只剩那几条，作息全乱。
+   */
+  function claimPeriodsFor(semId) {
+    var own = [];
+    for (var i = 0; i < state.periods.length; i++) {
+      if (state.periods[i].semesterId === semId) { own.push(state.periods[i]); }
+    }
+    if (own.length) { return own; }
+    // 先认领「没有归属（学期已不存在）」的节次
+    var loose = [];
+    for (i = 0; i < state.periods.length; i++) {
+      if (!semesterExists(state.periods[i].semesterId)) { loose.push(state.periods[i]); }
+    }
+    if (loose.length) {
+      for (i = 0; i < loose.length; i++) {
+        loose[i].semesterId = semId;
+        loose[i].updatedAt = new Date().toISOString();
+      }
+      return loose;
+    }
+    // 一条都没有（清空 / 新设备）：按默认作息铺一张
+    var fresh = makePeriods(semId);
+    state.periods = state.periods.concat(fresh);
+    return fresh;
+  }
+
+  /**
+   * 课表用到了第 needIndex 节、但节次表不够 → 自动补课次。
+   * 新补的时间接着最后一节往下排（间隔 10 分钟、每节 45 分钟，最晚到 23:59），
+   * 用户可以随时在 设置 → 课程与课表 → 节次时间 里改。
+   * 返回新增的节数（0 = 没动）。
+   */
+  function ensurePeriodsFor(semesterId, needIndex) {
+    var sid = semesterId || (currentSemester() || {}).id;
+    var periods = claimPeriodsFor(sid);      // 先保证这张表真的属于这个学期
+    var max = 0, last = null, i;
+    for (i = 0; i < periods.length; i++) {
+      if (periods[i].index > max) { max = periods[i].index; last = periods[i]; }
+    }
+    if (!needIndex || needIndex <= max) { return 0; }
+    var nowIso = new Date().toISOString();
+    if (!last) { return 0; }
+    var added = 0;
+    var cursor = last.end;
+    for (var idx = max + 1; idx <= needIndex; idx++) {
+      var sMin = hmToMinutes(cursor);
+      var start = sMin == null ? '' : minutesToHM(Math.min(sMin + 10, 23 * 60 + 50));
+      var end = sMin == null ? '' : minutesToHM(Math.min(sMin + 10 + 45, 23 * 60 + 59));
+      state.periods.push({
+        id: uid(), semesterId: sid, index: idx, label: '第' + idx + '节',
+        start: start, end: end, updatedAt: nowIso, autoAdded: true
+      });
+      if (end) { cursor = end; }
+      added++;
+    }
+    if (added) { save(true); }
+    return added;
+  }
+
+  /** 按现有课表实际用到的最大节次补齐节次表（导入 / 合并配置后调用） */
+  function syncPeriodsToUsage(semesterId) {
+    var need = 0, i;
+    for (i = 0; i < state.blocks.length; i++) {
+      var b = state.blocks[i];
+      var e = b.periodEnd || b.periodStart || 0;
+      if (e > need) { need = e; }
+    }
+    for (i = 0; i < state.overrides.length; i++) {
+      var ov = state.overrides[i];
+      var oe = ov.newPeriodEnd || ov.newPeriodStart || 0;
+      if (oe > need) { need = oe; }
+    }
+    return ensurePeriodsFor(semesterId, need);
+  }
+
+  /* ── 合并后的「当前学期」纠偏（v0.2.3）──────────────────────── */
+
+  /** 某个学期下有多少条时段（用来判断这个学期是不是空的） */
+  function blockCountOfSemester(semId) {
+    if (!semId) { return 0; }
+    var n = 0;
+    for (var i = 0; i < state.blocks.length; i++) {
+      var c = courseById(state.blocks[i].courseId);
+      if (c && c.semesterId === semId) { n++; }
+    }
+    return n;
+  }
+
+  /** 课最多的那个学期（导入别人配置后，用它兜底） */
+  function busiestSemesterId() {
+    var counts = {}, best = null, bestN = 0, k;
+    for (var i = 0; i < state.blocks.length; i++) {
+      var c = courseById(state.blocks[i].courseId);
+      if (!c || !c.semesterId) { continue; }
+      counts[c.semesterId] = (counts[c.semesterId] || 0) + 1;
+    }
+    for (k in counts) {
+      if (Object.prototype.hasOwnProperty.call(counts, k) && counts[k] > bestN) {
+        best = k; bestN = counts[k];
+      }
+    }
+    return best;
+  }
+
+  /**
+   * 导入/合并之后调用：如果「当前学期」一门课都没有、而数据挂在别的学期上，
+   * 就把当前学期切过去。
+   *
+   * 这是「清空数据 → 导入原来的配置文件 → 界面还是空的」的根因：
+   * 清空会新建一个空学期，导入的数据落在文件里那个学期上，
+   * 界面按「当前学期」过滤 → 什么都看不到。
+   *
+   * preferId 一般传配置文件里记录的「对方当前学期」，对得上就优先用它。
+   * 返回是否切换了学期。
+   */
+  function ensureCurrentSemesterHasData(preferId) {
+    var cur = currentSemester();
+    if (cur && blockCountOfSemester(cur.id) > 0) { return false; }
+    var target = null;
+    if (preferId) {
+      var mapped = semesterById(preferId) ? preferId : null;
+      if (mapped && blockCountOfSemester(mapped) > 0) { target = mapped; }
+    }
+    if (!target) { target = busiestSemesterId(); }
+    if (!target || (cur && cur.id === target)) { return false; }
+    state.settings.schedule.currentSemesterId = target;
+    claimPeriodsFor(target);      // 切学期时把节次表也带过去，别留下空作息
+    save(true);
+    return true;
+  }
+
+  function semesterById(id) {
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === id) { return state.semesters[i]; }
+    }
+    return null;
+  }
+
+  /** 全部学期（按开学日期从新到旧），周表上的「切换学期」用 */
+  function semesterList() {
+    var list = (state.semesters || []).slice();
+    list.sort(function (a, b) { return String(b.startDate || '').localeCompare(String(a.startDate || '')); });
+    return list;
+  }
+
+  /**
+   * 切换到某个学期（周表右上角的学期按钮用）。
+   * 顺便把节次表认领到这个学期，避免切过去发现作息是空的。
+   */
+  function setCurrentSemester(id) {
+    if (!semesterById(id)) { return { ok: false, message: '找不到这个学期' }; }
+    state.settings.schedule.currentSemesterId = id;
+    claimPeriodsFor(id);
+    save(true);
+    return { ok: true, semester: semesterById(id) };
+  }
+
+  /** 这个学期有多少门课（切换学期时给用户看的） */
+  function courseCountOfSemester(semId) {
+    var n = 0;
+    for (var i = 0; i < state.courses.length; i++) {
+      if (state.courses[i].semesterId === semId) { n++; }
+    }
+    return n;
+  }
+
+  /** 新建一个学期并切过去（周表右上角「切换学期 → 新建学期」） */
+  function addSemester(info) {
+    var name = String((info && info.name) || '').trim();
+    if (!name) { return { ok: false, message: '学期名称不能为空' }; }
+    var start = (info && info.startDate) || dateKey(mondayOf(new Date()));
+    var weeks = Math.max(1, Math.min(30, Number(info && info.weekCount) || 20));
+    var id = uid();
+    var sem = {
+      id: id, name: name, startDate: start, weekCount: weeks,
+      isCurrent: true, holidays: [], updatedAt: new Date().toISOString()
+    };
+    state.semesters.push(sem);
+    state.periods = state.periods.concat(makePeriods(id));   // 新学期的作息用默认表
+    state.settings.schedule.currentSemesterId = id;
+    save(true);
+    return { ok: true, semester: sem };
+  }
+
   /* ── 课表计算 ─────────────────────────────────────────────── */
 
   /** 第几周（1 起）；学期未开始返回 0，超出总周数返回 >weekCount */
@@ -546,10 +976,17 @@ var APP_VERSION = '0.1.9';
       if (periods[i].index === start) { p1 = periods[i]; }
       if (periods[i].index === end) { p2 = periods[i]; }
     }
-    if (!p1) { return null; }
+    // v0.2.0：单个时段可以自己写死一个时间（block.startTime / endTime），
+    // 这样「这门课这学期就是 07:50 开始」不用去改整张节次表。
+    var st = block.startTime || (p1 ? p1.start : '');
+    var en = block.endTime || (p2 ? p2.end : (p1 ? p1.end : ''));
+    if (!st && !p1) { return null; }
+    var label = start
+      ? (start === end ? ('第' + start + '节') : (start + '-' + end + '节'))
+      : '单次课';
     return {
-      start: p1.start, end: p2 ? p2.end : p1.end,
-      label: start === end ? ('第' + start + '节') : (start + '-' + end + '节')
+      start: st, end: en,
+      label: block.startTime ? (label + ' · 自定义时间') : label
     };
   }
 
@@ -630,6 +1067,7 @@ var APP_VERSION = '0.1.9';
         id: ov.blockId || ('ov_' + ov.id), courseId: ov.courseId,
         weekday: weekdayOf(od), periodStart: ov.newPeriodStart || 1,
         periodEnd: ov.newPeriodEnd || ov.newPeriodStart || 1,
+        startTime: ov.newStartTime || '', endTime: ov.newEndTime || '',
         weekMode: 'custom', weeks: [], locationIds: ov.newLocationIds || [],
         note: ov.newNote || ''
       };
@@ -654,10 +1092,17 @@ var APP_VERSION = '0.1.9';
 
     if (ov) {
       if (ov.newPeriodStart) {
-        pr = periodRange({ periodStart: ov.newPeriodStart, periodEnd: ov.newPeriodEnd || ov.newPeriodStart }, periodList) || pr;
+        pr = periodRange({
+          periodStart: ov.newPeriodStart, periodEnd: ov.newPeriodEnd || ov.newPeriodStart,
+          startTime: ov.newStartTime, endTime: ov.newEndTime
+        }, periodList) || pr;
       }
       if (ov.newLocationIds && ov.newLocationIds.length) { locationIds = ov.newLocationIds; }
-      if (ov.newNote) { note = ov.newNote; }
+      else if (ov.newLocationCleared) { locationIds = []; }
+      // v0.2.0：单次课也能单独换老师 / 清空备注（编辑窗口写入这些字段）
+      if (ov.newTeacherIds) { teacherIds = ov.newTeacherIds; }
+      if (typeof ov.newNote === 'string' && ov.newNote !== '') { note = ov.newNote; }
+      else if (ov.newNoteCleared) { note = ''; }
     }
     if ((!locationIds || !locationIds.length) && course.defaultLocationId) {
       locationIds = [course.defaultLocationId];
@@ -1018,71 +1463,214 @@ var APP_VERSION = '0.1.9';
    * 计算合并预览：新增 / 更新 / 冲突 / 删除。
    * 采用「字段级新者胜 + 冲突清单」策略。
    */
-  function previewMerge(incoming) {
-    var report = { added: 0, updated: 0, conflicts: 0, removed: 0, unknown: [], details: [] };
-    if (!incoming || incoming.kind !== 'abbeyroad.sync') {
-      throw new Error('文件不是 Abbey Road 同步文件（缺少 kind=abbeyroad.sync）');
+  var MERGE_TABLES = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events', 'reminders'];
+  var REF_MAP_NAME = {
+    semesters: 'semester', teachers: 'teacher', locations: 'location',
+    courses: 'course', blocks: 'block', overrides: 'override'
+  };
+
+  function labelOfRecord(rec) {
+    if (!rec) { return ''; }
+    if (rec.name) { return rec.name; }
+    if (rec.raw) { return rec.raw; }
+    if (rec.title) { return rec.title; }
+    if (rec.date) { return rec.date + (rec.start ? ' ' + rec.start : ''); }
+    return rec.id || '';
+  }
+
+  /**
+   * 跨设备合并的关键（v0.2.1）：两台设备各自生成过 id，同一门课 id 对不上，
+   * 只按 id 合并就会「导出再导入 = 两份一模一样的课」。
+   * 所以先按内容找同一条记录（学期看开学日期、老师看姓名、地点看原文、
+   * 课程看课程名、时段看 课程+星期+节次+周次），找不到才算新增。
+   */
+  function naturalKeyOf(table, rec, maps) {
+    if (!rec) { return null; }
+    var cid, sem, bid;
+    if (table === 'semesters') { return rec.startDate ? ('date:' + rec.startDate) : null; }
+    if (table === 'teachers') { return rec.name ? ('name:' + String(rec.name).trim()) : null; }
+    if (table === 'locations') { return rec.raw ? ('raw:' + String(rec.raw).trim()) : null; }
+    if (table === 'courses') {
+      sem = rec.semesterId && maps.semester ? (maps.semester[rec.semesterId] || rec.semesterId) : rec.semesterId;
+      return rec.name ? ('name:' + String(rec.name).trim() + '|' + (sem || '')) : null;
+    }
+    if (table === 'blocks') {
+      cid = rec.courseId && maps.course ? (maps.course[rec.courseId] || rec.courseId) : rec.courseId;
+      return ['b', cid, rec.weekday, rec.periodStart, rec.periodEnd,
+        rec.weekMode || 'all', (rec.weeks || []).join('.')].join('|');
+    }
+    if (table === 'overrides') {
+      bid = rec.blockId && maps.block ? (maps.block[rec.blockId] || rec.blockId) : rec.blockId;
+      return ['o', bid || rec.courseId, rec.date, rec.type].join('|');
+    }
+    if (table === 'events') { return ['e', rec.date, rec.type || '', rec.title || ''].join('|'); }
+    return null;
+  }
+
+  /** 把外来记录里的关联 id 换成本地 id（跨设备这些 id 是不一样的） */
+  function remapRecordRefs(table, rec, maps, keepId) {
+    var out = {}, k;
+    for (k in rec) { if (Object.prototype.hasOwnProperty.call(rec, k)) { out[k] = rec[k]; } }
+    if (keepId) { out.id = keepId; }
+    if (out.semesterId && maps.semester[out.semesterId]) { out.semesterId = maps.semester[out.semesterId]; }
+    if (out.courseId && maps.course[out.courseId]) { out.courseId = maps.course[out.courseId]; }
+    if (out.blockId && maps.block && maps.block[out.blockId]) { out.blockId = maps.block[out.blockId]; }
+    if (Array.isArray(out.teacherIds)) {
+      out.teacherIds = out.teacherIds.map(function (id) { return maps.teacher[id] || id; });
+    }
+    if (Array.isArray(out.locationIds)) {
+      out.locationIds = out.locationIds.map(function (id) { return maps.location[id] || id; });
+    }
+    if (Array.isArray(out.newLocationIds)) {
+      out.newLocationIds = out.newLocationIds.map(function (id) { return maps.location[id] || id; });
+    }
+    if (Array.isArray(out.newTeacherIds)) {
+      out.newTeacherIds = out.newTeacherIds.map(function (id) { return maps.teacher[id] || id; });
+    }
+    return out;
+  }
+
+  /** 先算「要新增什么、要更新什么」，预览和真正合并共用同一份逻辑 */
+  function planMerge(incoming) {
+    var plan = { additions: [], updates: [], unknown: [], matched: 0, tombstones: [] };
+    /**
+     * 墓碑（删除记录）只统计「真的会删掉本机某条数据」的那些。
+     * 导入自己刚导出的文件时，墓碑对应的记录早就删掉了，
+     * 全算进来的话预览会写「删除 2」，看着像要误删东西。
+     */
+    var tombs = (incoming && incoming.tombstones) || [];
+    for (var ti = 0; ti < tombs.length; ti++) {
+      var tb = tombs[ti];
+      var live = tb && tb.entity && Array.isArray(state[tb.entity]) ? state[tb.entity] : [];
+      for (var li = 0; li < live.length; li++) {
+        if (live[li].id === tb.id) { plan.tombstones.push(tb); break; }
+      }
     }
     if (typeof incoming.schemaVersion === 'number' && incoming.schemaVersion > SCHEMA_VERSION) {
-      report.unknown.push('文件版本 ' + incoming.schemaVersion + ' 高于当前 App 支持的 ' + SCHEMA_VERSION + '，可能有字段被忽略');
+      plan.unknown.push('文件版本 ' + incoming.schemaVersion + ' 高于当前 App 支持的 ' + SCHEMA_VERSION + '，可能有字段被忽略');
     }
-    var kinds = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events', 'reminders'];
-    for (var k = 0; k < kinds.length; k++) {
-      var name = kinds[k];
-      var mine = state[name] || [];
-      var theirs = incoming[name] || [];
-      var index = {};
-      var i;
-      for (i = 0; i < mine.length; i++) { index[mine[i].id] = mine[i]; }
+    var maps = plan.maps = { semester: {}, teacher: {}, location: {}, course: {}, block: {}, override: {} };
+    for (var t = 0; t < MERGE_TABLES.length; t++) {
+      var table = MERGE_TABLES[t];
+      var mine = state[table] || [];
+      var theirs = incoming[table] || [];
+      var byId = {}, byKey = {}, i;
+      for (i = 0; i < mine.length; i++) {
+        byId[mine[i].id] = mine[i];
+        var mk = naturalKeyOf(table, mine[i], maps);
+        if (mk && !byKey[mk]) { byKey[mk] = mine[i]; }
+      }
+      var mapName = REF_MAP_NAME[table];
       for (i = 0; i < theirs.length; i++) {
         var rec = theirs[i];
         if (!rec || !rec.id) { continue; }
-        if (!index[rec.id]) {
-          report.added++;
-        } else {
-          var local = index[rec.id];
-          var lt = Date.parse(local.updatedAt || 0) || 0;
+        var key = naturalKeyOf(table, rec, maps);
+        var local = byId[rec.id];
+        var target = local || ((!local && key && byKey[key]) ? byKey[key] : null);
+        if (target) {
+          if (mapName) { maps[mapName][rec.id] = target.id; }
+          if (!local) { plan.matched++; }
+          var lt = Date.parse(target.updatedAt || 0) || 0;
           var rt = Date.parse(rec.updatedAt || 0) || 0;
-          if (rt > lt) {
-            report.updated++;
-            report.details.push({ table: name, id: rec.id, action: 'update',
-              label: (rec.name || rec.raw || rec.title || rec.id) });
-          } else if (rt === lt && JSON.stringify(local) !== JSON.stringify(rec)) {
-            report.conflicts++;
-            report.details.push({ table: name, id: rec.id, action: 'conflict',
-              label: (rec.name || rec.raw || rec.title || rec.id) });
+          if (rt > lt && JSON.stringify(rec) !== JSON.stringify(target)) {
+            plan.updates.push({ table: table, id: target.id, rec: rec });
           }
+        } else {
+          if (mapName) { maps[mapName][rec.id] = rec.id; }
+          if (key) { byKey[key] = rec; }
+          plan.additions.push({ table: table, rec: rec });
         }
       }
     }
-    var tombs = incoming.tombstones || [];
-    for (var t = 0; t < tombs.length; t++) { report.removed++; }
+    collectNewTemplates(incoming, plan);
+    return plan;
+  }
+
+  /** 提示词模板：按 id 去重，本地没见过的才加进来 */
+  function collectNewTemplates(incoming, plan) {
+    var theirs = incoming.promptTemplates;
+    if (!Array.isArray(theirs) || !theirs.length) { return; }
+    for (var i = 0; i < theirs.length; i++) {
+      var rec = theirs[i];
+      if (!rec || !rec.id) { continue; }
+      var found = false;
+      for (var j = 0; j < (state.promptTemplates || []).length; j++) {
+        if (state.promptTemplates[j].id === rec.id) { found = true; break; }
+      }
+      if (!found) { plan.additions.push({ table: 'promptTemplates', rec: rec }); }
+    }
+  }
+
+  function previewMerge(incoming) {
+    if (!incoming || incoming.kind !== 'abbeyroad.sync') {
+      throw new Error('文件不是 Abbey Road 同步文件（缺少 kind=abbeyroad.sync）');
+    }
+    var plan = planMerge(incoming);
+    var report = {
+      added: 0, updated: 0, conflicts: 0, removed: 0,
+      unknown: plan.unknown, details: [], matched: plan.matched
+    };
+    var i;
+    for (i = 0; i < plan.additions.length; i++) {
+      if (plan.additions[i].table === 'promptTemplates') { continue; }
+      report.added++;
+      if (report.details.length < 40) {
+        report.details.push({
+          table: plan.additions[i].table, id: plan.additions[i].rec.id,
+          action: 'add', label: labelOfRecord(plan.additions[i].rec)
+        });
+      }
+    }
+    for (i = 0; i < plan.updates.length; i++) {
+      report.updated++;
+      if (report.details.length < 40) {
+        report.details.push({
+          table: plan.updates[i].table, id: plan.updates[i].id,
+          action: 'update', label: labelOfRecord(plan.updates[i].rec)
+        });
+      }
+    }
+    for (i = 0; i < plan.tombstones.length; i++) { report.removed++; }
     return report;
   }
 
   /** 应用合并（在预览后调用） */
   function applyMerge(incoming, options) {
     options = options || {};
-    var kinds = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events', 'reminders', 'promptTemplates'];
-    for (var k = 0; k < kinds.length; k++) {
-      var name = kinds[k];
-      var theirs = incoming[name];
-      if (!Array.isArray(theirs) || !theirs.length) { continue; }
-      if (!Array.isArray(state[name])) { state[name] = []; }
-      var index = {};
-      var i;
-      for (i = 0; i < state[name].length; i++) { index[state[name][i].id] = i; }
-      for (i = 0; i < theirs.length; i++) {
-        var rec = theirs[i];
-        if (!rec || !rec.id) { continue; }
-        var at = index[rec.id];
-        if (at === undefined) {
-          state[name].push(rec);
-        } else {
-          var local = state[name][at];
-          var lt = Date.parse(local.updatedAt || 0) || 0;
-          var rt = Date.parse(rec.updatedAt || 0) || 0;
-          if (rt >= lt || options.preferIncoming) { state[name][at] = rec; }
+    var plan = planMerge(incoming);
+    var i, j;
+    for (i = 0; i < plan.additions.length; i++) {
+      var add = plan.additions[i];
+      if (!Array.isArray(state[add.table])) { state[add.table] = []; }
+      state[add.table].push(remapRecordRefs(add.table, add.rec, plan.maps, null));
+    }
+    for (i = 0; i < plan.updates.length; i++) {
+      var up = plan.updates[i];
+      var list = state[up.table] || [];
+      for (j = 0; j < list.length; j++) {
+        if (list[j].id === up.id) {
+          list[j] = remapRecordRefs(up.table, up.rec, plan.maps, up.id);
+          break;
+        }
+      }
+    }
+    if (options.preferIncoming) {
+      // 「以对方为准」：同一条记录（含按内容匹配上的）全部用对方的字段覆盖
+      for (i = 0; i < MERGE_TABLES.length; i++) {
+        var table = MERGE_TABLES[i];
+        var theirs = incoming[table];
+        if (!Array.isArray(theirs)) { continue; }
+        var mapName = REF_MAP_NAME[table];
+        for (j = 0; j < theirs.length; j++) {
+          var rec = theirs[j];
+          if (!rec || !rec.id) { continue; }
+          var mappedId = (mapName && plan.maps[mapName] && plan.maps[mapName][rec.id]) || rec.id;
+          for (var m = 0; m < (state[table] || []).length; m++) {
+            if (state[table][m].id === mappedId) {
+              state[table][m] = remapRecordRefs(table, rec, plan.maps, mappedId);
+              break;
+            }
+          }
         }
       }
     }
@@ -1103,12 +1691,20 @@ var APP_VERSION = '0.1.9';
       }
     }
     if (Array.isArray(incoming.tombstones)) {
-      for (var t = 0; t < incoming.tombstones.length; t++) {
-        var tomb = incoming.tombstones[t];
-        applyTombstone(tomb);
-      }
+      for (var t = 0; t < plan.tombstones.length; t++) { applyTombstone(plan.tombstones[t]); }
       state.tombstones = (state.tombstones || []).concat(incoming.tombstones);
     }
+    // 对方的课表用到第 13 节甚至更晚：直接把节次表补齐，别让这些课「没有时间」
+    syncPeriodsToUsage();
+    // 合并完把「当前学期」纠偏：清空后再导入别人的配置时，别让界面继续空着
+    var prefer = null;
+    if (incoming.settings && incoming.settings.schedule) {
+      prefer = incoming.settings.schedule.currentSemesterId || null;
+      if (prefer && plan.maps && plan.maps.semester && plan.maps.semester[prefer]) {
+        prefer = plan.maps.semester[prefer];
+      }
+    }
+    ensureCurrentSemesterHasData(prefer);
     save(true);
     return state;
   }
@@ -1149,6 +1745,18 @@ var APP_VERSION = '0.1.9';
     currentSemester: currentSemester, periodsOf: periodsOf,
     courseById: courseById, teacherById: teacherById, locationById: locationById,
     blocksOfCourse: blocksOfCourse, overridesOfBlock: overridesOfBlock,
+    blockById: blockById, overrideById: overrideById,
+    ensureTeacherByName: ensureTeacherByName, ensureLocationByRaw: ensureLocationByRaw,
+    parseWeeksText: parseWeeksText, weeksText: weeksText, compressWeeks: compressWeeks,
+    updateBlock: updateBlock, removeBlock: removeBlock,
+    upsertOverride: upsertOverride, removeOverride: removeOverride,
+    ensurePeriodsFor: ensurePeriodsFor, syncPeriodsToUsage: syncPeriodsToUsage,
+    ensureCurrentSemesterHasData: ensureCurrentSemesterHasData,
+    blockCountOfSemester: blockCountOfSemester, semesterById: semesterById,
+    claimPeriodsFor: claimPeriodsFor,
+    semesterList: semesterList, setCurrentSemester: setCurrentSemester,
+    courseCountOfSemester: courseCountOfSemester,
+    addSemester: addSemester,
     eventsOf: eventsOf, eventsBetween: eventsBetween, eventsInWeek: eventsInWeek,
     saveEvent: saveEvent, removeEvent: removeEvent,
     renameCourse: renameCourse, unifyColorsByName: unifyColorsByName,

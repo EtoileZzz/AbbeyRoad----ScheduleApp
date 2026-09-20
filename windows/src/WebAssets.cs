@@ -16,9 +16,20 @@ namespace AbbeyRoad
             AppPaths.EnsureDirs();
             string marker = Path.Combine(AppPaths.WebDir, "index.html");
             string stampFile = Path.Combine(AppPaths.WebDir, ".extracted");
+            string stamp = BuildStamp();
             if (File.Exists(marker) && File.Exists(stampFile))
             {
-                return AppPaths.WebDir;
+                bool same = false;
+                try { same = File.ReadAllText(stampFile).Trim() == stamp; } catch (Exception) { }
+                if (same) { return AppPaths.WebDir; }
+                // 版本号相同但程序被重新打包过（例如本地改了界面重编 exe）：
+                // 旧资源必须先清掉，否则界面会一直停在上一版。
+                try
+                {
+                    Directory.Delete(AppPaths.WebDir, true);
+                    Directory.CreateDirectory(AppPaths.WebDir);
+                }
+                catch (Exception) { }
             }
 
             Assembly asm = Assembly.GetExecutingAssembly();
@@ -45,10 +56,24 @@ namespace AbbeyRoad
             string extractTo = Path.Combine(tmp, "out");
             ZipFile.ExtractToDirectory(zipPath, extractTo);
             CopyTree(extractTo, AppPaths.WebDir);
-            File.WriteAllText(stampFile, DateTime.Now.ToString("s"));
+            File.WriteAllText(stampFile, stamp + Environment.NewLine + DateTime.Now.ToString("s"));
 
             try { Directory.Delete(tmp, true); } catch (Exception) { }
             return AppPaths.WebDir;
+        }
+
+        /// <summary>用 EXE 的写入时间当资源指纹：同一个版本号重新打包也能刷新界面。</summary>
+        private static string BuildStamp()
+        {
+            try
+            {
+                string exe = Assembly.GetExecutingAssembly().Location;
+                return File.GetLastWriteTimeUtc(exe).Ticks.ToString();
+            }
+            catch (Exception)
+            {
+                return AppPaths.Version;
+            }
         }
 
         private static void CopyTree(string from, string to)

@@ -318,7 +318,7 @@ const monday = U.parseDateKey(sem.startDate);
 eq('第 1 周周一有 1 节课', AR.Schedule.dayItems(monday).length, 1);
 const first = AR.Schedule.dayItems(monday)[0];
 eq('连堂课显示为 1-4 节', first.periodLabel, '1-4节');
-eq('时间 08:00-11:40', first.start + '-' + first.end, '08:00-11:40');
+eq('时间 08:00-11:35（v0.2.1 新作息表）', first.start + '-' + first.end, '08:00-11:35');
 eq('地点已写入', first.location && first.location.raw, 'XX大学 信息楼 305教室');
 eq('老师已写入', first.teachers[0].name, '张三');
 eq('第 2 周（双周）周二有 2 节', AR.Schedule.dayItems(U.addDays(monday, 8)).length, 2);
@@ -417,7 +417,273 @@ eq('改名：同名课程只剩 1 条', AR.Store.get().courses.filter((c) => c.n
 const mergedId = AR.Store.get().courses.filter((c) => c.name === '高数A班')[0].id;
 eq('改名：两个时段都挂到这门课上', AR.Store.get().blocks.filter((b) => b.courseId === mergedId).length, 2);
 
+/* ── 12. 时段编辑（v0.2.0：今日页条目 / 周表单节课程都能改）── */
+
+eq('周次文本：全周', AR.Store.parseWeeksText('全周', 20).weekMode, 'all');
+eq('周次文本：单周', AR.Store.parseWeeksText('单周', 20).weekMode, 'odd');
+eq('周次文本：双周', AR.Store.parseWeeksText('双周', 20).weekMode, 'even');
+const pw = AR.Store.parseWeeksText('1-3,5', 20);
+eq('周次文本：自定义模式', pw.weekMode, 'custom');
+eq('周次文本：解析出 4 周', pw.weeks.join(','), '1,2,3,5');
+eq('周次压缩', AR.Store.compressWeeks([1, 2, 3, 5, 7, 8]), '1-3,5,7-8');
+
+const editTxt = [
+  'AbbeyRoad 课表 v1',
+  '开学日期：2026-09-07',
+  '编辑测试课｜周一｜1-2｜1-16｜X楼305｜王五｜｜绿'
+].join('\n');
+const edEnt = AR.MdParse.toEntities(AR.MdParse.parse(editTxt, semOpts), AR.Store.get(), { mergeMode: 'never' });
+AR.MdParse.applyEntities(edEnt, AR.Store.get());
+const editMonday = U.mondayOf(U.parseDateKey(AR.Store.currentSemester().startDate));
+const edCourse = AR.Store.get().courses.filter((c) => c.name === '编辑测试课')[0];
+let edBlock = AR.Store.get().blocks.filter((b) => b.courseId === edCourse.id)[0];
+eq('编辑：初始星期是周一', edBlock.weekday, 1);
+
+// 周表里改成：周三、5-6 节、单周
+const upWk = AR.Store.updateBlock(edBlock.id, { weekday: 3, periodStart: 5, periodEnd: 6, weekMode: 'odd' });
+check('编辑：updateBlock 返回成功', upWk.ok);
+eq('编辑：周一不再有这门课', AR.Schedule.dayItems(editMonday).filter((i) => i.course.name === '编辑测试课').length, 0);
+const edWed = AR.Schedule.dayItems(U.addDays(editMonday, 2)).filter((i) => i.course.name === '编辑测试课');
+eq('编辑：周三出现这门课', edWed.length, 1);
+eq('编辑：节次标签跟着变', edWed[0].periodLabel, '5-6节');
+eq('编辑：周次标签变成单周', AR.Schedule.weeksLabel(AR.Store.blockById(edBlock.id), 20), '1-20 单周');
+
+// 单独给这门课写死时间（不动整张节次表）
+AR.Store.updateBlock(edBlock.id, { startTime: '07:50', endTime: '09:20' });
+edBlock = AR.Store.blockById(edBlock.id);
+const edWed2 = AR.Schedule.dayItems(U.addDays(editMonday, 2)).filter((i) => i.course.name === '编辑测试课')[0];
+eq('编辑：自定义开始时间', edWed2.start, '07:50');
+eq('编辑：自定义结束时间', edWed2.end, '09:20');
+eq('编辑：周次文本读回来是单周', AR.Store.weeksText(edBlock, 20), '单周');
+
+// 仅这一次：第 3 周的周三换教室 + 换时间，其它周不受影响
+const onceDate = U.addDays(editMonday, 16);
+const onceLoc = AR.Store.ensureLocationByRaw('Y楼 101');
+AR.Store.upsertOverride(edBlock.id, edCourse.id, U.dateKey(onceDate), {
+  type: 'room', newPeriodStart: 5, newPeriodEnd: 6,
+  newLocationIds: [onceLoc.id], newStartTime: '10:00', newEndTime: '11:30'
+});
+const onceItems = AR.Schedule.dayItems(onceDate).filter((i) => i.course.name === '编辑测试课');
+eq('单次改动：只出现在这一天', onceItems.length, 1);
+eq('单次改动：那天换了地点', onceItems[0].location.raw, 'Y楼 101');
+eq('单次改动：那天换了时间', onceItems[0].start + '-' + onceItems[0].end, '10:00-11:30');
+const otherWed = AR.Schedule.dayItems(U.addDays(editMonday, 30)).filter((i) => i.course.name === '编辑测试课')[0];
+eq('单次改动：别的周还是原时间', otherWed.start, '07:50');
+eq('单次改动：不会重复堆记录', AR.Store.overridesOfBlock(edBlock.id).length, 1);
+
+// 同一门课再次改「仅这一次」，合并到同一条记录
+AR.Store.upsertOverride(edBlock.id, edCourse.id, U.dateKey(onceDate), { newNote: '带作业本' });
+eq('单次改动：重复编辑仍只有 1 条记录', AR.Store.overridesOfBlock(edBlock.id).length, 1);
+const onceItems2 = AR.Schedule.dayItems(onceDate).filter((i) => i.course.name === '编辑测试课')[0];
+eq('单次改动：备注合并进来了', onceItems2.note, '带作业本');
+
+// 老师 / 地点按名字复用，不会越改越多条
+const t1 = AR.Store.ensureTeacherByName('王五');
+const t2 = AR.Store.ensureTeacherByName('王五');
+eq('老师：同名复用同一条', t1.id, t2.id);
+const l1 = AR.Store.ensureLocationByRaw('X楼305');
+const l2 = AR.Store.ensureLocationByRaw('X楼305');
+eq('地点：同名复用同一条', l1.id, l2.id);
+
+// 删除单个时段：排课与它的单次变动一起清掉
+const beforeBlocks = AR.Store.get().blocks.length;
+AR.Store.removeBlock(edBlock.id);
+eq('删除时段：排课少一条', AR.Store.get().blocks.length, beforeBlocks - 1);
+eq('删除时段：连带单次变动一起清掉', AR.Store.overridesOfBlock(edBlock.id).length, 0);
+
 /* ── 输出 ────────────────────────────────────────────────── */
+
+/* ── 13. 默认作息表（v0.2.1）与跨设备合并 ────────────────── */
+
+const freshPeriods = AR.Store.makePeriods('SEM_X');
+const newTable = [['08:00', '08:45'], ['08:50', '09:35'], ['10:00', '10:45'], ['10:50', '11:35'], ['13:30', '14:15'], ['14:20', '15:05'], ['15:30', '16:15'], ['16:20', '17:05'], ['18:00', '18:45'], ['18:50', '19:35'], ['19:40', '20:25'], ['20:30', '22:00']];
+eq('新作息：12 节', freshPeriods.length, 12);
+let tableOk = true;
+newTable.forEach((t, i) => {
+  if (freshPeriods[i].start !== t[0] || freshPeriods[i].end !== t[1]) { tableOk = false; }
+});
+check('新作息：12 节时间全部与需求一致', tableOk);
+eq('新作息：第 2 节 08:50', freshPeriods[1].start, '08:50');
+eq('新作息：第 12 节 20:30-22:00', freshPeriods[11].start + '-' + freshPeriods[11].end, '20:30-22:00');
+
+// 迁移：老默认作息自动换成新表；用户自己改过的作息保持不动
+const oldDefault = [['08:00', '08:45'], ['08:55', '09:40'], ['10:00', '10:45'], ['10:55', '11:40'], ['14:00', '14:45'], ['14:55', '15:40'], ['16:00', '16:45'], ['16:55', '17:40'], ['19:00', '19:45'], ['19:55', '20:40'], ['20:50', '21:35'], ['21:45', '22:30']];
+const migSem = [{ id: 'S1', name: '学期', startDate: '2026-09-07', weekCount: 20 }];
+const migrateOld = { kind: 'abbeyroad.sync', schemaVersion: 1, settings: {}, semesters: migSem, periods: [] };
+oldDefault.forEach((t, i) => { migrateOld.periods.push({ id: 'p' + i, semesterId: 'S1', index: i + 1, start: t[0], end: t[1] }); });
+AR.Store.migrate(migrateOld);
+eq('迁移：老默认作息换成新表第 2 节', migrateOld.periods[1].start, '08:50');
+eq('迁移：仍然是 12 节', migrateOld.periods.length, 12);
+
+const customPeriods = { kind: 'abbeyroad.sync', schemaVersion: 1, settings: {}, semesters: migSem, periods: [] };
+oldDefault.forEach((t, i) => { customPeriods.periods.push({ id: 'p' + i, semesterId: 'S1', index: i + 1, start: t[0], end: t[1] }); });
+customPeriods.periods[0].start = '07:30';   // 用户自己改过第一节
+AR.Store.migrate(customPeriods);
+eq('迁移：改过的作息不被覆盖', customPeriods.periods[0].start, '07:30');
+eq('迁移：没改的节次也保持原样', customPeriods.periods[1].start, '08:55');
+
+// 跨设备合并：同一个课表在另一台设备导出，id 全都不一样 → 不该变成两份
+const semA = AR.Store.currentSemester();
+const deviceB = AR.Store.exportPayload();
+const idMap = {};
+const reid = (prefix, id) => {
+  if (!idMap[id]) { idMap[id] = prefix + Math.random().toString(36).slice(2, 10).toUpperCase(); }
+  return idMap[id];
+};
+deviceB.semesters = deviceB.semesters.map((s) => Object.assign({}, s, { id: reid('S', s.id) }));
+deviceB.teachers = deviceB.teachers.map((t) => Object.assign({}, t, { id: reid('T', t.id), updatedAt: '2026-01-01T00:00:00.000Z' }));
+deviceB.locations = deviceB.locations.map((l) => Object.assign({}, l, { id: reid('L', l.id), updatedAt: '2026-01-01T00:00:00.000Z' }));
+deviceB.courses = deviceB.courses.map((c) => Object.assign({}, c, { id: reid('C', c.id), semesterId: idMap[c.semesterId] || c.semesterId, teacherIds: (c.teacherIds || []).map((x) => reid('T', x)), defaultLocationId: c.defaultLocationId ? reid('L', c.defaultLocationId) : null, updatedAt: '2026-01-01T00:00:00.000Z' }));
+deviceB.blocks = deviceB.blocks.map((b) => Object.assign({}, b, { id: reid('B', b.id), courseId: reid('C', b.courseId), teacherIds: (b.teacherIds || []).map((x) => reid('T', x)), locationIds: (b.locationIds || []).map((x) => reid('L', x)), updatedAt: '2026-01-01T00:00:00.000Z' }));
+deviceB.overrides = [];
+deviceB.tombstones = [];
+
+const crossCourses = AR.Store.get().courses.length;
+const crossBlocks = AR.Store.get().blocks.length;
+const crossReport = AR.Store.previewMerge(deviceB);
+eq('跨设备：一门课都不新增（按课程名认出来了）', crossReport.added, 0);
+check('跨设备：识别出被合并的记录', crossReport.matched > 0, crossReport.matched);
+AR.Store.applyMerge(deviceB, {});
+eq('跨设备：导入后课程数不变（不会变两份）', AR.Store.get().courses.length, crossCourses);
+eq('跨设备：导入后时段数不变', AR.Store.get().blocks.length, crossBlocks);
+check('跨设备：每个时段的课程都存在',
+  AR.Store.get().blocks.every((b) => !!AR.Store.courseById(b.courseId)));
+check('跨设备：每个时段的老师都存在',
+  AR.Store.get().blocks.every((b) => (b.teacherIds || []).every((t) => !!AR.Store.teacherById(t))));
+check('跨设备：每个时段的地点都存在',
+  AR.Store.get().blocks.every((b) => (b.locationIds || []).every((l) => !!AR.Store.locationById(l))));
+
+// 另一台设备真正新加的课，还是要能进来
+const deviceC = AR.Store.exportPayload();
+deviceC.courses = [{ id: 'NEWCOURSE99', semesterId: semA.id, name: '跨设备新课', teacherIds: [], defaultLocationId: null, colorKey: 'green', tags: [], note: '', updatedAt: '2026-12-01T00:00:00.000Z' }];
+deviceC.teachers = [];
+deviceC.locations = [];
+deviceC.blocks = [{ id: 'NEWBLOCK99', courseId: 'NEWCOURSE99', weekday: 5, periodStart: 3, periodEnd: 4, weekMode: 'all', weeks: [], locationIds: [], teacherIds: [], note: '', updatedAt: '2026-12-01T00:00:00.000Z' }];
+deviceC.overrides = [];
+deviceC.tombstones = [];
+const repC = AR.Store.previewMerge(deviceC);
+eq('跨设备：新课程会被新增', repC.added, 2);
+AR.Store.applyMerge(deviceC, {});
+const newCourse = AR.Store.get().courses.filter((c) => c.name === '跨设备新课')[0];
+check('跨设备：新课程写进去了', !!newCourse);
+check('跨设备：新课程的时段也写进去了',
+  AR.Store.get().blocks.filter((b) => b.courseId === newCourse.id).length === 1);
+
+/* ── 11. 导入自己导出的文件：应当「无事发生」，不能重复添加 ── */
+
+const selfPayload = AR.Store.exportPayload();
+const selfReport = AR.Store.previewMerge(selfPayload);
+eq('导入自己的导出：不新增', selfReport.added, 0);
+eq('导入自己的导出：不更新', selfReport.updated, 0);
+eq('导入自己的导出：不会显示「删除 N」', selfReport.removed, 0);
+const selfBefore = AR.Store.get().courses.length;
+AR.Store.applyMerge(JSON.parse(JSON.stringify(selfPayload)), {});
+eq('导入自己的导出：课程数不变', AR.Store.get().courses.length, selfBefore);
+
+/* ── 12. 第 13 节及以后：节次表自动补足 ─────────────────── */
+
+const lateTxt = [
+  'AbbeyRoad 课表 v1',
+  '开学日期：2026-09-07',
+  '晚课测试课｜周四｜13-14｜1-16｜测试楼101｜测试老师'
+].join('\n');
+const lateEnt = AR.MdParse.toEntities(AR.MdParse.parse(lateTxt, semOpts), AR.Store.get(), { mergeMode: 'never' });
+const lateRes = AR.MdParse.applyEntities(lateEnt, AR.Store.get());
+eq('晚课：自动补了 2 节', lateRes.periodsAdded, 2);
+const latePeriods = AR.Store.periodsOf(AR.Store.currentSemester().id);
+eq('晚课：节次表扩到 14 节', latePeriods.length, 14);
+check('晚课：补出来的第 13 节排在原最后一节之后',
+  latePeriods[12].start > latePeriods[11].end, latePeriods[12].start + ' vs ' + latePeriods[11].end);
+const lateMon = AR.Util.mondayOf(AR.Util.parseDateKey(AR.Store.currentSemester().startDate));
+const lateItems = AR.Schedule.dayItems(AR.Util.addDays(lateMon, 3)).filter((i) => i.course.name === '晚课测试课');
+eq('晚课：周四能查到这节课', lateItems.length, 1);
+eq('晚课：节次标签是 13-14 节', lateItems.length ? lateItems[0].periodLabel : '', '13-14节');
+eq('晚课：时间不再是空的', lateItems.length ? lateItems[0].start : '', latePeriods[12].start);
+
+/* ── 13. 重复导入：不加重复时段、不留孤儿 ────────────────── */
+
+const twiceTxt = [
+  'AbbeyRoad 课表 v1',
+  '开学日期：2026-09-07',
+  '重复导入测试课｜周二｜3-4｜1-16｜重复楼101｜老师A｜备注一'
+].join('\n');
+function importOnce(txt) {
+  const ent = AR.MdParse.toEntities(AR.MdParse.parse(txt, semOpts), AR.Store.get(), { mergeMode: 'never' });
+  return AR.MdParse.applyEntities(ent, AR.Store.get());
+}
+importOnce(twiceTxt);
+const blocksAfterFirst = AR.Store.get().blocks.length;
+const twiceCourse = AR.Store.get().courses.filter((c) => c.name === '重复导入测试课')[0];
+eq('重复导入：第一次写入 1 个时段',
+  AR.Store.get().blocks.filter((b) => b.courseId === twiceCourse.id).length, 1);
+importOnce(twiceTxt);
+eq('重复导入：第二次不再新增时段', AR.Store.get().blocks.length, blocksAfterFirst);
+eq('重复导入：课程仍然只有一门',
+  AR.Store.get().courses.filter((c) => c.name === '重复导入测试课').length, 1);
+const orphanCount = AR.Store.get().blocks.filter(
+  (b) => !AR.Store.get().courses.some((c) => c.id === b.courseId)).length;
+eq('重复导入：没有孤儿时段', orphanCount, 0);
+
+importOnce(twiceTxt.replace('重复楼101', '重复楼202').replace('备注一', '备注二'));
+eq('重复导入：改地点是覆盖而不是新增', AR.Store.get().blocks.length, blocksAfterFirst);
+const twiceBlock = AR.Store.get().blocks.filter((b) => b.courseId === twiceCourse.id)[0];
+eq('重复导入：备注也更新成新的', twiceBlock.note, '备注二');
+
+// 老数据里的孤儿时段：加载时自动清掉
+const dirtyState = AR.Store.get();
+dirtyState.blocks.push({
+  id: 'ORPHAN_BLOCK_1', courseId: 'COURSE_NOT_EXIST', weekday: 1,
+  periodStart: 1, periodEnd: 1, weekMode: 'all', weeks: [], locationIds: [], teacherIds: []
+});
+const cleaned = AR.Store.migrate(dirtyState);
+eq('孤儿时段：加载时会自动清掉',
+  cleaned.blocks.filter((b) => b.courseId === 'COURSE_NOT_EXIST').length, 0);
+
+/* ── 14. 清空数据后再导入：当前学期要跟着切过去 ───────────── */
+
+AR.Store.reset(true);                      // 模拟「清空所有数据」
+eq('清空后：课程为 0', AR.Store.get().courses.length, 0);
+
+const foreignPayload = {
+  kind: 'abbeyroad.sync', schemaVersion: 1,
+  semesters: [{ id: 'SEM_B', name: '导入的学期', startDate: '2026-02-23', weekCount: 20, isCurrent: true }],
+  periods: [],
+  teachers: [], locations: [],
+  courses: [{
+    id: 'C_B1', semesterId: 'SEM_B', name: '导入课', teacherIds: [],
+    defaultLocationId: null, colorKey: 'blue', tags: [], note: '', updatedAt: new Date().toISOString()
+  }],
+  blocks: [{
+    id: 'BLK_B1', courseId: 'C_B1', weekday: 1, periodStart: 3, periodEnd: 4,
+    weekMode: 'all', weeks: [], locationIds: [], teacherIds: [], note: '',
+    isConsecutive: false, segments: null, updatedAt: new Date().toISOString()
+  }],
+  overrides: [], events: [], reminders: [], tombstones: []
+};
+AR.Store.applyMerge(foreignPayload, {});
+
+const curAfterImport = AR.Store.currentSemester();
+eq('清空后导入：当前学期切到导入的那个', curAfterImport && curAfterImport.name, '导入的学期');
+check('清空后导入：当前学期确实有课',
+  AR.Store.blockCountOfSemester(curAfterImport.id) > 0);
+const importMonday = U.mondayOf(U.parseDateKey('2026-02-23'));
+const importedItems = AR.Schedule.dayItems(importMonday);
+eq('清空后导入：周一能查到这门课', importedItems.length, 1);
+eq('清空后导入：节次标签正常', importedItems.length ? importedItems[0].periodLabel : '', '3-4节');
+eq('清空后导入：节次时间也正常（不是空的）', importedItems.length ? (importedItems[0].start + '-' + importedItems[0].end) : '', '10:00-11:35');
+
+/* ── 15. 节次表归属：补齐时要把整张表认领过来 ─────────────── */
+
+AR.Store.reset(true);
+const st3 = AR.Store.get();
+const curSemId3 = st3.settings.schedule.currentSemesterId;
+for (let i = 0; i < st3.periods.length; i++) { st3.periods[i].semesterId = 'GHOST_SEM'; }   // 挂到不存在的学期
+const added3 = AR.Store.ensurePeriodsFor(curSemId3, 14);
+eq('节次认领：补了 2 节', added3, 2);
+eq('节次认领：当前学期名下有 14 节（不会只剩新补的）',
+  AR.Store.periodsOf(AR.Store.currentSemester().id).length, 14);
+eq('节次认领：第 1 节还是 08:00',
+  AR.Store.periodsOf(AR.Store.currentSemester().id)[0].start, '08:00');
 
 console.log('');
 console.log('通过 ' + pass + ' 项，失败 ' + fail + ' 项');

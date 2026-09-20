@@ -106,9 +106,10 @@ input, textarea { user-select: text; }
   mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M12 3l5 5h-3v6h-4V8H7l5-5zM4 18h16v3H4v-3z'/></svg>");
 }
 .ico-settings {
-  /* v0.1.9 重绘：标准齿轮 = 8 颗圆角齿 + 环形外圈 + 中心孔（比原来的星形清楚得多） */
-  -webkit-mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><g><rect x='10.5' y='1.5' width='3' height='6.2' rx='1.2'/><rect x='10.5' y='1.5' width='3' height='6.2' rx='1.2' transform='rotate(45 12 12)'/><rect x='10.5' y='1.5' width='3' height='6.2' rx='1.2' transform='rotate(90 12 12)'/><rect x='10.5' y='1.5' width='3' height='6.2' rx='1.2' transform='rotate(135 12 12)'/></g><path fill-rule='evenodd' clip-rule='evenodd' d='M12 4.2a7.8 7.8 0 100 15.6 7.8 7.8 0 000-15.6zm0 4.3a3.5 3.5 0 110 7 3.5 3.5 0 010-7z'/></svg>");
-  mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><g><rect x='10.5' y='1.5' width='3' height='6.2' rx='1.2'/><rect x='10.5' y='1.5' width='3' height='6.2' rx='1.2' transform='rotate(45 12 12)'/><rect x='10.5' y='1.5' width='3' height='6.2' rx='1.2' transform='rotate(90 12 12)'/><rect x='10.5' y='1.5' width='3' height='6.2' rx='1.2' transform='rotate(135 12 12)'/></g><path fill-rule='evenodd' clip-rule='evenodd' d='M12 4.2a7.8 7.8 0 100 15.6 7.8 7.8 0 000-15.6zm0 4.3a3.5 3.5 0 110 7 3.5 3.5 0 010-7z'/></svg>");
+  /* v0.2.2 重绘：直接采用 Material「settings」标准齿轮（外圈 8 齿 + 中心孔），
+     线条比例经过官方调校，小尺寸下比手画的齿轮干净得多。 */
+  -webkit-mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7.03 7.03 0 00-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 00-.59.22L2.74 8.87a.49.49 0 00.12.61l2.03 1.58c-.05.3-.07.63-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.49.37 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1112 8.4a3.6 3.6 0 010 7.2z'/></svg>");
+  mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M19.14 12.94c.04-.3.06-.61.06-.94s-.02-.64-.07-.94l2.03-1.58a.49.49 0 00.12-.61l-1.92-3.32a.49.49 0 00-.59-.22l-2.39.96a7.03 7.03 0 00-1.62-.94l-.36-2.54a.48.48 0 00-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96a.48.48 0 00-.59.22L2.74 8.87a.49.49 0 00.12.61l2.03 1.58c-.05.3-.07.63-.07.94s.02.64.07.94l-2.03 1.58a.49.49 0 00-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.49.37 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32a.49.49 0 00-.12-.61l-2.01-1.58zM12 15.6A3.6 3.6 0 1112 8.4a3.6 3.6 0 010 7.2z'/></svg>");
 }
 
 /* 主区与视图 */
@@ -647,7 +648,16 @@ input[type="range"]::-webkit-slider-thumb {
   .view-title { font-size: 19px; }
 }
 @media (max-width: 560px) {
-  .head-right { display: none; }
+  /* 窄屏不再整组藏掉：学期 / 调休 / 冲突 / 周切换都是常用入口，
+     改成能横向滑动的一行，放在标题下方（周表顶部本来就在这一带）。 */
+  .head-right {
+    display: flex; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none;
+    width: 100%; justify-content: flex-start; padding-bottom: 2px;
+  }
+  .head-right::-webkit-scrollbar { display: none; }
+  .head-right .chip-btn { flex: 0 0 auto; }
+  .head-left { width: 100%; }
+  .view-head { flex-wrap: wrap; }
   .fix-row { grid-template-columns: 1fr; }
   .modal-card { width: calc(100vw - 20px); padding: var(--sp-4); }
   .panel { padding: var(--sp-4); }
@@ -688,7 +698,10 @@ input[type="range"]::-webkit-slider-thumb {
 }
 .settings-body {
   flex: 1 1 auto; min-width: 0; min-height: 0;
-  overflow-y: auto; overflow-x: hidden; padding-right: 4px;
+  overflow-y: auto; overflow-x: hidden;
+  /* 左右都留出空间：面板带"略微发光描边"（box-shadow 外发光），
+     贴着滚动容器边缘会被 overflow-x:hidden 裁掉，看起来就像右边框缺一条。 */
+  padding: 2px 10px var(--sp-6);
   -webkit-overflow-scrolling: touch;
 }
 .settings-body .settings-grid {
@@ -696,7 +709,14 @@ input[type="range"]::-webkit-slider-thumb {
   grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
   gap: var(--sp-3); align-content: start; padding-bottom: var(--sp-6);
 }
-.set-section { scroll-margin-top: 8px; }
+/* 面板要能被栅格轨道压窄：默认 min-width:auto 会让"内容最宽的那一项"
+   把整块面板顶出去（手机上表现为右边框被切掉、分段控件超出去） */
+.set-section { scroll-margin-top: 8px; min-width: 0; }
+.settings-body .settings-grid > * { min-width: 0; }
+.set-section .segmented,
+.set-section .field,
+.set-section .row { min-width: 0; }
+.set-section .seg { min-width: 0; }
 
 /* ── 周表：周次快切 + 整周列表 ─────────────────────────────── */
 .week-strip {
@@ -776,7 +796,7 @@ input[type="range"]::-webkit-slider-thumb {
   .settings-shell { gap: var(--sp-2); }
   .settings-nav { flex: 0 0 104px; width: 104px; padding: 6px; }
   .settings-nav button { padding: 8px 9px; font-size: 11.5px; border-radius: 10px; }
-  .settings-body { padding-right: 0; }
+  .settings-body { padding: 2px 8px 14px; }
   .settings-body .settings-grid { grid-template-columns: 1fr; }
 }
 
@@ -810,8 +830,11 @@ input[type="range"]::-webkit-slider-thumb {
 
 /* ── 周表：日期在上、节次与时间在左（对齐参考图） ─────────── */
 .week-table {
-  display: grid; gap: 2px; min-width: 372px;
+  display: grid; gap: 2px; min-width: 300px;
   grid-auto-rows: minmax(56px, 1fr);
+  /* align-content 默认是 stretch，会把 auto 的表头行拉得老高（实测拉到 410px），
+     于是课表整体被顶下去。改成 start，表头只占内容高度。 */
+  align-content: start;
   background: transparent;
 }
 .wt-corner {
@@ -831,20 +854,57 @@ input[type="range"]::-webkit-slider-thumb {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   gap: 1px; border-radius: 8px; background: var(--bg-subtle); padding: 2px;
 }
-.wt-time .p { font-size: 10.5px; color: var(--text-secondary); }
-.wt-time .t { font-size: 9.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+/* 字号跟着行高走：行高越大越舒展，越小越紧凑（但都有下限，不会糊） */
+.wt-time .p { font-size: clamp(8.5px, calc(var(--wt-row, 58px) * .19), 10.5px); color: var(--text-secondary); }
+.wt-time .t { font-size: clamp(7.5px, calc(var(--wt-row, 58px) * .17), 9.5px); color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .wt-empty { border-radius: 8px; background: var(--bg-subtle); opacity: 0.45; }
 .wt-block {
-  border-radius: 8px; padding: 5px 4px; overflow: hidden; cursor: pointer;
+  border-radius: 8px; padding: clamp(3px, calc(var(--wt-row, 58px) * .08), 6px) 4px;
+  overflow: hidden; cursor: pointer;
   color: #fff; display: flex; flex-direction: column; gap: 2px;
+  /* 一点点上亮下暗的渐变：色块更"实体"，同一屏里深浅不同的课也更好分 */
+  background-image: linear-gradient(180deg, rgba(255, 255, 255, .16), rgba(0, 0, 0, .10));
+  border: 1px solid rgba(255, 255, 255, .16);
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.10);
   transition: transform 200ms var(--ease-emphasized), box-shadow 220ms var(--ease-standard);
 }
+/* 亮色课块自动换成深色字（见 ui.js contrastClass） */
+.wt-block.dk { color: #16202B; border-color: rgba(0, 0, 0, .10); }
+.wt-block.dk .l { opacity: .80; }
+.wt-block.dk .k { opacity: .72; }
 .wt-block:hover { transform: translateY(-1px) scale(1.01); box-shadow: 0 6px 16px rgba(0, 0, 0, 0.16); }
 .wt-block:active { transform: scale(0.985); }
-.wt-block .n { font-size: 11px; font-weight: 620; line-height: 1.15; word-break: break-all; }
-.wt-block .l { font-size: 9.5px; line-height: 1.2; opacity: 0.92; word-break: break-all; }
-.wt-block .k { font-size: 9px; opacity: 0.85; }
+.wt-block .n { font-size: clamp(9px, calc(var(--wt-row, 58px) * .195), 11.5px); font-weight: 620; line-height: 1.18; word-break: break-all; }
+.wt-block .l { font-size: clamp(8px, calc(var(--wt-row, 58px) * .17), 9.5px); line-height: 1.2; opacity: 0.92; word-break: break-all; }
+.wt-block .k { font-size: clamp(7.5px, calc(var(--wt-row, 58px) * .155), 9px); opacity: 0.85; }
+
+/* 行高不够时按"优先级"取舍：
+   课名 + 节次（+上下课时间）永远在；先牺牲老师，实在不够再牺牲地点与时间行 */
+.week-table.wt-dense .wt-block .k { display: none; }
+.week-table.wt-dense .wt-day .w { display: none; }
+.week-table.wt-dense .wt-day .n { font-size: 12.5px; }
+.week-table.wt-tight .wt-block .l { display: none; }
+.week-table.wt-tight .wt-time .t { display: none; }
+.week-table.wt-tight .wt-block { padding: 2px 3px; }
+.week-table.wt-tight .wt-block .n { font-size: 9px; line-height: 1.15; }
+.week-table.wt-tight .wt-day { padding: 2px 1px; }
+.week-table.wt-tight .wt-day .n { font-size: 12px; }
+
+/* 「本周概览」切日期：选中那天落定时的高亮描边 */
+.mg-day.day-picked, .wt-day.day-picked {
+  background: var(--accent-soft);
+  box-shadow: 0 0 0 2px var(--accent), 0 4px 14px var(--accent-glow);
+  z-index: 2;
+}
+.mg-day.day-picked .n, .wt-day.day-picked .n { color: var(--accent); }
+/* 「本周概览」日期滑块：和分段控件同一种观感（在表格里滑到选中那天） */
+.mini-table, .week-table { position: relative; }
+.day-pill {
+  position: absolute; left: 0; top: 0; z-index: 1; pointer-events: none;
+  border-radius: 8px; background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.mg-day, .wt-day { position: relative; z-index: 2; }
 
 /* ── 导入选项 ─────────────────────────────────────────────── */
 .opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-3); }
@@ -1058,6 +1118,20 @@ body { text-size-adjust: 100%; }
 
 /* ── 收起（compact）栏位：只留标题 + 一行摘要，点一下即可切换过来 ── */
 .zone.compact { cursor: pointer; }
+
+/**
+ * 点击高光（bridge/ui 的 .flash 覆盖层）需要按钮自己是定位元素。
+ * .zone-toggle 之前没写 position: relative，覆盖层就挂到了最近的定位祖先上——
+ * 也就是整块 .layout / 整栏，点一下 ✕ 整页白闪 500ms。这里补齐。
+ */
+.zone-toggle { position: relative; overflow: hidden; }
+
+/* 窄屏上的 compact 栏位：标题不跟展开栏抢位置，徽标先收起 */
+@media (max-width: 700px) {
+  .zone.compact .zone-badge { display: none; }
+  .zone.compact .zone-head { margin-bottom: 8px; }
+  .zone.compact .zone-title { font-size: calc(13px * var(--fs-scale)); }
+}
 .zone.compact:hover { border-color: var(--accent-soft); }
 .zone.compact .zone-body {
   display: flex; align-items: center; justify-content: center;
@@ -1444,11 +1518,11 @@ body { text-size-adjust: 100%; }
   background: var(--accent-soft); border: 1px dashed var(--accent);
 }
 .fab-space { height: 62px; }
-#btnApplyMd.fab {
+#btnApplyMd.fab, #btnApplyJson.fab {
   position: absolute; right: 16px; bottom: 16px; z-index: 40;
   box-shadow: var(--shadow-modal), 0 10px 26px var(--accent-glow);
 }
-#btnApplyMd[hidden] { display: none !important; }
+#btnApplyMd[hidden], #btnApplyJson[hidden] { display: none !important; }
 
 /* ── ④ 引导：操作条固定在卡片底部，下一步永远在右下角 ─────── */
 .ob-card { display: flex; flex-direction: column; overflow: hidden; padding: 0; }
@@ -1522,3 +1596,597 @@ body { text-size-adjust: 100%; }
 .card.next-state { transition: border-color 240ms var(--ease-fade-out), box-shadow 240ms var(--ease-fade-out); }
 .zone-compact.has-accent { display: flex; gap: 8px; align-items: flex-start; }
 .zone-compact .zc-bar { flex: 0 0 3px; align-self: stretch; border-radius: 3px; min-height: 30px; }
+
+/* ══════════════════════════════════════════════════════════════
+   v0.2.0
+   ① 周表左栏：节次号 → 几点到几点
+   ② 单个时段编辑器（今日页任意条目 / 周表课程块都能进）
+   ③ 今日页模块补齐「节次」+「编辑全部信息」入口
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── ① 周表左栏：时间区间 ─────────────────────────────────── */
+.wt-time { gap: 2px; }
+.wt-time .p {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 15px; height: 14px; padding: 0 3px; border-radius: 5px;
+  font-size: 9px; line-height: 1; font-variant-numeric: tabular-nums;
+  color: var(--text-tertiary); background: var(--glass-surface);
+  border: 0.5px solid var(--glass-stroke);
+}
+.wt-time .t {
+  font-size: 10px; line-height: 1.05; font-weight: 560;
+  color: var(--text-secondary); font-variant-numeric: tabular-nums;
+}
+.wt-time .range-line {
+  width: 10px; height: 1px; border-radius: 1px;
+  background: var(--text-tertiary); opacity: .35;
+}
+.rail-table .wt-time .p { min-width: 13px; height: 12px; font-size: 8px; }
+.rail-table .wt-time .t { font-size: 9px; }
+
+/* ── ② 单个时段编辑器 ─────────────────────────────────────── */
+.modal-card.modal-wide { width: min(660px, calc(100vw - 32px)); }
+.edit-form .edit-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr));
+  gap: var(--sp-3) var(--sp-3);
+}
+.edit-form .field { margin-bottom: 0; }
+.edit-form .edit-span { grid-column: 1 / -1; }
+.edit-form .field.disabled { opacity: .42; }
+.edit-form .field.disabled select,
+.edit-form .field.disabled input { pointer-events: none; }
+.edit-form .row { gap: 8px; align-items: flex-end; }
+.edit-form .edit-sep { flex: 0 0 auto; align-self: center; padding-bottom: 0; }
+.edit-form .row .input { min-width: 0; }
+.edit-form .muted { font-size: 11.5px; line-height: 1.35; }
+.edit-form #ebHint { margin-top: var(--sp-3); }
+
+/* 「仅这一次 / 所有时段」范围开关 */
+.scope-switch { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: var(--sp-4); }
+
+/* 表单比一屏高时：标题和「保存 / 取消」固定，只有中间的表单滚动 */
+.modal-card.modal-wide {
+  display: flex; flex-direction: column; overflow: hidden;
+  padding-bottom: var(--sp-4);
+}
+.modal-card.modal-wide .modal-head { flex: 0 0 auto; }
+.modal-card.modal-wide .modal-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 2px; }
+.modal-card.modal-wide .modal-body::-webkit-scrollbar { width: 8px; }
+.modal-card.modal-wide .modal-body::-webkit-scrollbar-thumb {
+  background: var(--glass-stroke); border-radius: 8px;
+}
+.modal-card.modal-wide .modal-actions { flex: 0 0 auto; margin-top: var(--sp-3); }
+.scope-btn {
+  appearance: none; font: inherit; cursor: pointer;
+  padding: 7px 13px; border-radius: 999px; min-height: 32px;
+  border: 1px solid var(--glass-stroke); background: var(--glass-surface);
+  color: var(--text-secondary); font-size: 12px; white-space: nowrap;
+  transition: color 200ms var(--ease-fade-out), background 200ms var(--ease-fade-out),
+              border-color 200ms var(--ease-fade-out), transform 240ms var(--ease-smooth);
+}
+.scope-btn:hover { color: var(--text-primary); transform: translateY(-1px); }
+.scope-btn.active {
+  color: #fff; background: var(--accent); border-color: transparent; font-weight: 600;
+  box-shadow: 0 4px 14px var(--accent-glow);
+}
+.scope-hint { font-size: 11.5px; color: var(--text-tertiary); }
+
+/* 老师行：姓名 + 备注 + 联系方式 + 移除 */
+.teacher-row { padding-bottom: var(--sp-3); border-bottom: 0.5px solid var(--glass-stroke); }
+.teacher-row:last-of-type { border-bottom: 0; }
+.teacher-row .icon-btn { flex: 0 0 auto; margin-bottom: 1px; }
+#teacherAdd { margin-top: 4px; }
+
+/* ══════════════════════════════════════════════════════════════
+   v0.2.2
+   ① 「从导出目录导入」清单
+   ② 复制提示词后跳转的输入框闪光引导
+   ③ 清空数据：按住 3 秒的进度按钮
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── ① 导出目录清单 ──────────────────────────────────────── */
+.export-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+.export-row {
+  appearance: none; font: inherit; cursor: pointer; text-align: left;
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 10px 12px; border-radius: var(--r-input);
+  border: 1px solid var(--glass-stroke); background: var(--glass-surface);
+  color: var(--text-primary); min-height: 46px;
+  transition: border-color 200ms var(--ease-fade-out), background 200ms var(--ease-fade-out),
+              transform 240ms var(--ease-smooth);
+}
+.export-row:hover { border-color: var(--accent-soft); background: var(--accent-soft); transform: translateY(-1px); }
+.export-row .er-name { font-size: 13.5px; font-weight: 600; word-break: break-all; }
+.export-row .er-meta { font-size: 11.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
+/* ── ② 复制提示词后：输入框闪一下，指明下一步 ─────────────── */
+@keyframes inputFlashing {
+  0%   { box-shadow: 0 0 0 0 var(--accent-soft); border-color: var(--glass-stroke); }
+  18%  { box-shadow: 0 0 0 4px var(--accent-soft); border-color: var(--accent); }
+  70%  { box-shadow: 0 0 0 4px var(--accent-soft); border-color: var(--accent); }
+  100% { box-shadow: 0 0 0 0 rgba(0, 0, 0, 0); border-color: var(--glass-stroke); }
+}
+.input-flash { animation: inputFlashing 2100ms var(--ease-standard) 1; }
+
+/* ── ③ 清空数据：按住 3 秒 ────────────────────────────────── */
+.hold-btn {
+  position: relative; display: block; width: 100%; min-height: 48px;
+  margin-top: 12px; padding: 0 14px; overflow: hidden; cursor: pointer;
+  font: inherit; font-weight: 640; color: var(--danger, #E5484D);
+  border: 1px solid rgba(229, 72, 77, .45); border-radius: var(--r-input);
+  background: rgba(229, 72, 77, .07);
+  transition: transform 240ms var(--ease-smooth), border-color 200ms var(--ease-fade-out);
+}
+.hold-btn .hold-fill {
+  position: absolute; left: 0; top: 0; bottom: 0; width: var(--hold, 0%);
+  background: rgba(229, 72, 77, .26); transition: width 90ms linear;
+}
+.hold-btn .hold-label { position: relative; z-index: 1; }
+.hold-btn.holding { transform: scale(.99); border-color: rgba(229, 72, 77, .8); }
+
+/* ══════════════════════════════════════════════════════════════
+   v0.2.4 · 动效统一层
+   ① 一套非线性曲线 + 时长令牌，供所有浮层（弹窗 / 引导 / 下拉 / toast）共用
+   ② 今日页三栏聚焦：只走 transform（FLIP），动画期间暂时关掉毛玻璃重算
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── ① 统一的弹层动效令牌（非线性：强缓出进场 / 缓入离场）──────── */
+:root {
+  --ease-pop: cubic-bezier(.16, 1, .30, 1);          /* 进场：expo 近似，收尾极慢 */
+  --ease-pop-out: cubic-bezier(.40, 0, .80, .60);    /* 离场：先快后慢 */
+  --dur-pop: calc(300ms * var(--motion-scale));
+  --dur-pop-out: calc(190ms * var(--motion-scale));
+  --pop-shift: 10px;
+}
+
+/* 弹窗：位移 + 缩放 + 淡入，同一套曲线；离场更快、幅度更小 */
+.modal-card {
+  opacity: 0;
+  transform: translateY(var(--pop-shift)) scale(.94);
+  transition: opacity var(--dur-pop) var(--ease-pop),
+              transform var(--dur-pop) var(--ease-pop),
+              max-height var(--dur-pop) var(--ease-pop);
+  will-change: transform, opacity;
+}
+.modal-root.open .modal-card { opacity: 1; transform: translateY(0) scale(1); }
+.modal-root.closing .modal-card {
+  opacity: 0;
+  transform: translateY(4px) scale(.975);
+  transition: opacity var(--dur-pop-out) var(--ease-pop-out),
+              transform var(--dur-pop-out) var(--ease-pop-out);
+}
+.modal-scrim { transition: opacity var(--dur-pop) var(--ease-pop); }
+.modal-root.closing .modal-scrim { opacity: 0; transition-duration: var(--dur-pop-out); transition-timing-function: var(--ease-pop-out); }
+
+/* 引导卡片：和弹窗同一套进出（原来只有入场、曲线也不一样） */
+.ob-card {
+  opacity: 0;
+  transform: translateY(var(--pop-shift)) scale(.96);
+  transition: opacity var(--dur-pop) var(--ease-pop), transform var(--dur-pop) var(--ease-pop);
+}
+.onboarding:not([hidden]) .ob-card { opacity: 1; transform: none; }
+
+/* 下拉子菜单 / toast：同一个曲线家族，时长更短 */
+.sub-menu {
+  transition: opacity calc(180ms * var(--motion-scale)) var(--ease-pop),
+              transform calc(240ms * var(--motion-scale)) var(--ease-pop);
+}
+.toast {
+  animation: toastIn calc(260ms * var(--motion-scale)) var(--ease-pop) both;
+}
+.toast.out { animation: toastOut calc(180ms * var(--motion-scale)) var(--ease-pop-out) both; }
+@keyframes toastIn { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: none; } }
+@keyframes toastOut { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(6px) scale(.98); } }
+
+/* ② 今日页聚焦动画：v0.2.5 起整套搬进 WAAPI（见文件末尾 v0.2.5 段），
+      这里不再需要关模糊 / 关子动画那套补丁。 */
+/* ══════════════════════════════════════════════════════════════
+   v0.2.4 · 新控件样式
+   ══════════════════════════════════════════════════════════════ */
+
+/* 自定义颜色：原生色盘 + 说明 */
+.color-custom { margin-top: 10px; gap: 10px; align-items: center; }
+.color-pick {
+  appearance: none; -webkit-appearance: none; border: 1px solid var(--glass-stroke);
+  width: 44px; height: 30px; padding: 0; border-radius: 9px; background: transparent; cursor: pointer;
+}
+.color-pick::-webkit-color-swatch-wrapper { padding: 2px; }
+.color-pick::-webkit-color-swatch { border: none; border-radius: 7px; }
+.swatch.custom { border-style: dashed; }
+.swatch.custom.active { border-style: solid; }
+
+/* 课程编辑器顶部的快捷操作条（加日程 / 闹钟 / 导航） */
+.editor-tools { margin: 0 0 var(--sp-4); gap: 8px; }
+
+/* 周表右上角的学期按钮 */
+.sem-btn { max-width: 42vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 学期 / 导出清单里「当前」那一项 */
+.export-row.active { border-color: var(--accent); background: var(--accent-soft); }
+
+/* 关于与帮助：开源地址卡片 */
+.repo-box {
+  margin-top: 14px; padding: 12px 14px; border-radius: var(--r-input);
+  border: 1px solid var(--glass-stroke); background: var(--glass-surface);
+}
+.repo-title { font-size: 13px; font-weight: 620; margin-bottom: 4px; }
+.repo-url {
+  font-family: "Cascadia Mono", Consolas, monospace; font-size: 12px;
+  color: var(--accent); word-break: break-all; cursor: pointer;
+}
+.repo-url:hover { text-decoration: underline; }
+
+/* ══════════════════════════════════════════════════════════════
+   v0.2.6 · 卡片内部排版重做（回到 v0.2.3 的卡片语言，再补上密度与自适应）
+   ──────────────────────────────────────────────────────────────
+   ① .zone-inner：栏框和内容分离。聚焦放大时 JS 把这一层按"最终尺寸"
+      固定住，栏框从旧矩形长到新矩形 —— 内容只是被裁剪，一帧都不重排，
+      所以不会再出现"框在长、字在跳"的观感；
+   ② 长条卡片：时间用主题色 + 等宽数字，标题与节次同一行，
+      地点/老师在下面自适应换行，不再出现"行首孤零零一个 ·"；
+   ③ 「最近的课」焦点卡 + 信息格：宽栏自动两列，窄栏一列，
+      每个格子"标签在上、值在下"，点开就是对应的毛玻璃弹窗。
+   ══════════════════════════════════════════════════════════════ */
+
+.zone-inner {
+  position: relative; z-index: 1;
+  display: flex; flex-direction: column;
+  flex: 1 1 auto; min-height: 0; min-width: 0;
+}
+/* 动画期间由 JS 写成 position:absolute + 固定 px（见 morphRects/freezeInner） */
+
+/* ── ① 长条卡片：今日日程 / 本周列表通用 ─────────────────── */
+.strip {
+  display: flex; gap: 9px; align-items: stretch;
+  padding: 9px 11px 9px 9px; margin-bottom: 7px;
+  border-radius: 12px; border: 1px solid var(--glass-stroke);
+  background: var(--glass-surface); box-shadow: none;
+}
+.strip .st-bar { flex: 0 0 3px; border-radius: 3px; align-self: stretch; min-height: 26px; }
+.strip .st-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.strip .st-head { display: flex; align-items: baseline; gap: 8px; justify-content: flex-start; }
+.strip .st-title {
+  flex: 1 1 auto; min-width: 0;
+  font-size: 14px; font-weight: 620; line-height: 1.32; color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+.strip .st-when {
+  flex: 0 0 auto; font-size: 11.5px; color: var(--text-secondary);
+  background: var(--bg-subtle); border-radius: 999px; padding: 1px 8px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.strip .st-meta {
+  display: flex; flex-wrap: wrap; gap: 3px 12px;
+  font-size: 12px; color: var(--text-secondary); line-height: 1.45;
+}
+/* break-word（不是 anywhere）：中文照常换行，但 "（阶梯-白板2）" 这种
+   括号内容不会被从中间劈开、留下一个孤零零的 "2）" */
+.strip .st-meta > span { min-width: 0; overflow-wrap: break-word; word-break: normal; }
+.strip .st-time { color: var(--accent); font-weight: 560; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.strip .st-teacher { color: var(--text-tertiary); }
+.strip .st-tags { margin-top: 4px; display: flex; gap: 5px; flex-wrap: wrap; }
+.strip.detailed .st-title { font-size: 15px; }
+
+/* ── ② 「最近的课」焦点卡 ─────────────────────────────────── */
+.next-hero {
+  position: relative; display: flex; gap: 11px; align-items: stretch;
+  padding: 12px 13px 12px 11px; margin-bottom: 9px;
+  border-radius: 14px; border: 1px solid var(--glass-stroke);
+  background: var(--glass-surface); cursor: pointer; overflow: hidden;
+}
+.next-hero .nh-bar { flex: 0 0 4px; border-radius: 4px; }
+.next-hero .nh-main { flex: 1 1 auto; min-width: 0; }
+.next-hero .nh-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.next-hero .nh-time {
+  font-size: 12.5px; font-weight: 620; color: var(--accent);
+  background: var(--accent-soft); padding: 2px 9px; border-radius: 999px;
+  font-variant-numeric: tabular-nums; white-space: nowrap;
+}
+.next-hero .nh-day { font-size: 11.5px; color: var(--text-tertiary); white-space: nowrap; }
+.next-hero .nh-title {
+  margin-top: 7px; font-size: 18px; font-weight: 650; line-height: 1.25;
+  color: var(--text-primary); overflow-wrap: anywhere;
+}
+.next-hero .nh-sub {
+  margin-top: 4px; display: flex; flex-wrap: wrap; gap: 3px 12px;
+  font-size: 12.5px; color: var(--text-secondary);
+}
+.next-hero .nh-count { color: var(--text-primary); font-weight: 560; }
+.next-hero .nh-tags { margin-top: 7px; display: flex; gap: 6px; flex-wrap: wrap; }
+.next-hero.focus .nh-title { font-size: 21px; }
+
+/* ── ③ 信息格：位置 / 节次 / 时间 / 老师 / 备注（可点） ───── */
+.info-grid {
+  display: grid; gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(146px, 1fr));
+}
+.info-stack { display: flex; flex-direction: column; gap: 8px; margin-top: 9px; }
+.info-stack .info-grid { margin: 0; }
+/* 节次/时间/老师/周次这四个短字段：
+   内容 <300px（直板机）→ 一列铺满（半栏只有 80–110px，两列会把时间挤成三行）；
+   300–700px（折叠屏 / 平板竖屏）→ 两列；
+   ≥700px（平板横屏 / 桌面）→ 四列一排。 */
+.info-grid.pairs { grid-template-columns: minmax(0, 1fr); }
+.zone.w-m .info-grid.pairs,
+.zone.w-l .info-grid.pairs { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.zone.w-xl .info-grid.pairs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.info-cell {
+  appearance: none; -webkit-appearance: none; font: inherit; cursor: pointer;
+  display: flex; flex-direction: column; gap: 3px; min-width: 0;
+  padding: 9px 11px; border-radius: 12px;
+  border: 1px solid var(--glass-stroke); background: var(--glass-surface);
+  color: inherit; text-align: left; position: relative; overflow: hidden;
+  transition: border-color 180ms var(--ease-fade-out), background 180ms var(--ease-fade-out),
+              transform 200ms var(--ease-smooth);
+}
+.info-cell:hover { border-color: var(--accent-soft); background: var(--accent-soft); }
+.info-cell:active { transform: scale(.994); }
+.info-cell .ic-k { font-size: 11px; color: var(--text-tertiary); letter-spacing: .02em; }
+.info-cell .ic-v { font-size: 14px; font-weight: 560; line-height: 1.45; overflow-wrap: break-word; word-break: normal; }
+.info-cell.wide { grid-column: 1 / -1; }
+.info-cell.empty .ic-v { color: var(--text-tertiary); font-weight: 500; }
+
+/* 焦点卡里的信息格再紧凑一点，别把课程卡挤下去 */
+.next-hero + .info-grid { margin-bottom: 9px; }
+.mute-line { margin-top: 8px; font-size: 11.5px; color: var(--text-tertiary); }
+
+/* ── ④ 按栏内宽度自适应（JS 打的 w-* 档位，等价于容器查询） ─────
+   直板机（内容宽 ~150–200）→ 收紧字号与内边距，保证一行能放下更多字；
+   折叠屏展开 / 平板（~470–900）→ 放大标题、放宽格子，别显得空。
+   档位由 applyZoneWidthClasses() 在每次布局后写，聚焦放大时会自动升级。 */
+
+/* 窄栏：小屏直板机、外屏 */
+.zone.w-xs .next-hero { padding: 10px 11px 10px 9px; gap: 9px; }
+.zone.w-xs .next-hero .nh-title { font-size: 16px; margin-top: 6px; }
+.zone.w-xs .next-hero .nh-time { font-size: 11.5px; padding: 1px 7px; }
+.zone.w-xs .next-hero .nh-sub { font-size: 11.5px; }
+.zone.w-xs .info-cell { padding: 8px 10px; border-radius: 11px; }
+.zone.w-xs .info-cell .ic-k { font-size: 10.5px; }
+.zone.w-xs .info-cell .ic-v { font-size: 13px; }
+.zone.w-xs .strip { padding: 8px 10px 8px 8px; }
+.zone.w-xs .strip .st-title { font-size: 13px; }
+.zone.w-xs .strip .st-meta { font-size: 11.5px; }
+
+/* 极窄栏（折叠外屏 / 直板机聚焦态里被挤到 100px 左右的那一栏）：
+   标题不换行、摘要只留两行、去掉提示语 —— 宁可少显示，也不要"一个字一行" */
+.zone.w-xs.compact .zone-title { font-size: 11.5px; }
+.zone.w-xs .zone-head { gap: 4px; margin-bottom: 6px; }
+.zone.w-xs .zone-head-right { gap: 4px; }
+.zone.w-xs .zone-compact .zc-big { font-size: 13px; line-height: 1.25; }
+.zone.w-xs .zone-compact .zc-small { font-size: 10.5px; line-height: 1.3; }
+.zone.w-xs.compact .zone-compact .zc-hint { display: none; }
+
+/* 偏窄：常规直板机 */
+.zone.w-s .next-hero .nh-title { font-size: 17px; }
+.zone.w-s .info-cell .ic-v { font-size: 13.5px; }
+
+/* 宽栏：折叠屏展开 / 平板竖屏 */
+.zone.w-l .next-hero { padding: 14px 16px 14px 13px; }
+.zone.w-l .next-hero .nh-title { font-size: 21px; }
+.zone.w-l .info-cell { padding: 10px 13px; }
+.zone.w-l .info-cell .ic-v { font-size: 14.5px; }
+
+/* 超宽：平板横屏 / 桌面全屏 */
+.zone.w-xl .next-hero .nh-title { font-size: 23px; }
+.zone.w-xl .info-grid { gap: 10px; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
+.zone.w-xl .info-cell .ic-v { font-size: 15px; }
+.zone.w-xl .strip .st-title { font-size: 15px; }
+
+/* 窄屏整体再收一点：栏间距在 JS 里同步调（10px），内边距这里跟着收 */
+@media (max-width: 560px) {
+  .layout .zone { padding: 12px; }
+  .zone .zone-head { margin-bottom: 8px; }
+}
+
+/* ── ⑤ 开发者模式（长按设置里的「外观」进入）：逐场景换过渡动画 ── */
+.dev-motion {
+  margin-top: 16px; padding: 14px;
+  border-radius: var(--r-input); border: 1px dashed var(--glass-stroke);
+  background: var(--bg-subtle);
+}
+.dev-badge {
+  display: inline-block; padding: 2px 10px; border-radius: 999px;
+  font-size: 11.5px; font-weight: 620; letter-spacing: .02em;
+  color: var(--accent); background: var(--accent-soft);
+}
+.dev-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 0; border-top: 1px solid var(--divider, var(--glass-stroke));
+}
+.dev-row:first-of-type { border-top: 0; }
+.dev-name { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--text-secondary); }
+.dev-select {
+  flex: 0 1 auto; max-width: 46%;
+  font: inherit; font-size: 12.5px; padding: 6px 8px; border-radius: 9px;
+  border: 1px solid var(--glass-stroke); background: var(--glass-surface);
+  color: var(--text-primary);
+}
+.dev-row .chip-btn { flex: 0 0 auto; }
+.dev-preview-card {
+  width: 220px; padding: 22px 16px; text-align: center;
+  border-radius: var(--r-modal); border: 1px solid var(--glass-border);
+  background: var(--glass-modal); box-shadow: var(--shadow-modal);
+  -webkit-backdrop-filter: blur(var(--blur-modal)); backdrop-filter: blur(var(--blur-modal));
+  font-size: 13.5px; color: var(--text-primary); z-index: var(--z-modal, 60);
+}
+
+/* ── ⑥ 自绘取色器（饱和/明度方块 + 色相条 + 十六进制 + 最近使用） ── */
+.color-open { display: inline-flex; align-items: center; gap: 8px; }
+.color-open .co-dot {
+  width: 18px; height: 18px; border-radius: 6px; flex: 0 0 auto;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18), 0 1px 3px rgba(0, 0, 0, .18);
+}
+.cp { display: flex; flex-direction: column; gap: 12px; }
+/* 取色器是独立浮层：盖在编辑器上面，关掉后编辑器还在 */
+.cp-root {
+  position: fixed; inset: 0; z-index: calc(var(--z-modal) + 6);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; box-sizing: border-box;
+}
+.cp-root .modal-scrim { opacity: 0; transition: opacity 220ms var(--ease-standard); }
+.cp-root.open .modal-scrim { opacity: 1; }
+.cp-root .modal-card { width: min(520px, calc(100vw - 32px)); }
+.cp-sv {
+  position: relative; height: 168px; border-radius: 12px; cursor: crosshair;
+  touch-action: none; box-shadow: inset 0 0 0 1px var(--glass-stroke);
+}
+.cp-dot {
+  position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
+  border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(0, 0, 0, .35), 0 2px 6px rgba(0, 0, 0, .3);
+  pointer-events: none;
+}
+.cp-hue {
+  position: relative; height: 18px; border-radius: 999px; cursor: pointer; touch-action: none;
+  box-shadow: inset 0 0 0 1px var(--glass-stroke);
+}
+.cp-hthumb {
+  position: absolute; top: 50%; width: 20px; height: 20px; margin: -10px 0 0 -10px; border-radius: 50%;
+  background: transparent; border: 2px solid #fff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, .35), 0 2px 6px rgba(0, 0, 0, .3); pointer-events: none;
+}
+.cp-hexrow { display: flex; align-items: center; gap: 10px; }
+.cp-preview {
+  width: 34px; height: 34px; border-radius: 10px; flex: 0 0 auto;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18), 0 2px 6px rgba(0, 0, 0, .16);
+}
+.cp-hex { flex: 1 1 auto; font-family: "Cascadia Mono", Consolas, monospace; text-transform: uppercase; }
+.cp-label { font-size: 12px; color: var(--text-tertiary); margin-bottom: -6px; }
+.cp-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.cp-chip {
+  width: 30px; height: 30px; border-radius: 9px; cursor: pointer; padding: 0;
+  border: 1px solid var(--glass-stroke);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .18);
+}
+.cp-chip:active { transform: scale(.94); }
+
+/* ── 开发者工具（全部可随时关闭，关掉不留残留） ─────────── */
+.dev-sub {
+  margin: 16px 0 4px; font-size: 12.5px; font-weight: 620; color: var(--text-secondary);
+}
+.dev-fps {
+  position: fixed; left: 10px; top: 10px; z-index: 9999;
+  padding: 3px 8px; border-radius: 8px; font-size: 11.5px;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  background: rgba(20, 24, 30, .72); color: #7CF5A0; pointer-events: none;
+}
+.dev-fps.bad { color: #FF8A8A; }
+.dev-ripple {
+  position: fixed; width: 26px; height: 26px; border-radius: 50%;
+  pointer-events: none; z-index: 9999;
+  background: radial-gradient(circle, rgba(91, 141, 239, .55), rgba(91, 141, 239, 0) 70%);
+  border: 1px solid rgba(91, 141, 239, .5);
+}
+body.dev-grid::before {
+  content: ""; position: fixed; inset: 0; z-index: 9000; pointer-events: none;
+  background-image: linear-gradient(rgba(91, 141, 239, .16) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(91, 141, 239, .16) 1px, transparent 1px);
+  background-size: 8px 8px;
+}
+body.dev-outline .zone, body.dev-outline .panel, body.dev-outline .card,
+body.dev-outline .strip, body.dev-outline .info-cell, body.dev-outline .next-hero,
+body.dev-outline .segmented, body.dev-outline .btn, body.dev-outline .chip-btn {
+  outline: 1px dashed rgba(229, 72, 77, .55); outline-offset: -1px;
+}
+
+/* 设置里的"课程配色"预览小条 */
+.scheme-preview { display: flex; gap: 4px; margin-top: 8px; }
+.scheme-preview i { width: 26px; height: 14px; border-radius: 4px; display: block; }
+
+/* ── ⑦ 调休 / 借课 + 周表长按快速新增 ───────────────────────── */
+/* 周表顶部：视图切换 + 周次快切并排一行，把纵向空间尽量留给课表 */
+.week-bar {
+  display: flex; align-items: center; gap: 8px;
+  flex: 0 0 auto; min-width: 0; margin-bottom: 6px;
+}
+.week-bar .seg-compact {
+  flex: 0 0 auto; margin-bottom: 0; padding: 3px; gap: 2px;
+  position: relative; z-index: 3; touch-action: manipulation;
+}
+.week-bar .seg-compact .seg { padding: 5px 10px; font-size: 12px; }
+.week-bar .seg-compact .seg-pill { pointer-events: none; }
+.week-bar .week-strip { flex: 1 1 auto; min-width: 0; margin: 0; padding: 3px 6px; }
+.week-bar .week-chip { min-width: 30px; padding: 4px 7px; font-size: 11.5px; }
+.week-panel { flex: 1 1 auto; min-height: 0; }
+.head-right .zone-badge { margin-left: 4px; }
+
+.day-shift-panel { padding: 12px 16px; }
+.ds-row { display: flex; align-items: center; gap: 12px; }
+.ds-row .btn { flex: 0 0 auto; white-space: nowrap; }
+.ds-text { flex: 1 1 auto; min-width: 0; }
+.ds-title { font-size: 14px; font-weight: 620; color: var(--text-primary); }
+.ds-sub { margin-top: 2px; font-size: 12px; color: var(--text-secondary); }
+.ds-preview { margin-top: 10px; padding: 10px 12px; border-radius: 12px; background: var(--bg-subtle); }
+.ds-line { font-size: 12.5px; color: var(--text-secondary); }
+.ds-line b { color: var(--text-primary); }
+.ds-warn { display: block; margin-top: 4px; color: var(--danger); }
+.ds-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.ds-chip {
+  padding: 3px 9px; border-radius: 999px; font-size: 11.5px; color: #fff;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.qa-pane[hidden] { display: none; }
+.qa-mode { margin-bottom: 12px; }
+
+/* 长按等待中的空档：给一点视觉预告 */
+.wt-empty.lp-wait {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  animation: lpPulse 480ms var(--ease-standard) forwards;
+}
+@keyframes lpPulse {
+  from { opacity: .35; }
+  to { opacity: 1; }
+}
+
+/* ══════════════════════════════════════════════════════════════
+   v0.2.5 · 今日页聚焦放大重做（真几何补间 + 冻结毛玻璃）
+   ──────────────────────────────────────────────────────────────
+   旧实现的三个毛病，这里逐条根治：
+     ① 用 transform: scale() 演"放大" → 面板和文字一起被拉伸变形
+        （实测出现过 scale(2.06, 0.64)）；
+     ② 动画期间把 backdrop-filter 关掉"省性能" → 面板整段变暗发灰；
+     ③ 缩放的动效和"点击脉冲"抢同一个 transform → 前 140ms 动画被顶掉、
+        之后突然跳一下。
+   现在：JS 算三栏的 px 矩形 → WAAPI 补间 left/top/width/height（文字不
+   变形，模糊不关），毛玻璃单独一层、动画期间尺寸冻结只被裁剪（模糊只算
+   一次），脉冲不再抢属性。缓动统一走强缓出 cubic-bezier(.18,1,.28,1)。
+   ══════════════════════════════════════════════════════════════ */
+
+/* 布局容器只是个坐标原点；三栏由 JS 写 left/top/width/height */
+.layout {
+  display: block;
+  position: relative;
+  /* 不要 overflow:hidden —— 面板外发光(阴影)要能溢到 app 的留白里 */
+}
+.layout .zone {
+  position: absolute; left: 0; top: 0; width: 0; height: 0;
+  /* 补间交给 WAAPI，CSS 再挂 transition 会两套动画互相打架 */
+  transition: none;
+  background: transparent;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-card), inset 0 0 0 0.5px var(--glass-stroke),
+              0 0 12px var(--accent-glow);
+  contain: layout paint;
+  overflow: hidden;
+}
+/* 独立毛玻璃层：底色 + 模糊都在这一层，动画期间由 JS 保持尺寸不变 */
+.zone > .zone-glass {
+  position: absolute; left: 0; top: 0; width: 100%; height: 100%;
+  border-radius: inherit;
+  background: var(--glass-card);
+  -webkit-backdrop-filter: blur(var(--blur-card)) saturate(1.4);
+  backdrop-filter: blur(var(--blur-card)) saturate(1.4);
+  pointer-events: none;
+  z-index: 0;
+}
+.zone > .zone-head,
+.zone > .zone-body { position: relative; z-index: 1; }
+
+/* 展开态：主题色描边（只是描边，不做整块缩放） */
+.zone.expanded {
+  border-color: var(--accent-soft);
+  box-shadow: var(--shadow-panel), inset 0 0 0 1.5px var(--accent-soft),
+              0 0 16px var(--accent-glow);
+}
+.zone.compact { cursor: pointer; }

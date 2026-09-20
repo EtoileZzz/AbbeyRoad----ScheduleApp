@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 开发用：通过 Chrome DevTools Protocol 直接驱动 App 里的 WebView。
  * 前置：adb forward tcp:9222 localabstract:chrome_devtools_remote
  *

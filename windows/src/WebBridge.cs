@@ -40,7 +40,7 @@ namespace AbbeyRoad
 
             string id = msg.ContainsKey("id") ? Convert.ToString(msg["id"]) : null;
             string method = Convert.ToString(msg["method"]);
-            object[] args = (msg.ContainsKey("args") && msg["args"] is object[]) ? (object[])msg["args"] : new object[0];
+            object[] args = ToArgs(msg.ContainsKey("args") ? msg["args"] : null);
 
             try
             {
@@ -51,6 +51,25 @@ namespace AbbeyRoad
             {
                 Reply(id, "error: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// JavaScriptSerializer 把 JSON 数组解出来的类型不一定是 object[]（实际是 ArrayList），
+        /// 之前只认 object[]，结果所有参数都被丢掉 ——
+        /// 「导出配置文件」会存成 0 字节、copy 复制空串、地图/日历也没有关键词。
+        /// 这里把两种形态（object[] 与任意 IList）都收下来。
+        /// </summary>
+        private static object[] ToArgs(object raw)
+        {
+            if (raw is object[]) { return (object[])raw; }
+            System.Collections.IList list = raw as System.Collections.IList;
+            if (list != null)
+            {
+                object[] arr = new object[list.Count];
+                list.CopyTo(arr, 0);
+                return arr;
+            }
+            return new object[0];
         }
 
         private object Dispatch(string method, object[] a)
@@ -73,6 +92,9 @@ namespace AbbeyRoad
                 case "addcalendarevent": return AddCalendarEvent(a);
                 case "exporttext": return ExportText(Str(a, 0), Str(a, 1), Str(a, 2));
                 case "importtext": return ImportText();
+                case "sharefile": return ShareFile(Str(a, 0), Str(a, 1), Str(a, 3));
+                case "listexports": return ListExports();
+                case "readtexturi": return ReadTextUri(Str(a, 0));
                 case "setsystembars": SetBars(Str(a, 0), Bool(a, 1)); return "ok";
                 case "setbackdrop": _form.SetBackdropEnabled(Bool(a, 0)); return "ok";
                 case "exitapp": BeginInvoke(delegate { Application.Exit(); }); return "ok";
@@ -189,6 +211,79 @@ namespace AbbeyRoad
                 Post(payload);
                 return dlg.FileName;
             }
+        }
+
+        /// <summary>
+        /// 「导出到微信」：Windows 没有把文件直接丢进微信的接口，
+        /// 所以存一份到「下载」目录（可以直接拖进微信窗口发送），
+        /// 同时把文件内容放进剪贴板（也能直接粘成一条微信消息）。
+        /// </summary>
+        private string ShareFile(string fileName, string content, string title)
+        {
+            string name = string.IsNullOrEmpty(fileName) ? "AbbeyRoad-backup.json" : fileName;
+            string savedPath = null;
+            try
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+                Directory.CreateDirectory(dir);
+                savedPath = Path.Combine(dir, name);
+                File.WriteAllText(savedPath, content, new UTF8Encoding(false));
+            }
+            catch (Exception)
+            {
+                savedPath = null;
+            }
+            try { Clipboard.SetText(content); } catch (Exception) { }
+            if (savedPath == null)
+            {
+                return "已复制配置内容，粘贴到微信发送即可";
+            }
+            return "已存到「下载」目录并复制了内容，可拖进微信发送：" + name;
+        }
+
+        /// <summary>
+        /// 列出「下载」目录里 App 导出的配置文件（AbbeyRoad*.json），
+        /// 给网页一份可以直接点的清单，省得每次都在文件对话框里翻。
+        /// 返回 JSON 数组：[{name, uri(这里就是完整路径), size, modified}]
+        /// </summary>
+        private string ListExports()
+        {
+            List<Dictionary<string, object>> list = new List<Dictionary<string, object>>();
+            try
+            {
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Downloads");
+                if (Directory.Exists(dir))
+                {
+                    string[] files = Directory.GetFiles(dir, "AbbeyRoad*.json");
+                    Array.Sort(files);
+                    Array.Reverse(files);   // 名字里带时间戳，倒序就是最新的在前
+                    for (int i = 0; i < files.Length && i < 30; i++)
+                    {
+                        FileInfo fi = new FileInfo(files[i]);
+                        Dictionary<string, object> rec = new Dictionary<string, object>();
+                        rec["name"] = fi.Name;
+                        rec["uri"] = fi.FullName;
+                        rec["size"] = fi.Length;
+                        rec["modified"] = (long)(fi.LastWriteTimeUtc - new DateTime(1970, 1, 1)).TotalMilliseconds;
+                        list.Add(rec);
+                    }
+                }
+            }
+            catch (Exception) { }
+            return _json.Serialize(list);
+        }
+
+        /** 读取清单里那个文件的文本（uri 就是完整路径） */
+        private string ReadTextUri(string path)
+        {
+            try
+            {
+                if (string.IsNullOrEmpty(path) || !File.Exists(path)) { return ""; }
+                return File.ReadAllText(path, Encoding.UTF8);
+            }
+            catch (Exception) { return ""; }
         }
 
         private void SetBars(string hex, bool lightIcons)

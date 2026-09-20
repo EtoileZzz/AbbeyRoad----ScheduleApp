@@ -12,14 +12,20 @@
   /* 文件导入：JSON 与 Markdown 自动分流 */
   AR.onFileText = function (text, name) {
     var t = String(text == null ? '' : text);
-    var isJson = /\.json$/i.test(name || '') || /^\s*\{/.test(t);
+    while (t.charCodeAt(0) === 0xFEFF) { t = t.slice(1); }     // 去掉 UTF-8 BOM
+    var head = t.replace(/^\s+/, '').charAt(0);
+    // 只有「以 { 开头的配置文件」走 JSON 流程；以 [ 开头的是 AI 常给的 JSON 数组，
+    // 交给课表文本解析器更合适（它认 JSON 数组）。
+    var isJson = (/\.json$/i.test(name || '') && head === '{') || head === '{';
     AR.UI.show('import');
     setTimeout(function () {
       if (isJson) {
         var tab = document.querySelector('[data-tab="json"]');
         if (tab) { tab.click(); }
-        AR.Panels.handleJsonText(t, name || '导入的 JSON');
-        AR.UI.toast('已读取 ' + (name || 'JSON 文件'));
+        var ok = AR.ConfigIO
+          ? AR.ConfigIO.importFromText(t, name || '导入的配置文件')
+          : AR.Panels.handleJsonText(t, name || '导入的配置文件');
+        if (ok) { AR.UI.toast('已读取配置文件，确认预览后点「合并导入」'); }
       } else {
         var tab2 = document.querySelector('[data-tab="md"]');
         if (tab2) { tab2.click(); }
@@ -29,7 +35,7 @@
         var ev = document.createEvent('Event');
         ev.initEvent('input', true, true);
         input.dispatchEvent(ev);
-        AR.UI.toast('已读取 ' + (name || 'Markdown 文件'));
+        AR.UI.toast('已读取 ' + (name || '课表文本'));
       }
     }, 140);
   };

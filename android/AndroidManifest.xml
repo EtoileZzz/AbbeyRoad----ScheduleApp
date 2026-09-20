@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.ganxing.abbeyroad"
-    android:versionCode="10"
-    android:versionName="0.1.9">
+    android:versionCode="21"
+    android:versionName="0.3.0">
 
     <!-- 震动反馈：重要操作触发 -->
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -67,6 +67,28 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <!--
+                微信里收到配置文件后「用其他应用打开」→ 直接进 Abbey Road 导入。
+                微信的文件躺在自己的私有目录里，系统文件选择器（作用域存储）看不到，
+                所以必须有这两条：VIEW 打开 .json，SEND 分享文件过来。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:mimeType="application/json" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/json" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="content" android:mimeType="application/octet-stream" android:pathPattern=".*\\.json" />
             </intent-filter>
         </activity>
 
