@@ -1,16 +1,6 @@
 # Abbey Road · 大学生课表与日程
 
-> 本地优先的课表 / 日程应用：**Android APK + Windows EXE**，一套界面代码跑两端。
-> 不联网、不注册、没有云同步 —— 数据只保存在你自己的设备上，换设备靠导出 / 导入配置文件。
 
-项目已开源：<https://github.com/EtoileZzz/AbbeyRoad----ScheduleApp>
-
-<p align="center">
-  <img src="docs/screenshots/today.png" width="24%" alt="今日页" />
-  <img src="docs/screenshots/week.png" width="24%" alt="周表" />
-  <img src="docs/screenshots/editing.png" width="24%" alt="单节课程编辑" />
-  <img src="docs/screenshots/import.png" width="24%" alt="导入" />
-</p>
 
 ## 特性
 
@@ -105,75 +95,6 @@ abbey-road/
   卡片按**每一栏自己的内容宽度**分 `w-xs…w-xl` 五档调字号与列数
   （直板机一列铺满、折叠屏/平板两列、超宽四列），窄到 100px 也不出现"一个字一行"。
 
-## 构建
-
-### Android（APK）
-
-```powershell
-# 依赖：JDK 17 + Android SDK 34（platform-34 与 build-tools 34.0.0）
-# 默认工具链目录：$HOME\.android-build（可用环境变量 ABBEYROAD_BUILD_ROOT 覆盖）
-cd android
-powershell -ExecutionPolicy Bypass -File .\build.ps1
-# 产物：dist\AbbeyRoad-v<版本>.apk（首次运行会自动生成本地自签名 keystore）
-```
-
-签名口令从环境变量 `ABBEYROAD_KS_PASS` 或 `android/build.local.ps1` 读取（该文件已在 `.gitignore` 里，不会入库）。
-
-### Windows（EXE + 安装器）
-
-```powershell
-# 依赖：Roslyn 编译器 + WebView2 SDK 的托管 DLL
-# 默认目录 $HOME\.build-tools（可用 ABBEYROAD_WIN_TOOLS 或 windows/build.local.ps1 覆盖）
-cd windows
-powershell -ExecutionPolicy Bypass -File .\build.ps1
-# 产物：dist\AbbeyRoad-Setup-v<版本>.exe（安装器）· dist\AbbeyRoad-v<版本>-portable.zip（绿色版）
-```
-
-### 开发辅助
-
-```powershell
-node tools\test-logic.js      # 逻辑回归测试（170 项：课表计算 / 文本解析 / 单节编辑 / 地点裁剪 …）
-node tools\frames.js --help   # 逐帧抓图，用来看动画过程
-node tools\cdp.js "AR.Const.APP_VERSION"   # 通过 CDP 直接驱动 App 里的 WebView
-
-# 界面冒烟测试（43 项）：需要先让 App 跑起来并开好 CDP
-#   Windows：set ABBEYROAD_DEBUG=1 后启动 exe（端口 9223）
-#   模拟器：powershell -File tools\adb-cdp.ps1（端口 9222）
-$env:CDP_PORT='9223'; node tools\smoke-ui.js
-```
-
-### 同步到 GitHub（之后可以在浏览器里直接改）
-
-这个目录已经初始化好 git 仓库并且有一次提交，推到自己的仓库：
-
-```powershell
-git remote add origin https://github.com/<你的用户名>/<仓库名>.git
-git branch -M main
-git push -u origin main
-```
-
-如果 git 提示 `dubious ownership`（工作目录属主不是当前用户时会出现），先执行：
-
-```powershell
-git config --global --add safe.directory "<这个目录的绝对路径>"
-```
-
-## 导入格式（AR-TXT）
-
-一行一门课，字段用全角竖线 `｜` 分隔（半角 `|` 也认）：
-
-```
-课程名 ｜ 星期 ｜ 节次 ｜ 周次 ｜ 地点 ｜ 老师 ｜ 备注 ｜ 颜色
-高等数学A ｜ 周一 ｜ 1-2 ｜ 1-16 ｜ XX大学 信息楼305 ｜ 张三 ｜ 需带教材 ｜ 蓝
-调课 ｜ 高等数学A ｜ 2026-10-08 ｜ 周四 ｜ 1-2 ｜ XX大学 信息楼201 ｜ 国庆调休
-考试 ｜ 期中考试 ｜ 2026-11-05 ｜ 14:00-16:00 ｜ 教学楼A301 ｜ 闭卷
-```
-
-缺字段可以直接空着或用 `-`；解析失败会逐条提示，并在导入前给预览与手动修正。
-
-## 更新日志
-
-见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 数据与隐私
 
