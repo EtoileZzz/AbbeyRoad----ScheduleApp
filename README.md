@@ -102,6 +102,11 @@ abbey-road/
 - 应用**不发起任何网络请求**、不收集数据、没有账号体系；导出的文件由你自己保管。
 - 配置文件是 JSON（`kind: "abbeyroad.sync"`），带 schema 版本号，导入前先预览、冲突逐条确认。
 
+## 贡献者
+
+- **EtoileZzz** —— 项目作者：需求、设计与反馈
+- **DeepSeek** —— 代码实现（AI 编程助手，提交署名 `deepseek@users.noreply.github.com`）
+
 ## 许可
 
 MIT License，见 [LICENSE](LICENSE)。可以自由使用、修改、再发布，保留版权声明即可。
