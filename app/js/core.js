@@ -1010,7 +1010,13 @@ var APP_VERSION = '0.3.0';
       var ovDate = parseDateKey(ov.date);
       if (!ovDate || !sameDay(ovDate, date)) { continue; }
       if (ov.type === 'cancel') { return null; }
-      if (ov.type === 'move' || ov.type === 'time' || ov.type === 'room') {
+      /**
+       * 本次修复（v0.3.0 补丁）：把 'edit'（编辑窗口里选「仅这次」保存）也算成「这一次课的覆盖」。
+       * 以前这里只认 move / time / room，于是「仅这次」改完备注、地点、时间之后
+       * blockOccurrence 根本不认这条记录 —— 界面上一点变化都没有，
+       * 用户看到的就是「备注改了但没用」。
+       */
+      if (ov.type === 'move' || ov.type === 'time' || ov.type === 'room' || ov.type === 'edit') {
         item.override = ov;
         item.kind = ov.type;
         return item;
@@ -1088,7 +1094,24 @@ var APP_VERSION = '0.3.0';
     var ov = item.override;
     var locationIds = block.locationIds || [];
     var teacherIds = block.teacherIds || (course.teacherIds || []);
-    var note = block.note || course.note || '';
+    /**
+     * 备注取值：以前是 block.note || course.note。
+     * 导入时同一行的备注会同时写进 course 和 block 两处，于是在备注窗口里
+     * 清空只清掉了 block 那一份，界面又用 course 里的兜底显示回来 ——
+     * 表现就是「备注删不掉 / 改完没反应」。
+     * 现在只要 block 上带着这个字段就以它为准，course 只在老数据缺字段时兜底。
+     *
+     * src 记录每个字段到底来自哪一层，编辑窗口据此把改动写回正确的位置
+     * （override = 只影响这一天；block = 这门课所有时段）。
+     */
+    var note = (typeof block.note === 'string') ? block.note : (course.note || '');
+    var src = {
+      note: (typeof block.note === 'string') ? 'block' : 'course',
+      teacher: (block.teacherIds && block.teacherIds.length) ? 'block'
+        : ((course.teacherIds && course.teacherIds.length) ? 'course' : 'block'),
+      location: (block.locationIds && block.locationIds.length) ? 'block'
+        : (course.defaultLocationId ? 'course' : 'block')
+    };
 
     if (ov) {
       if (ov.newPeriodStart) {
@@ -1097,12 +1120,12 @@ var APP_VERSION = '0.3.0';
           startTime: ov.newStartTime, endTime: ov.newEndTime
         }, periodList) || pr;
       }
-      if (ov.newLocationIds && ov.newLocationIds.length) { locationIds = ov.newLocationIds; }
-      else if (ov.newLocationCleared) { locationIds = []; }
+      if (ov.newLocationIds && ov.newLocationIds.length) { locationIds = ov.newLocationIds; src.location = 'override'; }
+      else if (ov.newLocationCleared) { locationIds = []; src.location = 'override'; }
       // v0.2.0：单次课也能单独换老师 / 清空备注（编辑窗口写入这些字段）
-      if (ov.newTeacherIds) { teacherIds = ov.newTeacherIds; }
-      if (typeof ov.newNote === 'string' && ov.newNote !== '') { note = ov.newNote; }
-      else if (ov.newNoteCleared) { note = ''; }
+      if (ov.newTeacherIds) { teacherIds = ov.newTeacherIds; src.teacher = 'override'; }
+      if (typeof ov.newNote === 'string' && ov.newNote !== '') { note = ov.newNote; src.note = 'override'; }
+      else if (ov.newNoteCleared) { note = ''; src.note = 'override'; }
     }
     if ((!locationIds || !locationIds.length) && course.defaultLocationId) {
       locationIds = [course.defaultLocationId];
@@ -1124,7 +1147,7 @@ var APP_VERSION = '0.3.0';
       periodLabel: pr ? pr.label : '',
       start: pr ? pr.start : '', end: pr ? pr.end : '',
       startMin: startMin, endMin: endMin,
-      location: loc, teachers: teachers, note: note,
+      location: loc, teachers: teachers, note: note, src: src,
       color: colorHex(course.colorKey),
       isConsecutive: !!block.isConsecutive,
       segments: block.segments || null

@@ -3103,7 +3103,6 @@ var AR = window.AR || (window.AR = {});
 
       if (scope === 'once') {
         var patch = {
-          type: 'edit',
           newPeriodStart: pStart, newPeriodEnd: pEnd,
           newStartTime: customStart, newEndTime: customEnd,
           newLocationIds: loc ? [loc.id] : [], newLocationCleared: !loc,
@@ -3117,20 +3116,25 @@ var AR = window.AR || (window.AR = {});
           patch.newDate = targetKey;
           patch.newWeekday = weekday;
         }
-        if (item.override && (moved || item.kind === 'moved-in')) {
-          // 已经有一条单次记录：直接改写它，避免记录越堆越多
-          var ov = AR.Store.overrideById(item.override.id);
-          if (ov) {
-            for (var k in patch) {
-              if (Object.prototype.hasOwnProperty.call(patch, k)) { ov[k] = patch[k]; }
-            }
-            if (moved) { ov.date = targetKey; }
-            ov.updatedAt = new Date().toISOString();
-            AR.Store.save(true);
-          } else {
-            AR.Store.upsertOverride(block.id, course.id, targetKey, patch);
+        /**
+         * 本次修复（v0.3.0 补丁）：只要点开的就是一条已有的单次记录，就按 id 改写它本身。
+         *
+         * 老逻辑只在「换了星期」或「本来就是调课补进来的」时才走这条路，
+         * 其它情况一律 upsertOverride(block.id, …, {type:'edit',…})：
+         * 「换教室 / 换时间 / 借课」的记录会被就地降级成一条普通的 edit 记录，
+         * 而 edit 以前又没人认领 —— 保存完这节课的改动整条失效（备注改了看不到）。
+         * 现在只补字段，type / blockId 原样保留；确实是新记录时才写 type:'edit'。
+         */
+        var existOv = (item.override && item.override.id) ? AR.Store.overrideById(item.override.id) : null;
+        if (existOv) {
+          for (var k in patch) {
+            if (Object.prototype.hasOwnProperty.call(patch, k)) { existOv[k] = patch[k]; }
           }
+          if (moved) { existOv.date = targetKey; }
+          existOv.updatedAt = new Date().toISOString();
+          AR.Store.save(true);
         } else {
+          if (!patch.type) { patch.type = 'edit'; }
           AR.Store.upsertOverride(block.id, course.id, targetKey, patch);
         }
         if (moved) {
@@ -3358,12 +3362,14 @@ var AR = window.AR || (window.AR = {});
               navQueryOverride: '', updatedAt: new Date().toISOString()
             };
             S.locations.push(loc);
-            item.block.locationIds = [loc.id];
+            // 这节课原本没有地点：写入真正生效的那一层（单次记录或时段本身）
+            if (!writeItemField(item, 'location', [loc.id])) { toast('没找到这节课的记录，保存失败'); return; }
+            item.location = loc;
           }
           AR.Store.save(true);
           close();
           AR.Bridge.haptic('medium', $('zoneNext'));
-          renderToday();
+          refreshAfterItemEdit();
           toast('地点已保存');
         }
       }]
@@ -3433,7 +3439,17 @@ var AR = window.AR || (window.AR = {});
    * 保存后把顺序按行写回这个时段的 teacherIds。
    */
   function openTeacherModal(item) {
-    var body = el('<div id="teacherList"></div>');
+    /**
+     * 本次修复（v0.3.0 补丁）：以前这里把 body 直接写成 <div id="teacherList">，
+     * 紧接着又用 body.querySelector('#teacherList') 去找它自己 —— querySelector
+     * 只找后代，永远返回 null。结果是：
+     *   · 这门课已经有老师时，下面的 list.appendChild 直接抛 TypeError，
+     *     整个「老师」窗口打不开（连带里面的老师备注也编辑不了）；
+     *   · 没有老师时，「+ 添加老师」按钮点了没反应。
+     * 现在老老实实建一层外壳 + 一个列表容器，两个问题一起解决。
+     */
+    var body = el('<div></div>');
+    var list = el('<div id="teacherList"></div>');
 
     function teacherRow(t) {
       var exists = !!t;
@@ -3454,10 +3470,10 @@ var AR = window.AR || (window.AR = {});
       return row;
     }
 
-    var list = body.querySelector('#teacherList');
     if (!item.teachers.length) {
-      body.insertBefore(el('<p class="muted">还没有老师信息，下面填一个就行。</p>'), list);
+      body.appendChild(el('<p class="muted">还没有老师信息，点下面的「+ 添加老师」填一个就行。</p>'));
     }
+    body.appendChild(list);
     for (var i = 0; i < item.teachers.length; i++) { list.appendChild(teacherRow(item.teachers[i])); }
 
     var addRow = el('<button class="chip-btn" type="button" id="teacherAdd">+ 添加老师</button>');
@@ -3494,13 +3510,15 @@ var AR = window.AR || (window.AR = {});
               t.updatedAt = new Date().toISOString();
               if (ids.indexOf(t.id) < 0) { ids.push(t.id); }
             }
-            item.block.teacherIds = ids;
-            item.block.updatedAt = new Date().toISOString();
-            AR.Store.save(true);
+            if (!writeItemField(item, 'teacher', ids)) { toast('没找到这节课的记录，保存失败'); return; }
+            item.teachers = [];
+            for (var q = 0; q < ids.length; q++) {
+              var tt = AR.Store.teacherById(ids[q]);
+              if (tt) { item.teachers.push(tt); }
+            }
             close();
             AR.Bridge.haptic('medium', $('zoneNext'));
-            renderToday();
-            if (currentView === 'week') { renderWeek(); }
+            refreshAfterItemEdit();
             toast('已保存老师信息');
           }
         }
@@ -3508,28 +3526,101 @@ var AR = window.AR || (window.AR = {});
     });
   }
 
+  /**
+   * 把「这一格」的改动写回**真正生效的那条记录**。
+   *
+   * 老实现统一写 item.block.note / item.block.teacherIds，两种情况会白改：
+   *   ① 补课 / 加课：渲染时 item.block 是临时拼出来的对象，根本不在仓库里，
+   *      写进去当场就丢（备注保存后依旧显示旧值就是这么来的）；
+   *   ② 那天的课本来就有一条单次记录（调课 / 换教室 / 换时间）：真正生效的
+   *      是记录里的值，写 block 等于写了另一层，界面上看不到任何变化。
+   * decorate() 现在会顺带给出 src（每个字段来自 override / block / course），
+   * 这里据此决定写哪一层：
+   *   - src = override，或这节课没有真实模板（补课 / 加课）→ 写单次记录，只影响这一天；
+   *   - 其它情况 → 写时段（block），这门课没被单独调整过的周都会跟着变。
+   * 返回被写入的对象；写不进去返回 null。
+   */
+  function editTargetOf(item, field) {
+    var ov = (item.override && item.override.id) ? AR.Store.overrideById(item.override.id) : null;
+    var real = (item.block && item.block.id && AR.Store.blockById) ? AR.Store.blockById(item.block.id) : null;
+    var source = (item.src && item.src[field]) || 'block';
+    // 补课 / 加课：这节课的数据本来就只存在单次记录里，改哪一格都写记录
+    var oneOff = (item.kind === 'makeup' || item.kind === 'add');
+    var target;
+    if (source === 'override' || oneOff || !real) { target = ov || real; }
+    else { target = real; }
+    return { ov: ov, real: real, target: target, once: !!target && target === ov };
+  }
+
+  /** 这个字段这次会改到「只这一天」还是「这门课所有时段」——弹窗里给用户一句提示 */
+  function editScopeOf(item, field) {
+    return editTargetOf(item, field).once ? 'once' : 'all';
+  }
+
+  function writeItemField(item, field, value) {
+    var pick = editTargetOf(item, field);
+    var ov = pick.ov;
+    var target = pick.target;
+    if (!target) { return null; }
+
+    if (field === 'note') {
+      if (target === ov) { ov.newNote = value; ov.newNoteCleared = !value; }
+      else { target.note = value; }
+    } else if (field === 'teacher') {
+      if (target === ov) { ov.newTeacherIds = value; }
+      else { target.teacherIds = value; }
+    } else if (field === 'location') {
+      if (target === ov) { ov.newLocationIds = value; ov.newLocationCleared = !(value && value.length); }
+      else { target.locationIds = value; }
+    } else {
+      target[field] = value;
+    }
+    target.updatedAt = new Date().toISOString();
+    /**
+     * 临时 block（补课 / 加课那种渲染时拼出来的对象）顺手同步一份，
+     * 重画之前卡片上就能显示新值。真正的模板 block 不能在这里改 ——
+     * 上面把改动写进单次记录时，再动模板就等于把「只改这一次」变成了改整门课。
+     */
+    if (item.block && !pick.real) {
+      if (field === 'note') { item.block.note = value; }
+      else if (field === 'teacher') { item.block.teacherIds = value; }
+      else if (field === 'location') { item.block.locationIds = value; }
+    }
+    AR.Store.save(true);
+    return target;
+  }
+
   /* 备注模块 */
   function openNoteModal(item) {
     var body = el('<div class="field"><label class="field-label">备注（会显示在课程详情里）</label>'
       + '<textarea class="input" id="noteEditInput" rows="6">' + U.escapeHtml(item.note || '') + '</textarea></div>');
     openModal({
-      title: '备注', sub: item.course.name, body: body,
+      title: '备注',
+      sub: item.course.name + (editScopeOf(item, 'note') === 'once'
+        ? ' · 只改 ' + (item.date.getMonth() + 1) + '/' + item.date.getDate() + ' 这一次'
+        : ' · 这门课的所有时段'),
+      body: body,
       actions: [
         { label: '复制', onClick: function () { AR.Bridge.copy(item.note || ''); } },
         {
           label: '保存', kind: 'primary', onClick: function (close) {
             var v = ($('noteEditInput') && $('noteEditInput').value || '');
-            item.block.note = v;
-            item.block.updatedAt = new Date().toISOString();
-            AR.Store.save(true);
+            if (!writeItemField(item, 'note', v)) { toast('没找到这节课的记录，保存失败'); return; }
+            item.note = v;
             close();
             AR.Bridge.haptic('medium', $('zoneNext'));
-            renderToday();
-            toast('备注已保存');
+            refreshAfterItemEdit();
+            toast(v ? '备注已保存' : '备注已清空');
           }
         }
       ]
     });
+  }
+
+  /** 改完某一节课的字段后统一刷新（今日 / 周表 / 最近的课都跟着变） */
+  function refreshAfterItemEdit() {
+    renderToday();
+    if (currentView === 'week') { renderWeek(); }
   }
 
   /* ── Toast ────────────────────────────────────────────────── */
