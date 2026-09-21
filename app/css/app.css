@@ -389,19 +389,48 @@ input, textarea { user-select: text; }
 .setting-text .d { font-size: 12px; color: var(--text-tertiary); margin-top: 2px; }
 
 /* 滑块 */
-.slider-row { display: grid; grid-template-columns: 76px 1fr 54px; align-items: center; gap: var(--sp-3); }
+.slider-row { margin-bottom: var(--sp-3); }
+.slider-row .sld-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: var(--sp-2); margin-bottom: 2px;
+}
 .slider-row .lbl { font-size: 12.5px; color: var(--text-secondary); }
-.slider-row .val { font-size: 12.5px; color: var(--text-tertiary); text-align: right; font-variant-numeric: tabular-nums; }
+.slider-row .val {
+  flex: 0 0 auto; font-size: 12.5px; color: var(--accent); font-weight: 620;
+  font-variant-numeric: tabular-nums; min-width: 44px; text-align: right;
+}
+/* 轨道独占一行 + 两端 − / + 微调：手机上捏得准，也点得准 */
+.slider-row .sld-body { display: flex; align-items: center; gap: 8px; }
+.sld-step {
+  flex: 0 0 auto; width: 34px; height: 34px; border-radius: 12px;
+  display: grid; place-items: center;
+  border: 1px solid var(--glass-stroke); background: var(--glass-surface);
+  color: var(--text-secondary); font-size: 15px; line-height: 1; cursor: pointer;
+  transition: transform 140ms var(--ease-smooth), background 160ms var(--ease-fade-out),
+              color 160ms var(--ease-fade-out);
+}
+.sld-step:active { transform: scale(0.92); background: var(--accent-soft); color: var(--accent); }
+.slider-row input[type="range"] { flex: 1 1 auto; min-width: 0; height: 34px; touch-action: none; }
 input[type="range"] {
   -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0;
 }
 input[type="range"]::-webkit-slider-runnable-track {
-  height: 4px; border-radius: 4px; background: var(--divider);
+  height: 6px; border-radius: 999px;
+  /* 已填充的部分用主题色画出来（--fill 由 JS 按当前值写） */
+  background: linear-gradient(90deg, var(--accent) 0 var(--fill, 50%),
+              var(--divider) var(--fill, 50%) 100%);
 }
 input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 18px; height: 18px; margin-top: -7px;
+  -webkit-appearance: none; appearance: none; width: 24px; height: 24px; margin-top: -9px;
   border-radius: 50%; background: #fff; border: 2px solid var(--accent);
   box-shadow: var(--shadow-card);
+  transition: transform 120ms var(--ease-smooth);
+}
+input[type="range"]:active::-webkit-slider-thumb { transform: scale(1.12); }
+input[type="range"]::-moz-range-track { height: 6px; border-radius: 999px; background: var(--divider); }
+input[type="range"]::-moz-range-thumb {
+  width: 22px; height: 22px; border-radius: 50%; background: #fff;
+  border: 2px solid var(--accent); box-shadow: var(--shadow-card);
 }
 
 /* ── 面板与区块 ────────────────────────────────────────────── */
@@ -1286,6 +1315,29 @@ body { text-size-adjust: 100%; }
 .mg-block { border-radius: 4px; min-height: 8px; cursor: pointer; }
 .mg-block:hover { filter: brightness(1.05); }
 .mini-foot { margin-top: 6px; font-size: 10.5px; color: var(--text-tertiary); }
+
+/* ── ②b 迷你周表：横向滚动（窄栏里也能滑出整周 7 天）─────────
+   表格有最小宽度，卡片放不下就左右滑动；左边「节次 / 时间」那一列
+   用 position: sticky 吸住，滑到周日后仍然知道这是第几节。 */
+.mg-scroll {
+  overflow-x: auto; overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  margin: 0 -2px; padding: 0 2px;
+  /* 滚动条不占高度：卡片的竖向空间本来就很紧，底部提示不能被挤出去 */
+  scrollbar-width: none;
+}
+.mg-scroll::-webkit-scrollbar { height: 0; display: none; }
+/* 7 列 × 40px + 16px 时间列 + 列间距 = 310px：低于这个宽度就横向滚动 */
+.mg-scroll .mini-table { min-width: 312px; }
+.mg-scroll .mg-corner,
+.mg-scroll .mg-time,
+.mg-scroll .mg-evlabel {
+  position: sticky; left: 0; z-index: 3;
+  background: var(--bg-base);
+  box-shadow: 1px 0 0 var(--divider);
+}
+.mg-scroll .mg-time { background: var(--bg-subtle); }
 
 /* ── ④ 卡片之间的小白条（长按空白处出现，可拖动改尺寸） ───── */
 .splitter {

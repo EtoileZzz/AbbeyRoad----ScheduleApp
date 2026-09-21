@@ -110,6 +110,33 @@ var AR = window.AR || (window.AR = {});
     return (pref === 'stacked-vertical') ? 'stacked-vertical' : 'dual-horizontal';
   }
 
+  /**
+   * 左手模式：设置 → 布局与尺寸 里的开关。
+   * 只对「左右」布局有意义（「上中下」本来就没有左右之分），
+   * 打开后把整块版图左右镜像：「最近的课」到左边，本周概览 + 今日日程 到右边。
+   */
+  function leftHandOn() {
+    return !!(S.settings && S.settings.layout && S.settings.layout.leftHand);
+  }
+
+  /**
+   * 把算好的矩形整体左右镜像：x' = W - x - w。
+   *
+   * 为什么在矩形这一层做，而不是在 CSS 里 flex-direction: row-reverse：
+   * 三栏的位置全由 rectsFor 算出来的像素矩形说了算（展开/收起只是换个矩形），
+   * 所以镜像放在这里，展开态（左 70% / 右 30% 之类）也会一起跟着镜像，
+   * 平移动画补的还是同一批矩形，不需要任何额外分支。
+   */
+  function mirrorRects(out, W) {
+    for (var k in out) {
+      if (!Object.prototype.hasOwnProperty.call(out, k)) { continue; }
+      var r = out[k];
+      if (!r) { continue; }
+      r.x = Math.max(0, W - r.x - r.w);
+    }
+    return out;
+  }
+
   function sizeOf(which) {
     return Layout.profiles[Layout.profileKey][which];
   }
@@ -219,6 +246,8 @@ var AR = window.AR || (window.AR = {});
     out.week = { x: 0, y: 0, w: ws[0], h: hs2[0] };
     out.today = { x: 0, y: hs2[0] + gap, w: ws[0], h: hs2[1] };
     out.next = { x: ws[0] + gap, y: 0, w: ws[1], h: H };
+    // 左手模式：整体镜像（「最近的课」换到左侧）
+    if (leftHandOn()) { mirrorRects(out, W); }
     return out;
   }
 
@@ -1374,10 +1403,32 @@ var AR = window.AR || (window.AR = {});
     var mini = weekTableNode(sem, Math.max(weekNo, 1), { mini: true });
     mini.classList.add('rail-mini');
     body.appendChild(mini);
+    centerMiniScroll(mini);
+    // 提示保持一行：窄栏里折成两行会把卡片底部顶出去
     body.appendChild(el('<div class="mini-foot">' + U.WEEKDAY_NAMES[U.weekdayOf(cursorDate)] + ' '
       + (cursorDate.getMonth() + 1) + '/' + cursorDate.getDate()
-      + ' · 点日期切换，点色块展开整周</div>'));
+      + ' · 左右滑动看整周</div>'));
     return;
+  }
+
+  /**
+   * 迷你周表：把「当前选中的那一天」滑进可视区。
+   *
+   * 一周 7 天在窄栏里放不下（表格有最小宽度，放不下就横向滚动），
+   * 如果不动 scrollLeft，用户永远只能看到周一到周三 —— 今天/选中的那天
+   * 很可能就在屏幕外。每次重建后主动对一次位，比停在周一头强。
+   * DOM 是重建的（scrollLeft 归零），所以不会跟用户的手势打架。
+   */
+  function centerMiniScroll(scroller) {
+    if (!scroller || !scroller.__table) { return; }
+    var table = scroller.__table;
+    var idx = U.weekdayOf(cursorDate) - 1;
+    var heads = table.querySelectorAll('.mg-day');
+    var head = heads && heads[idx];
+    if (!head) { return; }
+    var max = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+    if (max <= 0) { return; }
+    scroller.scrollLeft = Math.max(0, Math.min(max, head.offsetLeft - 4));
   }
 
   /** 本周条目：简洁长条卡片（时间、地点、老师都在，文字自动换行不省略） */
@@ -1992,7 +2043,12 @@ var AR = window.AR || (window.AR = {});
      */
     var rowH = 0;
     if (mini) {
-      table.style.gridTemplateColumns = '16px repeat(7, minmax(0, 1fr))';
+      /**
+       * 每列至少 40px：窄栏里 7 天挤在 150px 内时，日期会糊成一团，
+       * 现在放不下就让外层 .mg-scroll 横向滚动（左边时间列 sticky 吸住）。
+       * 宽栏里宽度够就照旧一屏铺满 7 天，不会出现"明明放得下还要滑"的情况。
+       */
+      table.style.gridTemplateColumns = '16px repeat(7, minmax(40px, 1fr))';
       table.style.gridTemplateRows = 'auto ' + (evRow ? 'auto ' : '') + 'repeat(' + rows + ', minmax(9px, 1fr))';
     } else {
       var minRow = narrow ? 34 : 40;
@@ -2134,6 +2190,21 @@ var AR = window.AR || (window.AR = {});
     }
     table.__total = weekTotal;
     table.__rows = rows;
+    /**
+     * 迷你态（「本周概览」折叠时）：外面再套一层横向滚动容器。
+     *
+     * 窄栏里 7 天挤在一起时字会小到看不清，所以给表格一个最小宽度
+     * （CSS 里的 .mg-scroll .mini-table { min-width: ... }），放不下就左右滑动，
+     * 一星期里的每一天都能滑出来。左边的时间列用 position: sticky 吸住，
+     * 滑动时不会"看着看着忘了这是第几节"。
+     */
+    if (mini) {
+      var scroller = el('<div class="mg-scroll"></div>');
+      scroller.appendChild(table);
+      scroller.__table = table;
+      scroller.__mini = true;
+      return scroller;
+    }
     return table;
   }
 

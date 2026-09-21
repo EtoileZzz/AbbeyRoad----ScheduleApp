@@ -203,6 +203,58 @@ const script = String.raw`(async () => {
     check('三栏布局默认左右（左中右已移除）',
       ['dual-horizontal', 'stacked-vertical'].indexOf(AR.UI.layoutState.preset) >= 0, AR.UI.layoutState.preset);
 
+    /**
+     * 左手模式：开一下，「最近的课」应该换到左边，关掉要能原样还原。
+     * 直接读布局算出来的目标矩形（Layout.rects），不受正在播放的补间影响。
+     */
+    {
+      const rects = () => (AR.UI.layoutState.rects) || {};
+      const s = AR.Store.get();
+      const setHand = (v) => {
+        s.settings.layout.leftHand = v;
+        AR.Store.save(true);
+        AR.UI.applyLayout(false);
+        return { week: (rects().week || {}).x, next: (rects().next || {}).x };
+      };
+      // 先归零再测：不管上一次跑测试时留下的是什么状态，结果都可复现
+      const before = setHand(false);
+      const mirrored = setHand(true);
+      const restored = setHand(false);
+      /**
+       * 判据只取"两侧对调 + 可还原"：
+       * 两栏宽度并不相同（本周概览那栏宽得多），镜像后 x 不是简单的互换，
+       * 所以只比"谁在左、谁在右"，以及关掉开关后能不能原样回到默认。
+       */
+      check('左手模式把「最近的课」换到左侧（关闭后能还原）',
+        typeof before.week === 'number' && before.week < before.next
+        && mirrored.next < mirrored.week
+        && restored.week === before.week && restored.next === before.next,
+        'week x ' + before.week + '→' + mirrored.week + '→' + restored.week
+        + ' · next x ' + before.next + '→' + mirrored.next + '→' + restored.next);
+    }
+
+    /* 「本周概览」折叠态：迷你周表放在横向滚动容器里，时间列吸左 */
+    AR.UI.setExpanded(null);
+    await sleep(260);
+    {
+      const sc = document.querySelector('#weekBody .mg-scroll');
+      const mini = sc ? sc.querySelector('.mini-table') : null;
+      const timeCell = mini ? mini.querySelector('.mg-time') : null;
+      check('本周概览的迷你周表支持左右滑动（横向滚动容器 + 最小列宽）',
+        !!sc && !!mini && parseFloat(getComputedStyle(mini).minWidth) >= 300,
+        sc ? ('minWidth=' + getComputedStyle(mini).minWidth
+          + ' scrollW=' + sc.scrollWidth + ' clientW=' + sc.clientWidth) : '无 .mg-scroll');
+      if (sc && mini && timeCell) {
+        const maxScroll = sc.scrollWidth - sc.clientWidth;
+        const canScroll = maxScroll > 0;
+        sc.scrollLeft = maxScroll;
+        const stuck = Math.abs(timeCell.getBoundingClientRect().left - sc.getBoundingClientRect().left) < 6;
+        sc.scrollLeft = 0;
+        check('迷你周表时间列横向滑动时吸在左侧', !canScroll || stuck,
+          canScroll ? ('stuck=' + stuck) : '当前宽度放得下整周，无需滚动');
+      }
+    }
+
     /* 展开今日栏：长条卡片 + 编辑全部信息 */
     AR.UI.setExpanded('today');
     await sleep(420);
@@ -683,9 +735,16 @@ const script = String.raw`(async () => {
     check('周表按容器高度算行高（px，不再写死 minmax）',
       !!weekTable && /repeat\(\d+, \d+px\)/.test(weekTable.style.gridTemplateRows || ''),
       weekTable ? weekTable.style.gridTemplateRows : '无');
-    check('周表尽量一屏放下（不出现纵向滚动）',
-      !!wrapEl && wrapEl.scrollHeight <= wrapEl.clientHeight + 4,
-      wrapEl ? (wrapEl.scrollHeight + ' / ' + wrapEl.clientHeight) : '无');
+    /**
+     * "尽量"一屏放下：行高是从可用高度算出来的，但有个下限（40px，窄栏 34px）——
+     * 14 节课塞进 300px 高的容器时，再压就看不清字了，这时允许滚动是设计选择。
+     * 所以判据是"要么放得下，要么已经压到最小行高"。
+     */
+    const weekRowPx = weekTable ? parseFloat(weekTable.style.getPropertyValue('--wt-row')) || 0 : 0;
+    const weekFits = !!wrapEl && wrapEl.scrollHeight <= wrapEl.clientHeight + 4;
+    check('周表尽量一屏放下（放不下时也已压到最小行高）',
+      weekFits || weekRowPx <= 40.5,
+      (wrapEl ? (wrapEl.scrollHeight + ' / ' + wrapEl.clientHeight) : '无') + ' · 行高=' + weekRowPx + 'px');
     const blocksAll = wrapEl ? wrapEl.querySelectorAll('.wt-block') : [];
     const namedBlocks = Array.prototype.filter.call(blocksAll,
       (b) => !!((b.querySelector('.n') || {}).textContent || '').trim());
@@ -734,7 +793,12 @@ const script = String.raw`(async () => {
   } finally {
     try {
       if (backup === null) { localStorage.removeItem(key); } else { localStorage.setItem(key, backup); }
-      AR.Store.load();
+      /**
+       * 用 reload() 而不是 load()：load() 会换掉整个 state 对象，
+       * 而 ui.js / panels.js 缓存了 state 引用 —— 那样后面的检查项会对着
+       * 新对象改设置、界面却读旧对象（左手模式那类检查会假失败）。
+       */
+      if (AR.Store.reload) { AR.Store.reload(); } else { AR.Store.load(); }
       report.coursesAfterRestore = AR.Store.get().courses.length;
       report.blocksAfterRestore = AR.Store.get().blocks.length;
       AR.UI.renderToday();

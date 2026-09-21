@@ -198,7 +198,12 @@ var APP_VERSION = '0.3.0';
         theme: 'system', accent: '#5B8DEF', glassLevel: 'medium',
         animationSpeed: 1
       },
-      layout: { preset: 'dual-horizontal', followDeviceSuggestion: true },
+      /**
+       * leftHand：左手模式。「左右」布局下把两栏对调
+       * （「最近的课」挪到左边，本周概览 + 今日日程 挪到右边），
+       * 让常用的大卡片落在左手拇指够得到的那一侧。
+       */
+      layout: { preset: 'dual-horizontal', followDeviceSuggestion: true, leftHand: false },
       schedule: { currentSemesterId: semesterId, weekStartDay: 1, autoMergeConsecutive: 'auto' },
       /**
        * 「最近的课」按离上课时间切状态色（全部可在设置里改）：
@@ -271,6 +276,8 @@ var APP_VERSION = '0.3.0';
     if (!s.settings.layout) { s.settings.layout = { preset: 'dual-horizontal', followDeviceSuggestion: true }; }
     // v0.1.8：布局只保留「左右 / 上中下」，旧的「自动」「左中右」统一折算成「左右」
     s.settings.layout.preset = (s.settings.layout.preset === 'stacked-vertical') ? 'stacked-vertical' : 'dual-horizontal';
+    // 左手模式：老数据补默认值（关），布尔值原样保留
+    if (typeof s.settings.layout.leftHand !== 'boolean') { s.settings.layout.leftHand = false; }
     // v0.1.8：「减少动效」入口已删除，旧数据里的开关一并清掉，避免"动画不动"的残留状态
     if (s.settings.appearance) { delete s.settings.appearance.reduceMotion; }
     // v0.1.9：「最近的课」状态色（老数据补默认值，阈值与颜色都保留用户改过的）
@@ -358,13 +365,43 @@ var APP_VERSION = '0.3.0';
 
   function get() { return state; }
 
+  /**
+   * 把 state 的内容换成 next 的内容，但**保留 state 这个对象本身**。
+   *
+   * ui.js / panels.js 在初始化时把 state 存进了自己的 S 变量，
+   * 一旦这里 `state = 新对象`，那些模块就会继续读旧对象 —— 表现是
+   * 「清空数据后主题 / 毛玻璃 / 布局设置没跟着恢复」「改了设置界面不动」。
+   * 所以重置一律走"原地换内容"。
+   */
+  function replaceState(next) {
+    var k;
+    for (k in state) { if (Object.prototype.hasOwnProperty.call(state, k)) { delete state[k]; } }
+    for (k in next) { if (Object.prototype.hasOwnProperty.call(next, k)) { state[k] = next[k]; } }
+    return state;
+  }
+
   function reset(keepDevice) {
     var dev = state.device;
-    var ob = state.settings.onboardingCompletedAt;
-    state = defaultState();
-    if (keepDevice && dev) { state.device = dev; }
-    if (ob) { state.settings.onboardingCompletedAt = ob; }
+    var ob = state.settings && state.settings.onboardingCompletedAt;
+    var fresh = defaultState();
+    if (keepDevice && dev) { fresh.device = dev; }
+    if (ob) { fresh.settings.onboardingCompletedAt = ob; }
+    replaceState(fresh);
     save(true);
+    return state;
+  }
+
+  /** 从 localStorage 重新读一份（同样是原地替换，界面缓存的引用继续有效） */
+  function reload() {
+    var fresh = null;
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.kind === 'abbeyroad.sync') { fresh = migrate(parsed); }
+      }
+    } catch (e) { fresh = null; }
+    if (fresh) { replaceState(fresh); }
     return state;
   }
 
@@ -1764,7 +1801,7 @@ var APP_VERSION = '0.3.0';
   };
 
   AR.Store = {
-    load: load, save: save, get: get, reset: reset, migrate: migrate,
+    load: load, save: save, get: get, reset: reset, reload: reload, migrate: migrate,
     currentSemester: currentSemester, periodsOf: periodsOf,
     courseById: courseById, teacherById: teacherById, locationById: locationById,
     blocksOfCourse: blocksOfCourse, overridesOfBlock: overridesOfBlock,

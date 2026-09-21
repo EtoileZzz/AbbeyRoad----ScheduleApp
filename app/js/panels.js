@@ -1080,6 +1080,27 @@ var AR = window.AR || (window.AR = {});
     box.appendChild(preview);
     requestAnimationFrame(function () { drawPreview(); });
 
+    /**
+     * 左手模式：只对「左右」布局有意义。
+     * 打开后整块版图左右镜像 —— 常用的大卡片（最近的课）落在左手边，
+     * 拇指够得到；「上中下」没有左右之分，这里给一句说明免得以为坏了。
+     */
+    var isDual = preset === 'dual-horizontal';
+    var leftHandRow = rowSwitch('左手模式',
+      isDual
+        ? '把「最近的课」和「本周概览 + 今日日程」左右对调，常用卡片落在左手边'
+        : '「上中下」布局没有左右之分；切到「左右」后即可生效',
+      !!S.settings.layout.leftHand,
+      function (v) {
+        S.settings.layout.leftHand = v;
+        AR.Store.save(true);
+        AR.UI.applyLayout(true);
+        drawPreview();
+        AR.UI.toast(v ? '已开启左手模式' : '已关闭左手模式');
+      });
+    if (!isDual) { leftHandRow.classList.add('disabled-row'); }
+    box.appendChild(leftHandRow);
+
     var bp = AR.UI.breakpointKey(document.documentElement.clientWidth);
     var resolved = AR.UI.layoutState.preset;
     box.appendChild(el('<div class="muted" style="margin-bottom:8px">当前断点：'
@@ -1221,17 +1242,80 @@ var AR = window.AR || (window.AR = {});
     return node;
   }
 
+  /**
+   * 滑块（设置里的尺寸 / 分钟数都用它）。
+   *
+   * 老版本是一行三列的 grid：标签 76px + 轨道 + 数值 54px。在直板手机上
+   * 标签会折成两三行、轨道只剩一百来像素 —— 34 档挤在 100px 里，一格 3px，
+   * 手指根本捏不准，这才是"滑块不好用"的真正原因。现在：
+   *   ① 标签与数值合并成一行放上面，轨道独占一整行（长了一倍多，精度跟着翻倍）；
+   *   ② 两端加 − / + 微调按钮，点一下 1%，长按连续（420ms 后每 90ms 一跳），
+   *      想精确调的时候不用再跟手指较劲；
+   *   ③ 拇指加大到 24px、轨道 6px，并且已填充部分用主题色画出来，一眼看出当前比例；
+   *   ④ touch-action: none —— 在滑块上横向拖动不会再被设置页的纵向滚动抢走；
+   *   ⑤ 拖动时按帧（rAF）提交，避免每一帧里塞好几次重排。
+   */
   function slider(label, min, max, value, unit, onInput) {
-    var node = el('<div class="slider-row"><div class="lbl">' + esc(label) + '</div>'
+    var node = el('<div class="slider-row">'
+      + '<div class="sld-head"><span class="lbl">' + esc(label) + '</span>'
+      + '<span class="val">' + value + unit + '</span></div>'
+      + '<div class="sld-body">'
+      + '<button class="sld-step" type="button" data-step="-1" aria-label="减小">−</button>'
       + '<input type="range" min="' + min + '" max="' + max + '" step="1" value="' + value + '">'
-      + '<div class="val">' + value + unit + '</div></div>');
+      + '<button class="sld-step" type="button" data-step="1" aria-label="增大">＋</button>'
+      + '</div></div>');
     var range = node.querySelector('input');
     var val = node.querySelector('.val');
+    var lo = Number(min), hi = Number(max);
+    var rafId = 0;
+
+    /** 只刷新"显示层"：数值文案 + 轨道填充比例（不动布局） */
+    function paint() {
+      var v = Number(range.value) || 0;
+      val.textContent = v + unit;
+      var pct = hi > lo ? ((v - lo) / (hi - lo)) * 100 : 0;
+      range.style.setProperty('--fill', pct.toFixed(1) + '%');
+    }
+
+    function commit(v) {
+      var next = Math.max(lo, Math.min(hi, Math.round(v)));
+      if (next === Number(range.value)) { return; }
+      range.value = String(next);
+      paint();
+      onInput(next);
+    }
+
     range.addEventListener('input', function () {
-      val.textContent = range.value + unit;
-      onInput(Number(range.value));
+      paint();
+      if (rafId) { return; }                 // 同一帧里只提交一次
+      rafId = requestAnimationFrame(function () { rafId = 0; onInput(Number(range.value)); });
     });
     range.addEventListener('change', function () { AR.Bridge.haptic('light', node); });
+
+    // − / + 微调：点一下 1%，按住连续走
+    var stepBtns = node.querySelectorAll('.sld-step');
+    for (var si = 0; si < stepBtns.length; si++) {
+      (function (btn) {
+        var delta = Number(btn.getAttribute('data-step')) || 0;
+        var holdTimer = null, repeatTimer = null;
+        function bump() { commit(Number(range.value) + delta); }
+        function stop() {
+          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+          if (repeatTimer) { clearInterval(repeatTimer); repeatTimer = null; }
+        }
+        btn.addEventListener('pointerdown', function (ev) {
+          ev.preventDefault();
+          AR.Bridge.haptic('light', btn);
+          bump();
+          stop();
+          holdTimer = setTimeout(function () { repeatTimer = setInterval(bump, 90); }, 420);
+        });
+        btn.addEventListener('pointerup', stop);
+        btn.addEventListener('pointercancel', stop);
+        btn.addEventListener('pointerleave', stop);
+      })(stepBtns[si]);
+    }
+    paint();
     return node;
   }
 
@@ -1250,6 +1334,12 @@ var AR = window.AR || (window.AR = {});
       a = { l: 0, t: 0, w: W - wNext2 - gap, h: hWeek };
       b = { l: 0, t: hWeek + gap, w: W - wNext2 - gap, h: H - hWeek - gap };
       c = { l: W - wNext2, t: 0, w: wNext2, h: H };
+      // 左手模式：预览也跟着镜像，开关一拨就能看出左右对调
+      if (S.settings.layout.leftHand) {
+        a.l = W - a.l - a.w;
+        b.l = W - b.l - b.w;
+        c.l = W - c.l - c.w;
+      }
     } else {
       var hWeek3 = Math.max(14, Math.min(H * week.h / 100, H * 0.45));
       var hNext3 = Math.max(14, Math.min(H * next.h / 100, H * 0.45));
