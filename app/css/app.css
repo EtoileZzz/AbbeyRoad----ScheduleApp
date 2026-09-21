@@ -1297,47 +1297,53 @@ body { text-size-adjust: 100%; }
 .mini-table {
   display: grid; gap: 2px; width: 100%; min-width: 0;   /* 覆盖 .week-table 的 372px 下限 */
   grid-auto-rows: auto;
+  /* .week-table 有 min-height: 100%（周表页要铺满面板），缩略图不能继承：
+     否则表格被撑到卡片那么高，行高却只有十几 px，底部白白多出一截空档 */
+  min-height: 0;
+  /* 行高由 JS 按卡片高度算好（9–20px）；这里再兜一道，防止 1fr 被拉满 */
+  align-content: start;
 }
 .mg-corner, .mg-day {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   font-size: 9.5px; color: var(--text-tertiary); border-radius: 5px;
   padding: 1px 0; min-width: 0; overflow: hidden;
+  /* 缩略图表头只占一行：以前「9 / 月」折成两行，把整个表头顶到 31px，
+     缩略图光表头就吃掉六分之一高度 */
+  line-height: 1.15; white-space: nowrap;
 }
-.mg-day .n { font-size: 11px; font-weight: 620; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.mg-corner { font-size: 8.5px; }
+.mg-day .w { font-size: 8px; line-height: 1.1; color: var(--text-tertiary); }
+.mg-day .n { font-size: 11px; line-height: 1.15; font-weight: 620; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .mg-day.today { background: var(--accent-soft); }
 .mg-day.today .n { color: var(--accent); }
 .mg-time {
   display: flex; align-items: center; justify-content: center;
-  font-size: 8.5px; color: var(--text-tertiary); background: var(--bg-subtle);
+  font-size: 8px; color: var(--text-tertiary); background: var(--bg-subtle);
   border-radius: 4px; font-variant-numeric: tabular-nums;
 }
 .mg-empty { background: var(--bg-subtle); opacity: 0.5; border-radius: 4px; }
-.mg-block { border-radius: 4px; min-height: 8px; cursor: pointer; }
+.mg-block { border-radius: 3px; min-height: 6px; cursor: pointer; }
 .mg-block:hover { filter: brightness(1.05); }
 .mini-foot { margin-top: 6px; font-size: 10.5px; color: var(--text-tertiary); }
 
-/* ── ②b 迷你周表：横向滚动（窄栏里也能滑出整周 7 天）─────────
-   表格有最小宽度，卡片放不下就左右滑动；左边「节次 / 时间」那一列
-   用 position: sticky 吸住，滑到周日后仍然知道这是第几节。 */
-.mg-scroll {
+/* ── ②b 本周概览「展开态」的周表：可以左右滑动 ─────────────────
+   缩略图（折叠态）固定周一到周五、不可滑动；滑动只在这里 ——
+   卡片窄时每列保留 42px 下限，放不下就横滑，时间列 sticky 吸左。 */
+.wt-scroll {
   overflow-x: auto; overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: contain;
   margin: 0 -2px; padding: 0 2px;
-  /* 滚动条不占高度：卡片的竖向空间本来就很紧，底部提示不能被挤出去 */
-  scrollbar-width: none;
+  scrollbar-width: none;          /* 卡片竖向空间紧，不让滚动条占高度 */
 }
-.mg-scroll::-webkit-scrollbar { height: 0; display: none; }
-/* 7 列 × 40px + 16px 时间列 + 列间距 = 310px：低于这个宽度就横向滚动 */
-.mg-scroll .mini-table { min-width: 312px; }
-.mg-scroll .mg-corner,
-.mg-scroll .mg-time,
-.mg-scroll .mg-evlabel {
+.wt-scroll::-webkit-scrollbar { height: 0; display: none; }
+.wt-scroll .wt-corner,
+.wt-scroll .wt-time,
+.wt-scroll .wt-evlabel {
   position: sticky; left: 0; z-index: 3;
   background: var(--bg-base);
   box-shadow: 1px 0 0 var(--divider);
 }
-.mg-scroll .mg-time { background: var(--bg-subtle); }
 
 /* ── ④ 卡片之间的小白条（长按空白处出现，可拖动改尺寸） ───── */
 .splitter {

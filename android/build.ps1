@@ -22,7 +22,7 @@ $jdk       = Join-Path $buildRoot 'jdk-17.0.20+8'
 $sdk       = Join-Path $buildRoot 'sdk'
 $platform  = Join-Path $sdk 'platforms\android-34\android.jar'
 $bt        = Join-Path $sdk 'build-tools\34.0.0'
-$version   = '0.3.0'
+$version   = '0.3.1'
 
 $env:JAVA_HOME = $jdk
 $env:PATH = "$jdk\bin;$bt;$env:PATH"
@@ -54,7 +54,7 @@ if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile failed' }
 Write-Host '== aapt2 link =='
 & "$bt\aapt2.exe" link -o "$out\base.apk" -I $platform --manifest "$root\AndroidManifest.xml" `
     --java $gen --min-sdk-version 26 --target-sdk-version 34 `
-    --version-code 21 --version-name $version "$out\res.zip"
+    --version-code 22 --version-name $version "$out\res.zip"
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
 
 # 3) Java 编译

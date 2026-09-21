@@ -1386,49 +1386,73 @@ var AR = window.AR || (window.AR = {});
         + (totalWeek ? '<span class="zone-stat">最多 ' + U.WEEKDAY_NAMES[busiestDay] + ' ' + busiest + ' 节</span>' : '')
         + '</div>'));
       if (weekZoneMode === 'month') { renderMonthView(body, sem); return; }
-      // 展开态：整张周表（和「周表」页同一套结构，只是窄一点）
-      // 窄栏里也用"按可用高度算行高"，只是行高区间更小
+      /**
+       * 展开态：整张周表（和「周表」页同一套结构，只是窄一点）。
+       * 这里才是「本周概览」唯一可以左右滑动的地方：卡片窄的时候
+       * 每天给 42px 下限，外面套 .wt-scroll 横向滑动，时间列 sticky 吸左；
+       * 点课程块只弹"课程详情"，不带任何编辑入口（编辑在「周表」页）。
+       */
       var railAvail = Math.max(0, body.clientHeight - 40);
-      body.appendChild(weekTableNode(sem, Math.max(weekNo, 1),
-        { narrow: true, clickDays: true, fitH: railAvail }));
+      var railWrap = el('<div class="wt-scroll"></div>');
+      railWrap.appendChild(weekTableNode(sem, Math.max(weekNo, 1),
+        { narrow: true, clickDays: true, fitH: railAvail, detailOnly: true }));
+      body.appendChild(railWrap);
       body.appendChild(weekEventList(sem, Math.max(weekNo, 1)));
-      body.appendChild(el('<div class="mini-foot">点课程块看详情；点日期切换「今日」。</div>'));
+      body.appendChild(el('<div class="mini-foot">点课程块看详情（只读）· 左右滑动看整周 · 点日期切换「今日」</div>'));
       return;
     }
 
     /**
-     * 折叠态：迷你周表（和「周表」同构：日期在上、节次在左、课程是色块）
-     * + 选中那一日的长条卡片。
+     * 折叠态：缩略图（周一到周五 + 节次 + 色块），**不可滑动**，
+     * 一屏看全工作日；周末有课时在下面提示里报一句。
      */
-    var mini = weekTableNode(sem, Math.max(weekNo, 1), { mini: true });
+    // 把卡片可用高度交给缩略图：行高按它算，卡片高矮都保持"缩略"的比例
+    var mini = weekTableNode(sem, Math.max(weekNo, 1),
+      { mini: true, fitH: Math.max(90, body.clientHeight - 26) });
     mini.classList.add('rail-mini');
     body.appendChild(mini);
-    centerMiniScroll(mini);
-    // 提示保持一行：窄栏里折成两行会把卡片底部顶出去
-    body.appendChild(el('<div class="mini-foot">' + U.WEEKDAY_NAMES[U.weekdayOf(cursorDate)] + ' '
-      + (cursorDate.getMonth() + 1) + '/' + cursorDate.getDate()
-      + ' · 左右滑动看整周</div>'));
+    fitMiniRows(mini);
+    /**
+     * 底部提示按优先级拼：选中的那天 → 周末几节课（缩略图不画周末）→ 操作提示。
+     * 插进 DOM 量一下，真折成两行就削掉最后一段，保证只占一行。
+     */
+    var footParts = [U.WEEKDAY_NAMES[U.weekdayOf(cursorDate)] + ' '
+      + (cursorDate.getMonth() + 1) + '/' + cursorDate.getDate()];
+    if (mini.__weekend) { footParts.push('周末 ' + mini.__weekend + ' 节'); }
+    footParts.push('点日期切换');
+    var foot = el('<div class="mini-foot">' + footParts.join(' · ') + '</div>');
+    body.appendChild(foot);
+    while (footParts.length > 1 && foot.getBoundingClientRect().height > 20) {
+      footParts.pop();
+      foot.textContent = footParts.join(' · ');
+    }
+    if (footParts.length === 1) { fitMiniRows(mini); }
     return;
   }
 
   /**
-   * 迷你周表：把「当前选中的那一天」滑进可视区。
+   * 缩略图二次校准：插进 DOM 后按**真实溢出量**把行高压下去。
    *
-   * 一周 7 天在窄栏里放不下（表格有最小宽度，放不下就横向滚动），
-   * 如果不动 scrollLeft，用户永远只能看到周一到周三 —— 今天/选中的那天
-   * 很可能就在屏幕外。每次重建后主动对一次位，比停在周一头强。
-   * DOM 是重建的（scrollLeft 归零），所以不会跟用户的手势打架。
+   * 渲染时估算的表头高度和字体的实际高度总会差几个像素（主题、字号、
+   * 有没有事件行都会变），结果就是卡片底部多出一条被裁掉的缝。
+   * 这里插进 DOM 后直接量 `scrollHeight - clientHeight`，超多少就压多少，
+   * 最多四轮，保证缩略图 + 底部提示恰好待在卡片里。
    */
-  function centerMiniScroll(scroller) {
-    if (!scroller || !scroller.__table) { return; }
-    var table = scroller.__table;
-    var idx = U.weekdayOf(cursorDate) - 1;
-    var heads = table.querySelectorAll('.mg-day');
-    var head = heads && heads[idx];
-    if (!head) { return; }
-    var max = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
-    if (max <= 0) { return; }
-    scroller.scrollLeft = Math.max(0, Math.min(max, head.offsetLeft - 4));
+  function fitMiniRows(table) {
+    var body = table && table.parentNode;
+    if (!body || !table) { return; }
+    var rows = Number(table.__rows) || 1;
+    var hasEv = !!table.querySelector('.mg-evcell, .mg-evlabel');
+    for (var guard = 0; guard < 4; guard++) {
+      var over = body.scrollHeight - body.clientHeight;
+      if (over <= 0) { break; }
+      var cur = parseFloat(table.style.getPropertyValue('--mg-row')) || 12;
+      var next = Math.max(9, cur - Math.max(1, Math.ceil(over / rows)));
+      if (next >= cur) { break; }
+      table.style.setProperty('--mg-row', next + 'px');
+      table.style.gridTemplateRows = 'auto ' + (hasEv ? 'auto ' : '')
+        + 'repeat(' + rows + ', ' + next + 'px)';
+    }
   }
 
   /** 本周条目：简洁长条卡片（时间、地点、老师都在，文字自动换行不省略） */
@@ -2007,6 +2031,13 @@ var AR = window.AR || (window.AR = {});
     opts = opts || {};
     var mini = !!opts.mini;
     var narrow = !!opts.narrow;      // 放在「本周概览」这种窄栏里：时间列更细、字号更小
+    /**
+     * 缩略图（「本周概览」折叠态）只画**周一到周五**：
+     * 卡片本来就窄，5 列才排得开、能一屏看全，而且不需要任何横向滑动 ——
+     * 滑动只留给"点开聚焦放大"之后的整张周表。
+     * 周末有课时在底部提示里报一句"周末 N 节"，不会丢信息。
+     */
+    var dayNums = mini ? [1, 2, 3, 4, 5] : [1, 2, 3, 4, 5, 6, 7];
     var periods = AR.Store.periodsOf(sem.id);
     var monday = U.addDays(U.mondayOf(U.parseDateKey(sem.startDate)), (weekNo - 1) * 7);
     var today = U.startOfDay(new Date());
@@ -2014,12 +2045,13 @@ var AR = window.AR || (window.AR = {});
     // 这一周实际用到多少节
     var byIndex = {};
     for (var pi = 0; pi < periods.length; pi++) { byIndex[periods[pi].index] = periods[pi]; }
-    var maxUsed = 0, weekTotal = 0;
+    var maxUsed = 0, weekTotal = 0, weekendTotal = 0;
     var dayItems = [];
     for (var d = 1; d <= 7; d++) {
       var its = AR.Schedule.weekItems(weekNo, d);
-      dayItems.push(its);
+      dayItems[d - 1] = its;
       weekTotal += its.length;
+      if (d > 5) { weekendTotal += its.length; }
       for (var i = 0; i < its.length; i++) {
         var endIdx = itemEndPeriod(its[i]);
         if (endIdx > maxUsed) { maxUsed = endIdx; }
@@ -2044,12 +2076,23 @@ var AR = window.AR || (window.AR = {});
     var rowH = 0;
     if (mini) {
       /**
-       * 每列至少 40px：窄栏里 7 天挤在 150px 内时，日期会糊成一团，
-       * 现在放不下就让外层 .mg-scroll 横向滚动（左边时间列 sticky 吸住）。
-       * 宽栏里宽度够就照旧一屏铺满 7 天，不会出现"明明放得下还要滑"的情况。
+       * 缩略图的三条硬规矩：**周一到周五铺满一屏、不横滑、行高不许被撑大**。
+       *   · 列：5 列平分卡片宽度（时间列 16px），永远不需要左右滑动；
+       *   · 行：按卡片可用高度算，夹在 9–20px，绝不 1fr 撑满 ——
+       *     缩略图就该是缩略图，不是把一节课拉成一块大色砖；
+       *   · 表头：上面一行写「一…五」，下面一行写日期，很窄也看得懂。
        */
-      table.style.gridTemplateColumns = '16px repeat(7, minmax(40px, 1fr))';
-      table.style.gridTemplateRows = 'auto ' + (evRow ? 'auto ' : '') + 'repeat(' + rows + ', minmax(9px, 1fr))';
+      var mHeadH = evRow ? 38 : 24;                 // 表头（+事件行）的估算高度
+      var mGaps = Math.max(0, rows - 1 + (evRow ? 1 : 0)) * 2;
+      var mRowH = 14;                               // 没有可用高度信息时的兜底
+      if (opts.fitH) {
+        mRowH = Math.floor((opts.fitH - mHeadH - mGaps) / rows);
+      }
+      mRowH = Math.max(9, Math.min(20, mRowH));
+      table.style.gridTemplateColumns = '16px repeat(' + dayNums.length + ', minmax(16px, 1fr))';
+      table.style.gridTemplateRows = 'auto ' + (evRow ? 'auto ' : '')
+        + 'repeat(' + rows + ', ' + mRowH + 'px)';
+      table.style.setProperty('--mg-row', mRowH + 'px');
     } else {
       var minRow = narrow ? 34 : 40;
       var maxRow = narrow ? 72 : 92;
@@ -2062,7 +2105,12 @@ var AR = window.AR || (window.AR = {});
         rowH = Math.max(minRow, Math.min(maxRow, rowH));
       }
       if (narrow) { table.classList.add('rail-table'); }
-      table.style.gridTemplateColumns = (narrow ? '34px' : '38px') + ' repeat(7, minmax(0, 1fr))';
+      /**
+       * 本周概览展开态（narrow）：每列给 42px 下限 —— 卡片窄的时候
+       * 外层 .wt-scroll 就能左右滑动看完整周（周表页不传 narrow，行为不变）。
+       */
+      table.style.gridTemplateColumns = (narrow ? '34px' : '38px')
+        + ' repeat(7, minmax(' + (narrow ? 42 : 0) + 'px, 1fr))';
       table.style.gridTemplateRows = 'auto ' + (evRow ? 'auto ' : '') + 'repeat(' + rows + ', ' + rowH + 'px)';
       table.style.setProperty('--wt-row', rowH + 'px');
       // 优先级：先牺牲老师，再牺牲地点与上下课时间 —— 课名和节次永远保留
@@ -2070,14 +2118,15 @@ var AR = window.AR || (window.AR = {});
       if (rowH < 34) { table.classList.add('wt-tight'); }
     }
 
-    // 表头：左上角显示月份，其余 7 列是「周X + 日期」（迷你版只留日期）
+    // 表头：左上角显示月份，其余列是「周X + 日期」（缩略图：上一行「一…五」+ 下一行日期）
     table.appendChild(el('<div class="' + (mini ? 'mg-corner' : 'wt-corner') + '" style="grid-row:1;grid-column:1">'
       + (monday.getMonth() + 1) + ' 月</div>'));
-    for (var dh = 1; dh <= 7; dh++) {
+    for (var ci0 = 0; ci0 < dayNums.length; ci0++) {
+      var dh = dayNums[ci0];
       var dDate = U.addDays(monday, dh - 1);
       var head = el('<div class="' + (mini ? 'mg-day' : 'wt-day') + (U.sameDay(dDate, today) ? ' today' : '')
-        + '" style="grid-row:1;grid-column:' + (dh + 1) + '">'
-        + (mini ? '' : '<span class="w">' + U.WEEKDAY_NAMES[dh] + '</span>')
+        + '" style="grid-row:1;grid-column:' + (ci0 + 2) + '">'
+        + '<span class="w">' + (mini ? U.WEEKDAY_NAMES[dh].replace('周', '') : U.WEEKDAY_NAMES[dh]) + '</span>'
         + '<span class="n">' + dDate.getDate() + '</span></div>');
       if (mini || opts.clickDays) {
         (function (dd) {
@@ -2099,9 +2148,10 @@ var AR = window.AR || (window.AR = {});
     if (evRow) {
       table.appendChild(el('<div class="' + (mini ? 'mg-evlabel' : 'wt-evlabel')
         + '" style="grid-row:2;grid-column:1">' + (mini ? '事' : '事件') + '</div>'));
-      for (var ed = 1; ed <= 7; ed++) {
+      for (var ei = 0; ei < dayNums.length; ei++) {
+        var ed = dayNums[ei];
         var cellBox = el('<div class="' + (mini ? 'mg-evcell' : 'wt-evcell')
-          + '" style="grid-row:2;grid-column:' + (ed + 1) + '"></div>');
+          + '" style="grid-row:2;grid-column:' + (ei + 2) + '"></div>');
         var mine = [];
         for (var we = 0; we < weekEvents.length; we++) {
           var wd = window.AR && U.weekdayOf(U.parseDateKey(weekEvents[we].date));
@@ -2146,7 +2196,9 @@ var AR = window.AR || (window.AR = {});
                   + '<span class="t">' + (per ? U.escapeHtml(per.end || '—') : '—') + '</span>')
         + '</div>'));
 
-      for (var day = 1; day <= 7; day++) {
+      for (var ci = 0; ci < dayNums.length; ci++) {
+        var day = dayNums[ci];
+        var col = ci + 2;
         if (occupied[row + '_' + day]) { continue; }
         var list = dayItems[day - 1];
         var hit = null;
@@ -2155,7 +2207,7 @@ var AR = window.AR || (window.AR = {});
         }
         if (!hit) {
           var emptyCell = el('<div class="' + (mini ? 'mg-empty' : 'wt-empty') + '" style="grid-row:'
-            + (row + 2 + evRow) + ';grid-column:' + (day + 1) + '"></div>');
+            + (row + 2 + evRow) + ';grid-column:' + col + '"></div>');
           // 长按空白格子 = 在这个时间段快速新增（课程 / 考试讲座 / 把某天的课调过来）
           if (!mini) { bindEmptyCellLongPress(emptyCell, day, pIdx, U.addDays(monday, day - 1)); }
           table.appendChild(emptyCell);
@@ -2167,12 +2219,12 @@ var AR = window.AR || (window.AR = {});
         var block;
         if (mini) {
           block = el('<div class="mg-block" style="grid-row:' + (row + 2 + evRow) + ' / span ' + span
-            + ';grid-column:' + (day + 1) + ';background:' + hit.color + '"></div>');
+            + ';grid-column:' + col + ';background:' + hit.color + '"></div>');
         } else {
           // 用 background-color（不是 background 简写）：CSS 里那层淡淡的渐变才不会被清掉；
           // 同时按颜色亮度决定白字还是深色字
           block = el('<div class="wt-block ' + contrastClass(hit.color) + '" style="grid-row:' + (row + 2 + evRow) + ' / span ' + span
-            + ';grid-column:' + (day + 1) + ';background-color:' + hit.color + '">'
+            + ';grid-column:' + col + ';background-color:' + hit.color + '">'
             + '<span class="n">' + U.escapeHtml(hit.course.name) + '</span>'
             + (hit.location ? '<span class="l">' + U.escapeHtml(hit.location.raw) + '</span>' : '')
             + (hit.teachers.length ? '<span class="k">' + U.escapeHtml(hit.teachers.map(function (t) { return t.name; }).join('、')) + '</span>' : '')
@@ -2181,7 +2233,16 @@ var AR = window.AR || (window.AR = {});
         (function (item) {
           block.addEventListener('click', function (ev) {
             if (mini) { ev.stopPropagation(); setExpanded('week'); return; }
-            // v0.2.0：周表里点课程块 = 打开详细编辑器（星期 / 单双周 / 老师 / 地点…都能改）
+            /**
+             * 两种入口分工明确：
+             *   · 周表页（默认）：点课程块 = 详细编辑器，星期 / 单双周 / 老师 / 地点都能改；
+             *   · 本周概览展开态（detailOnly）：只看课程详情，不带任何编辑按钮。
+             */
+            if (opts.detailOnly) {
+              ev.stopPropagation();
+              openCourseModal(item, { readOnly: true });
+              return;
+            }
             openBlockEditor(item);
           });
         })(hit);
@@ -2190,21 +2251,7 @@ var AR = window.AR || (window.AR = {});
     }
     table.__total = weekTotal;
     table.__rows = rows;
-    /**
-     * 迷你态（「本周概览」折叠时）：外面再套一层横向滚动容器。
-     *
-     * 窄栏里 7 天挤在一起时字会小到看不清，所以给表格一个最小宽度
-     * （CSS 里的 .mg-scroll .mini-table { min-width: ... }），放不下就左右滑动，
-     * 一星期里的每一天都能滑出来。左边的时间列用 position: sticky 吸住，
-     * 滑动时不会"看着看着忘了这是第几节"。
-     */
-    if (mini) {
-      var scroller = el('<div class="mg-scroll"></div>');
-      scroller.appendChild(table);
-      scroller.__table = table;
-      scroller.__mini = true;
-      return scroller;
-    }
+    table.__weekend = weekendTotal;   // 缩略图只画周一到周五，周末的节数给底部提示用
     return table;
   }
 
@@ -3267,7 +3314,15 @@ var AR = window.AR || (window.AR = {});
    * 课程详情（周表左侧概览 / 今日时间线点开）：
    * v0.2.0 起详细修改统一进「编辑课程」窗口，这里只做速览 + 快捷入口。
    */
-  function openCourseModal(item) {
+  /**
+   * 课程详情弹窗。
+   *
+   * opts.readOnly = true：只读视图 —— 只列字段 + 「关闭」。
+   * 用在「本周概览」展开态的周表里：那儿点课程块只是想看一眼这节课，
+   * 不该出现编辑 / 换色 / 删除这些入口（要改去「周表」页，那儿的逻辑一个字没动）。
+   */
+  function openCourseModal(item, opts) {
+    opts = opts || {};
     var sem = AR.Store.currentSemester();
     var body = '<div class="detail-grid">'
       + '<div class="detail-key">时间</div><div class="detail-val">' + U.WEEKDAY_NAMES[U.weekdayOf(item.date)] + ' '
@@ -3276,19 +3331,25 @@ var AR = window.AR || (window.AR = {});
       + '<div class="detail-key">老师</div><div class="detail-val">' + U.escapeHtml(item.teachers.map(function (t) { return t.name; }).join('、') || '—') + '</div>'
       + '<div class="detail-key">地点</div><div class="detail-val">' + U.escapeHtml(item.location ? item.location.raw : '—') + '</div>'
       + '<div class="detail-key">备注</div><div class="detail-val">' + U.escapeHtml(item.note || '—') + '</div>'
-      + '</div>'
-      + '<div class="muted" style="margin-top:14px">课程名、星期、节次、时间、单双周、老师、地点、颜色，都能在「编辑课程」里改。</div>';
-    openModal({
-      title: item.course.name,
-      sub: '课程详情',
-      body: body,
-      actions: [
+      + '</div>';
+    var actions = [];
+    if (opts.readOnly) {
+      actions.push({ label: '关闭', kind: 'primary', onClick: function (close) { close(); } });
+    } else {
+      body += '<div class="muted" style="margin-top:14px">课程名、星期、节次、时间、单双周、老师、地点、颜色，都能在「编辑课程」里改。</div>';
+      actions.push(
         { label: '编辑课程', kind: 'primary', onClick: function (close) { close(); openBlockEditor(item); } },
         { label: '设置颜色', onClick: function () { openColorModal(item); } },
         { label: '编辑备注', onClick: function () { openNoteModal(item); } },
         { label: '删除这门课', kind: 'danger', onClick: function (close) { deleteCourse(item.course.id, close); } },
         { label: '关闭', onClick: function (close) { close(); } }
-      ]
+      );
+    }
+    openModal({
+      title: item.course.name,
+      sub: opts.readOnly ? '课程详情 · 只读' : '课程详情',
+      body: body,
+      actions: actions
     });
   }
 

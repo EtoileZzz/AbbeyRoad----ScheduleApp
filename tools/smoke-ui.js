@@ -233,27 +233,58 @@ const script = String.raw`(async () => {
         + ' · next x ' + before.next + '→' + mirrored.next + '→' + restored.next);
     }
 
-    /* 「本周概览」折叠态：迷你周表放在横向滚动容器里，时间列吸左 */
+    /* 「本周概览」折叠态：缩略图只画周一到周五，且**不可滑动** */
     AR.UI.setExpanded(null);
     await sleep(260);
     {
-      const sc = document.querySelector('#weekBody .mg-scroll');
-      const mini = sc ? sc.querySelector('.mini-table') : null;
-      const timeCell = mini ? mini.querySelector('.mg-time') : null;
-      check('本周概览的迷你周表支持左右滑动（横向滚动容器 + 最小列宽）',
-        !!sc && !!mini && parseFloat(getComputedStyle(mini).minWidth) >= 300,
-        sc ? ('minWidth=' + getComputedStyle(mini).minWidth
-          + ' scrollW=' + sc.scrollWidth + ' clientW=' + sc.clientWidth) : '无 .mg-scroll');
-      if (sc && mini && timeCell) {
+      const mini = document.querySelector('#weekBody .mini-table');
+      const heads = mini ? mini.querySelectorAll('.mg-day') : [];
+      const cols = mini ? (mini.style.gridTemplateColumns || '').split(' ').length : 0;
+      check('缩略图只画周一到周五（5 列 + 时间列）', !!mini && heads.length === 5 && cols === 6,
+        mini ? ('天=' + heads.length + ' 列=' + cols + ' 模板=' + mini.style.gridTemplateColumns) : '无 .mini-table');
+      check('缩略图不横向滚动', !!mini && mini.scrollWidth <= mini.clientWidth + 2,
+        mini ? (mini.scrollWidth + ' / ' + mini.clientWidth) : '无');
+      const weekendHint = /周末 \d+ 节/.test(document.querySelector('#weekBody .mini-foot')?.textContent || '');
+      const weekendCount = [6, 7].reduce((n, wd) =>
+        n + AR.Schedule.weekItems(AR.Schedule.weekNumber(new Date(), AR.Store.currentSemester()), wd).length, 0);
+      check('周末有课时缩略图会提示（不丢信息）', weekendCount === 0 || weekendHint,
+        'weekend=' + weekendCount + ' hint=' + weekendHint);
+    }
+
+    /* 「本周概览」展开态：这才是可以左右滑动的地方，点课程块只出只读详情 */
+    AR.UI.setExpanded('week');
+    await sleep(420);
+    {
+      const sc = document.querySelector('#weekBody .wt-scroll');
+      const rail = sc ? sc.querySelector('.week-table') : null;
+      const timeCell = rail ? rail.querySelector('.wt-time') : null;
+      check('本周概览展开态放在横向滚动容器里', !!sc && !!rail,
+        sc ? 'ok' : '无 .wt-scroll');
+      if (sc && rail && timeCell) {
         const maxScroll = sc.scrollWidth - sc.clientWidth;
-        const canScroll = maxScroll > 0;
-        sc.scrollLeft = maxScroll;
-        const stuck = Math.abs(timeCell.getBoundingClientRect().left - sc.getBoundingClientRect().left) < 6;
-        sc.scrollLeft = 0;
-        check('迷你周表时间列横向滑动时吸在左侧', !canScroll || stuck,
-          canScroll ? ('stuck=' + stuck) : '当前宽度放得下整周，无需滚动');
+        if (maxScroll > 0) {
+          sc.scrollLeft = maxScroll;
+          const stuck = Math.abs(timeCell.getBoundingClientRect().left - sc.getBoundingClientRect().left) < 6;
+          sc.scrollLeft = 0;
+          check('展开态时间列横滑时吸在左侧', stuck, 'stuck=' + stuck);
+        } else {
+          check('展开态时间列横滑时吸在左侧', true, '当前宽度放得下整周，无需滚动');
+        }
+        const block = rail.querySelector('.wt-block');
+        if (block) {
+          block.click();
+          await sleep(260);
+          const btns = Array.prototype.map.call(
+            $('#modalCard').querySelectorAll('.modal-actions .btn'), (b) => b.textContent.trim());
+          check('展开态点课程块只弹只读详情（没有编辑按钮）',
+            btns.length === 1 && btns[0] === '关闭', btns.join('/'));
+          byText($('#modalCard').querySelectorAll('.modal-actions .btn'), '关闭')[0]?.click();
+          await sleep(300);
+        }
       }
     }
+    AR.UI.setExpanded(null);
+    await sleep(260);
 
     /* 展开今日栏：长条卡片 + 编辑全部信息 */
     AR.UI.setExpanded('today');
