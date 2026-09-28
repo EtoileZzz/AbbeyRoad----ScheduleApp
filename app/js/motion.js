@@ -336,36 +336,127 @@ var AR = window.AR || (window.AR = {});
     try { return AR.Store && AR.Store.get().settings; } catch (e) { return null; }
   }
 
+  /* ── 流畅模式（设置 → 外观 → 流畅模式）─────────────────────────
+     full 关闭：全部动效与光效（默认）
+     lite 标准：砍掉开销大的光效 —— 质感模糊、模糊类特效、主题墨滴扩散，
+          几何动效（翻转 / 折纸 / 错峰）全部保留
+     min  深度：在标准之上再简化 3D 旋转、逐条错峰，时长收紧；
+          功能完全不变，只是动画换便宜的等价物
+     降级集中在 get() / pose() 两个出口做，调用方一行不用改。 */
+  var PERF_VALID = { full: 1, lite: 1, min: 1 };
+
+  function perfLevel() {
+    var s = settings();
+    var v = s && s.appearance && s.appearance.perfMode;
+    return PERF_VALID[v] ? v : 'full';
+  }
+
+  /** 模糊类 / 过曝类特效 → 便宜等价（lite 起生效）：zoom 是"缩放淡入"，无 filter */
+  var FX_LITE = { depth: 'zoom', depthOut: 'zoomOut', spotlight: 'zoom' };
+  /** 3D 翻折类特效 → 便宜等价（min 额外生效）；cascade / mosaic 靠 stagger=0 整组播，不换名 */
+  var FX_MIN = {
+    hingeFlip: 'zoom', hingeFlipOut: 'fade',
+    foldX: 'zoom', foldXOut: 'fade',
+    flipY: 'zoom', flipYOut: 'fade',
+    axialZ: 'zoom', axialZOut: 'fade'
+  };
+
+  function copyOwn(src) {
+    var out = {};
+    for (var k in src) {
+      if (Object.prototype.hasOwnProperty.call(src, k)) { out[k] = src[k]; }
+    }
+    return out;
+  }
+
+  /** 姿势对象降级：lite 去 blur，min 再去 3D 旋转（保留 o/x/y/s） */
+  function cleanPose(p, lvl) {
+    if (!p) { return p; }
+    var out = copyOwn(p);
+    delete out.blur;
+    if (lvl === 'min') {
+      delete out.rx;
+      delete out.ry;
+      delete out.rot;
+    }
+    return out;
+  }
+
+  /** 一个方向（in / out）的参数降级 */
+  function degradeDir(d, lvl, scenario) {
+    if (!d) { return d; }
+    var out = copyOwn(d);
+    if (out.from) { out.from = cleanPose(out.from, lvl); }
+    if (out.to) { out.to = cleanPose(out.to, lvl); }
+    delete out.blur;
+    if (lvl !== 'full' && out.fx) {
+      // 主题切换的 ripple / sweep 是整页墨滴光效（贵），聚焦场景的 ripple 只是缩放（便宜）
+      if (scenario === 'themeSwitch') {
+        if (lvl === 'min' || out.fx === 'ripple' || out.fx === 'sweep') { out.fx = 'none'; }
+      } else {
+        var map = (lvl === 'min') ? FX_MIN : FX_LITE;
+        if (map[out.fx]) { out.fx = map[out.fx]; }
+        else if (lvl === 'min' && FX_LITE[out.fx]) { out.fx = FX_LITE[out.fx]; }
+      }
+    }
+    if (lvl === 'min') {
+      // 无条件清零（哪怕原本没写这个字段 —— 调用方的默认值也要被压掉）
+      out.stagger = 0;
+      out.fxStagger = 0;
+      out.childStagger = 0;
+      if (out.flip) { out.flip = false; }
+      if (out.dur > 240) { out.dur = 240; }
+      if (out.fxDur > 260) { out.fxDur = 260; }
+    }
+    return out;
+  }
+
+  /** 整个样式降级（dir() 走这里；dir() 本身基于 get()，自动继承） */
+  function degrade(st, lvl, scenario) {
+    if (!st || lvl === 'full') { return st; }
+    var out = copyOwn(st);
+    if (st.in) { out.in = degradeDir(st.in, lvl, scenario); }
+    if (st.out) { out.out = degradeDir(st.out, lvl, scenario); }
+    // 扁平样式（contentIn / viewIn / listIn / dateSwitch / themeSwitch）
+    out = degradeDir(out, lvl, scenario);
+    return out;
+  }
+
   function saved() {
     var s = settings();
     var m = s && s.appearance && s.appearance.motion;
     return (m && typeof m === 'object') ? m : {};
   }
 
-  /** 取某个场景当前生效的样式定义 */
+  /** 取某个场景当前生效的样式定义（流畅模式下自动降级，返回副本） */
   function get(scenario) {
     var sc = SCENARIOS[scenario];
     if (!sc) { return null; }
     var store = saved();
+    var st = null;
     // 全局磁贴风格优先：所有能"从点击处翻入"的场景统一用它
     if (tileMode()) {
-      var ts = tileStyleOf(scenario);
-      if (ts) { return ts; }
+      st = tileStyleOf(scenario);
     }
-    var key = store[scenario];
-    if (!key && LEGACY[scenario]) {
-      for (var L = 0; L < LEGACY[scenario].length; L++) {
-        if (store[LEGACY[scenario][L]]) { key = store[LEGACY[scenario][L]]; break; }
+    if (!st) {
+      var key = store[scenario];
+      if (!key && LEGACY[scenario]) {
+        for (var L = 0; L < LEGACY[scenario].length; L++) {
+          if (store[LEGACY[scenario][L]]) { key = store[LEGACY[scenario][L]]; break; }
+        }
       }
+      if (!key) { key = sc.default; }
+      for (var i = 0; i < sc.styles.length; i++) {
+        if (sc.styles[i].k === key) { st = sc.styles[i]; break; }
+      }
+      if (!st) {
+        for (i = 0; i < sc.styles.length; i++) {
+          if (sc.styles[i].k === sc.default) { st = sc.styles[i]; break; }
+        }
+      }
+      if (!st) { st = sc.styles[0]; }
     }
-    if (!key) { key = sc.default; }
-    for (var i = 0; i < sc.styles.length; i++) {
-      if (sc.styles[i].k === key) { return sc.styles[i]; }
-    }
-    for (i = 0; i < sc.styles.length; i++) {
-      if (sc.styles[i].k === sc.default) { return sc.styles[i]; }
-    }
-    return sc.styles[0];
+    return degrade(st, perfLevel(), scenario);
   }
 
   /** 取某个方向（in / out）的参数；缺一边就回落到另一边 */
@@ -380,7 +471,7 @@ var AR = window.AR || (window.AR = {});
     var sc = SCENARIOS[scenario];
     if (!sc || !key) { return null; }
     for (var i = 0; i < sc.styles.length; i++) {
-      if (sc.styles[i].k === key) { return sc.styles[i]; }
+      if (sc.styles[i].k === key) { return degrade(sc.styles[i], perfLevel(), scenario); }
     }
     return null;
   }
@@ -445,16 +536,17 @@ var AR = window.AR || (window.AR = {});
    */
   function pose(p) {
     p = p || {};
+    var lvl = perfLevel();
     var tf = [];
     var x = p.x || 0, y = p.y || 0;
     if (x || y) { tf.push('translate3d(' + x + 'px,' + y + 'px,0)'); }
-    if (p.rx) { tf.push('perspective(900px) rotateX(' + p.rx + 'deg)'); }
-    if (p.ry) { tf.push('perspective(760px) rotateY(' + p.ry + 'deg)'); }
-    if (p.rot) { tf.push('rotate(' + p.rot + 'deg)'); }
+    if (p.rx && lvl !== 'min') { tf.push('perspective(900px) rotateX(' + p.rx + 'deg)'); }
+    if (p.ry && lvl !== 'min') { tf.push('perspective(760px) rotateY(' + p.ry + 'deg)'); }
+    if (p.rot && lvl !== 'min') { tf.push('rotate(' + p.rot + 'deg)'); }
     if (p.s != null && p.s !== 1) { tf.push('scale(' + p.s + ')'); }
     if (!tf.length) { tf.push('none'); }
     var out = { opacity: p.o == null ? 1 : p.o, transform: tf.join(' ') };
-    out.filter = p.blur ? ('blur(' + p.blur + 'px)') : 'none';
+    out.filter = (p.blur && lvl === 'full') ? ('blur(' + p.blur + 'px)') : 'none';
     return out;
   }
 
@@ -462,6 +554,7 @@ var AR = window.AR || (window.AR = {});
     order: ORDER,
     table: SCENARIOS,
     legacy: LEGACY,
+    perfLevel: perfLevel,
     ease: ease,
     cubicAt: cubicAt,
     easeTable: EASE,

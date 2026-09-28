@@ -1511,7 +1511,7 @@ body { text-size-adjust: 100%; }
  * 悬停的时间列：横向滑动时课程卡片会从它下面滑过（重叠）。
  * 一旦检测到重叠（scrollLeft > 0）就换成毛玻璃 —— 半透明 + 高斯模糊，
  * 既看得出下面有课卡在动，节次和时间又依然清楚。
- * 模糊半径与透明度直接取应用里的「毛玻璃强度」（关 / 低 / 中 / 高），
+ * 模糊半径与透明度直接取应用里的「质感模糊效果」（关 / 低 / 中 / 高），
  * 关掉毛玻璃时它会退化成接近不透明的底色。
  */
 .wt-scroll.wt-stuck .wt-time,
@@ -2644,7 +2644,7 @@ body.dev-outline .segmented, body.dev-outline .btn, body.dev-outline .chip-btn {
    ⑧ 自绘下拉（替换原生 <select>）
 
    原生 select 在 Android 上弹的是系统窗口：各家 ROM 长得都不一样，
-   圆角、字体、选中样式和应用对不上，也不跟随"毛玻璃强度"设置。
+   圆角、字体、选中样式和应用对不上，也不跟随"质感模糊效果"设置。
    这里改成应用自己的浮层 —— 毛玻璃变量、进出场动画都和其它弹窗共用。
    ══════════════════════════════════════════════════════════════ */
 
@@ -2725,3 +2725,25 @@ body.dev-outline .segmented, body.dev-outline .btn, body.dev-outline .chip-btn {
   transform: translate3d(-50%, -50%, 0) scale(0);
   opacity: 0;
 }
+
+/* ══════════════════════════════════════════════════════════════
+   流畅模式（设置 → 外观 → 流畅模式）
+   data-perf="lite"（标准）/ "min"（深度）。功能不变，只降视觉开销。
+   JS 侧配套：motion.js 降级动画样式、ui.js 走便宜的主题切换并压掉
+   行内 --accent-glow、applyGlass() 把 data-glass 压成 off。
+   ══════════════════════════════════════════════════════════════ */
+
+/* 毛玻璃：blur(0px) 也要做背景回读，两档下统一彻底关掉 */
+body[data-perf] *,
+body[data-perf] {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+
+/* 背景柔光斑：blur(40px) 大模糊层 → 静态软边渐变（无 filter，光栅化一次就完）
+   深度档下直接隐藏；glass 已被压成 off，卡片改用实色，可读性不受影响 */
+body[data-perf] .blob { filter: none; }
+body[data-perf] .blob-a { background: radial-gradient(circle, var(--blob-a) 0%, transparent 68%); }
+body[data-perf] .blob-b { background: radial-gradient(circle, var(--blob-b) 0%, transparent 68%); }
+body[data-perf] .blob-c { background: radial-gradient(circle, var(--blob-c) 0%, transparent 68%); }
+body[data-perf="min"] .blob { display: none; }

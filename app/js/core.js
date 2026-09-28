@@ -9,7 +9,7 @@ var AR = window.AR || (window.AR = {});
 (function () {
   'use strict';
 
-var APP_VERSION = '0.3.7';
+var APP_VERSION = '0.3.8a';
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
@@ -196,7 +196,9 @@ var APP_VERSION = '0.3.7';
     return {
       appearance: {
         theme: 'system', accent: '#5B8DEF', glassLevel: 'medium',
-        animationSpeed: 1
+        animationSpeed: 1,
+        /** 流畅模式：full 关闭（全效果）/ lite 标准（砍光效）/ min 深度（再砍 3D 与错峰） */
+        perfMode: 'full'
       },
       /**
        * leftHand：左手模式。「左右」布局下把两栏对调
@@ -639,6 +641,11 @@ var APP_VERSION = '0.3.7';
     }
     // v0.1.8：「减少动效」入口已删除，旧数据里的开关一并清掉，避免"动画不动"的残留状态
     if (s.settings.appearance) { delete s.settings.appearance.reduceMotion; }
+    else { s.settings.appearance = defaultSettings(uid()).appearance; }
+    // v0.3.8：流畅模式（关闭 / 标准 / 深度），老数据补默认「关闭」
+    if (!{ full: 1, lite: 1, min: 1 }[s.settings.appearance.perfMode]) {
+      s.settings.appearance.perfMode = 'full';
+    }
     // v0.1.9：「最近的课」状态色（老数据补默认值，阈值与颜色都保留用户改过的）
     var def = defaultSettings((s.semesters && s.semesters[0] && s.semesters[0].id) || uid()).nextAlert;
     if (!s.settings.nextAlert) { s.settings.nextAlert = def; }

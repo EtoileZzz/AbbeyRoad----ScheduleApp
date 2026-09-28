@@ -954,7 +954,7 @@ var AR = window.AR || (window.AR = {});
       })(U.PALETTE[i]);
     }
     box.appendChild(sw);
-    box.appendChild(el('<div class="field-label" style="margin-top:14px">毛玻璃强度</div>'));
+    box.appendChild(el('<div class="field-label" style="margin-top:14px">质感模糊效果</div>'));
     box.appendChild(segmented([
       { label: '关闭', value: 'off' }, { label: '低', value: 'low' },
       { label: '中', value: 'medium' }, { label: '高', value: 'high' }
@@ -962,6 +962,29 @@ var AR = window.AR || (window.AR = {});
       ap.glassLevel = v; AR.Store.save(true); AR.UI.applyGlass();
       AR.Bridge.haptic('medium', $('settingsGrid'));
     }));
+    /**
+     * 流畅模式：功能完全不变，只是把开销大的光效 / 动效换便宜的等价物。
+     *   关闭 = 全部效果；标准 = 关质感模糊、光斑模糊、模糊类特效、主题墨滴；
+     *   深度 = 再去掉 3D 翻折与逐条错峰，时长收紧。
+     * 切换立刻生效（applyPerf 重挂 data-perf），存档进配置文件。
+     */
+    box.appendChild(el('<div class="field-label" style="margin-top:14px">流畅模式</div>'));
+    box.appendChild(segmented([
+      { label: '关闭', value: 'full' }, { label: '标准', value: 'lite' }, { label: '深度', value: 'min' }
+    ], { full: 'full', lite: 'lite', min: 'min' }[ap.perfMode] || 'full', function (v) {
+      ap.perfMode = v; AR.Store.save(true);
+      if (AR.UI.applyPerf) { AR.UI.applyPerf(); }
+      AR.Bridge.haptic('medium', $('settingsGrid'));
+      AR.UI.toast(v === 'full' ? '已关闭流畅模式，全部特效恢复'
+        : v === 'lite' ? '流畅模式·标准：已关质感模糊效果与光效，保留全部动画'
+          : '流畅模式·深度：动画与光效已精简，功能不受影响');
+    }));
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0;font-size:12px">'
+      + '降低特效开销，让设备更流畅；功能完全不变，随时可切回。</p>'));
+    if (ap.perfMode === 'lite' || ap.perfMode === 'min') {
+      box.appendChild(el('<p class="muted" style="margin:6px 0 0;font-size:12px">'
+        + '此档下质感模糊效果与主题切换光效暂时失效（设置保留，切回「关闭」即恢复）。</p>'));
+    }
     box.appendChild(el('<div class="field-label" style="margin-top:14px">动画速度</div>'));
     box.appendChild(segmented([
       { label: '0.5×', value: 0.5 }, { label: '1×', value: 1 }, { label: '1.5×', value: 1.5 }
@@ -2234,7 +2257,7 @@ var AR = window.AR || (window.AR = {});
       return '<h2 class="ob-step-title">四个入口</h2>'
         + '<p class="ob-step-sub">手机上在底部、电脑上在左侧，切换页面用的都是下面这四个按钮。</p>'
         + '<div class="ob-features">'
-        + '<div class="ob-feature"><div class="icon">🕘</div><div class="t">今日</div><div class="d">点任意一块放大；再点位置 / 时间 / 老师 / 备注，弹出毛玻璃详情窗</div></div>'
+        + '<div class="ob-feature"><div class="icon">🕘</div><div class="t">今日</div><div class="d">点任意一块放大；再点位置 / 时间 / 老师 / 备注，弹出质感模糊的详情窗</div></div>'
         + '<div class="ob-feature"><div class="icon">🗓</div><div class="t">周表</div><div class="d">一整周的课表，可切换周次与月视图，自动检测时间冲突</div></div>'
         + '<div class="ob-feature"><div class="icon">📥</div><div class="t">导入</div><div class="d">粘贴 AI 整理好的课表文本、手动添加课程、导入配置文件</div></div>'
         + '<div class="ob-feature"><div class="icon">⚙️</div><div class="t">设置</div><div class="d">外观、布局与尺寸、课程与课表、提醒、系统集成、数据备份</div></div>'
@@ -2276,7 +2299,7 @@ var AR = window.AR || (window.AR = {});
     return '<h2 class="ob-step-title">可以开始用了</h2>'
       + '<p class="ob-step-sub">几个常用入口，忘了也不怕，设置里都能找到。</p>'
       + '<div class="ob-features">'
-      + '<div class="ob-feature"><div class="icon">🎨</div><div class="t">外观</div><div class="d">深浅色、主题色、毛玻璃强度、动画速度、震动反馈都在「设置 → 外观」</div></div>'
+      + '<div class="ob-feature"><div class="icon">🎨</div><div class="t">外观</div><div class="d">深浅色、主题色、质感模糊效果、动画速度、震动反馈都在「设置 → 外观」</div></div>'
       + '<div class="ob-feature"><div class="icon">🔄</div><div class="t">换设备</div><div class="d">「导入 → 配置文件」导出，在另一台设备导入即可</div></div>'
       + '<div class="ob-feature"><div class="icon">🎓</div><div class="t">考试 / 讲座</div><div class="d">在「导入 → 手动添加」登记，本周概览会用特殊颜色标出来</div></div>'
       + '<div class="ob-feature"><div class="icon">❔</div><div class="t">随时回看</div><div class="d">设置 → 关于与帮助 → 重新观看引导</div></div>'

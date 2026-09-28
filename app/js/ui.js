@@ -476,7 +476,7 @@ var AR = window.AR || (window.AR = {});
     var dur = Math.round((m.dur || 0) / (speed || 1));
     if (!dur) { return; }                        // 「不要内容动画」样式：直接落位
     var ease = AR.Motion ? AR.Motion.ease(m.ease) : 'cubic-bezier(.16,1,.30,1)';
-    var gap = Math.round((m.fxStagger || m.stagger || 34) / (speed || 1));
+    var gap = Math.round(((m.fxStagger != null ? m.fxStagger : (m.stagger != null ? m.stagger : 34))) / (speed || 1));
     var y = next ? (m.y || 0) : Math.min(m.y || 0, 6);
     var s = next ? (m.s == null ? 1 : m.s) : 1;
     var from = [];
@@ -524,7 +524,8 @@ var AR = window.AR || (window.AR = {});
    */
   function playContentFx(body, fx, style, speed) {
     var dur = Math.round((style.fxDur || 440) / speed);
-    var stagger = Math.round((style.fxStagger || 55) / speed);
+    // fxStagger 显式为 0（流畅模式·深度）时要当 0 用，不能被 || 吃回默认值
+    var stagger = Math.round(((style.fxStagger != null ? style.fxStagger : 55)) / speed);
     var ease = AR.Motion ? AR.Motion.ease(style.ease) : 'cubic-bezier(.2,.8,.2,1)';
     var kids, i, k;
 
@@ -544,7 +545,12 @@ var AR = window.AR || (window.AR = {});
       return px < r.width / 2 ? 'left' : 'right';
     }
 
-    if (fx === 'cascade' || fx === 'mosaic') {
+    if (fx === 'zoom' || fx === 'zoomOut') {
+      // 流畅模式的便宜等价：只动 opacity / scale，无 filter、无 3D
+      frames = (fx === 'zoom')
+        ? [{ opacity: 0, transform: 'scale(1.06)' }, { opacity: 1, transform: 'none' }]
+        : [{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'scale(.94)' }];
+    } else if (fx === 'cascade' || fx === 'mosaic') {
       kids = body.querySelectorAll('.strip, .info-cell, .next-hero, .card, .zone-compact, .ev-strip, .zone-tools');
       for (i = 0; i < kids.length; i++) {
         k = kids[i];
@@ -554,7 +560,7 @@ var AR = window.AR || (window.AR = {});
           ? { opacity: 0, transform: 'translate3d(0,-24px,0)' }
           : { opacity: 0, transform: 'translate3d(0,16px,0) scale(.86) rotate(-2deg)' };
         k.__fx = k.animate([from, { opacity: 1, transform: 'none' }], {
-          duration: dur, delay: i * (stagger || 55), easing: ease, fill: 'backwards'
+          duration: dur, delay: i * stagger, easing: ease, fill: 'backwards'
         });
       }
       return;
@@ -907,7 +913,7 @@ var AR = window.AR || (window.AR = {});
       覆盖: (st.overrides || []).length,
       学期: (AR.Store.semesterList ? AR.Store.semesterList().length : 0),
       节次表: (st.periods || []).length,
-      毛玻璃: S.settings.appearance.glassLevel,
+      质感模糊效果: S.settings.appearance.glassLevel,
       动画速度: S.settings.appearance.animationSpeed,
       磁贴风格: AR.Motion ? AR.Motion.tileMode() : false,
       配色方案: (S.settings.schedule && S.settings.schedule.colorScheme) || 'classic',
@@ -2863,15 +2869,41 @@ var AR = window.AR || (window.AR = {});
             for (var k = 0; k < items.length; k++) {
               var it = items[k];
               if (mode === 'move') {
-                // 和"单节课改星期"用的是同一套记录方式：
-                // 目标日一条 move（带上新的星期），来源日一条 cancel（原课不再显示）
-                AR.Store.upsertOverride(it.blockId, it.courseId, d, {
-                  type: 'move', newDate: d, newWeekday: U.weekdayOf(dd), reason: '调休'
-                });
-                if (it.kind === 'normal') {
+                /**
+                 * v0.3.8a：和"单节课改星期"（doSave）统一成同一套记录语义。
+                 * 以前这里是"目标日一条 move + normal 才补 cancel"，别的 kind 一律
+                 * removeOverride —— 和编辑器里同一个老毛病，还多两个：
+                 * · 已有单次调整的课被调走：记录删了（换教室 / 备注全丢），
+                 *   来源日又没有 cancel，模板课原地复活（调整丢了还多显示一节）；
+                 * · 本来就是调过来的课（moved-in）两边都不处理：旧记录还指着来源日，两天都显示；
+                 * · 补课 / 加课被写成模板 move 记录：合成 block 挂不上模板，这节直接消失。
+                 * 现在：有单次记录的**整条搬到目标日**（调整字段原样保留），
+                 * 没有记录的在目标日建 move；只有"模板本来就会在那天出现"的才在来源日补 cancel。
+                 */
+                var ov = (it.override && it.override.id) ? AR.Store.overrideById(it.override.id) : null;
+                if (it.kind === 'makeup' || it.kind === 'add') {
+                  // 补课 / 加课只活在自己的单次记录里：整体挪走即可
+                  if (ov) {
+                    ov.date = d;
+                    ov.updatedAt = new Date().toISOString();
+                    AR.Store.save(true);
+                  }
+                } else if (ov) {
+                  ov.type = 'move';
+                  ov.newDate = d;
+                  ov.newWeekday = U.weekdayOf(dd);
+                  ov.reason = '调休';
+                  ov.date = d;
+                  ov.updatedAt = new Date().toISOString();
+                  AR.Store.save(true);
+                  if (it.kind !== 'moved-in') {
+                    AR.Store.upsertOverride(it.blockId, it.courseId, s, { type: 'cancel', newDate: null, reason: '调休' });
+                  }
+                } else {
+                  AR.Store.upsertOverride(it.blockId, it.courseId, d, {
+                    type: 'move', newDate: d, newWeekday: U.weekdayOf(dd), reason: '调休'
+                  });
                   AR.Store.upsertOverride(it.blockId, it.courseId, s, { type: 'cancel', newDate: null, reason: '调休' });
-                } else if (it.override && it.kind !== 'moved-in') {
-                  AR.Store.removeOverride(it.override.id);
                 }
               } else {
                 AR.Store.upsertOverride(it.blockId, it.courseId, d, {
@@ -3731,6 +3763,18 @@ var AR = window.AR || (window.AR = {});
         }
       }
 
+      /**
+       * 日期锚点（v0.3.8a）：这次编辑最终落在哪一天。
+       * 换了星期就是调课，"这一次"跟着搬到新日期 —— 备注、取消都要锚到
+       * 落地日（targetKey）上，挂在旧日期会没人认领（调完课备注就丢了）。
+       */
+      var origKey = U.dateKey(day);
+      var moved = weekday !== U.weekdayOf(day);
+      var targetKey = moved ? U.dateKey(U.addDays(U.mondayOf(day), weekday - 1)) : origKey;
+      // 补课 / 加课只活在自己的单次记录里：改期只是把记录挪走，
+      // 不能转成 move，也不能在来源日写 cancel（那会误伤模板上真正的课）
+      var oneOff = (item.kind === 'makeup' || item.kind === 'add');
+
       if (scope === 'once') {
         var patch = {
           newPeriodStart: pStart, newPeriodEnd: pEnd,
@@ -3738,10 +3782,7 @@ var AR = window.AR || (window.AR = {});
           newLocationIds: loc ? [loc.id] : [], newLocationCleared: !loc,
           newTeacherIds: tIds
         };
-        var targetKey = U.dateKey(day);
-        var moved = weekday !== U.weekdayOf(day);
-        if (moved) {
-          targetKey = U.dateKey(U.addDays(U.mondayOf(day), weekday - 1));
+        if (moved && !oneOff) {
           patch.type = 'move';
           patch.newDate = targetKey;
           patch.newWeekday = weekday;
@@ -3765,15 +3806,20 @@ var AR = window.AR || (window.AR = {});
           AR.Store.save(true);
         } else {
           if (!patch.type) { patch.type = 'edit'; }
-          AR.Store.upsertOverride(block.id, course.id, targetKey, patch);
+          AR.Store.upsertOverride(block.id, targetCourse.id, targetKey, patch);
         }
-        if (moved) {
-          // 原来那天不能再显示这门课
-          if (item.kind === 'normal') {
-            AR.Store.upsertOverride(block.id, course.id, U.dateKey(day), { type: 'cancel', newDate: null });
-          } else if (item.override && item.kind !== 'moved-in') {
-            AR.Store.removeOverride(item.override.id);
-          }
+        /**
+         * 原来那天不能再显示这门课 —— 补一条 cancel（v0.3.8a）。
+         *
+         * 以前只有"点开的是普通模板课"才补 cancel；点开的是已有单次记录时走的是
+         * removeOverride(item.override.id)：把**刚改好的那条记录**删了 ——
+         * 改完保存这节课直接消失；而且来源日没有 cancel，模板课又冒了回来。
+         * 现在改成：只要是"模板本来就会在那天出现"的（normal / edit / time / room / move），
+         * 来源日统一补 cancel。moved-in 的来源日本来就不在模板上（记录一搬走自然消失）；
+         * 补课 / 加课（oneOff）没有模板可言，写 cancel 反而会误伤模板上的真课，不写。
+         */
+        if (moved && !oneOff && item.kind !== 'moved-in') {
+          AR.Store.upsertOverride(block.id, targetCourse.id, origKey, { type: 'cancel', newDate: null });
         }
       } else {
         var up = AR.Store.updateBlock(block.id, {
@@ -3789,18 +3835,34 @@ var AR = window.AR || (window.AR = {});
        * 备注永远是两层的（v0.3.4 起）：本次 → 单次记录；本课 → 课程记录。
        * 不管上面选的是哪个作用域，备注都按这两层各写一份，
        * 本次备注里的每一行照旧同步成作业条目（保留已划掉的状态）。
+       *
+       * v0.3.8a 三处修正：
+       * 1) 挂到 targetKey（这次课最终落地的那天）—— 以前挂在旧日期，调课即丢；
+       * 2) 只在真的写了备注、或那天已有单次记录（要把旧备注清掉）时才落记录 ——
+       *    以前无条件 upsert，什么都没改的保存也会造出一条 type:'edit' 的幽灵记录：
+       *    界面凭空多一个「单次调整」标记，而且这一天从此不再跟「保存所有时段」走；
+       * 3) 一律用合并后的 targetCourse.id —— 改名撞名合并后 course.id 已是死 id，
+       *    用它写的备注 / 作业同步全都落空（改个名备注就没了）。
        */
-      AR.Store.upsertOverride(block.id, course.id, U.dateKey(day), { newNote: note, newNoteCleared: !note });
+      var noteDate = targetKey;
+      var noteRec = null;
+      var ovsNow = AR.Store.overridesOfBlock(block.id);
+      for (var oi = 0; oi < ovsNow.length; oi++) {
+        if (ovsNow[oi].date === noteDate) { noteRec = ovsNow[oi]; break; }
+      }
+      if (note || noteRec) {
+        AR.Store.upsertOverride(block.id, targetCourse.id, noteDate, { newNote: note, newNoteCleared: !note });
+      }
       // 周次/单双周在两种作用域下都写时段（整门课生效）
       if (scope === 'once' && realBlock) {
         AR.Store.updateBlock(realBlock.id, { weekMode: wk.weekMode, weeks: wk.weeks });
       }
-      var courseRec = AR.Store.courseById(course.id) || course;
+      var courseRec = AR.Store.courseById(targetCourse.id) || targetCourse;
       courseRec.note = noteCourse;
       courseRec.updatedAt = new Date().toISOString();
       item.note = note;
       item.courseNote = noteCourse;
-      if (AR.Store.syncTasksFor) { AR.Store.syncTasksFor(block.id, course.id, U.dateKey(day), note); }
+      if (AR.Store.syncTasksFor) { AR.Store.syncTasksFor(block.id, targetCourse.id, noteDate, note); }
 
       AR.Store.save(true);
       AR.Bridge.haptic('medium', $('modalCard'));
@@ -5579,7 +5641,7 @@ var AR = window.AR || (window.AR = {});
 
   /** 第 slot 个进场节点的延迟（ms，未除动画速度） */
   function riseDelay(slot, m) {
-    var stagger = m ? (m.stagger || 0) : 60;
+    var stagger = m ? (m.stagger != null ? m.stagger : 0) : 60;
     var base = (m && m.stagger === 0) ? 0 : 50;
     return base + (slot > 0 ? slot * stagger : 0);
   }
@@ -5634,7 +5696,7 @@ var AR = window.AR || (window.AR = {});
         [{ opacity: 0, transform: tf.join(' ') }, { opacity: 1, transform: 'none' }],
         {
           duration: m ? Math.round(m.dur / speed) : 180,
-          delay: Math.round((i * (m ? (m.stagger || 30) : 30)) / speed),
+          delay: Math.round((i * (m ? (m.stagger != null ? m.stagger : 30) : 30)) / speed),
           easing: AR.Motion ? AR.Motion.ease(m && m.ease) : 'cubic-bezier(.22,1,.36,1)',
           fill: 'backwards'
         }
@@ -5675,6 +5737,7 @@ var AR = window.AR || (window.AR = {});
   function enterSegPill(cont, cls) {
     var pill = cont && cont.querySelector('.' + (cls || 'seg-pill'));
     if (!pill || !pill.animate) { return; }
+    if (pill.__anim) { return; }                    // 正在滑动：别用淡入抢它的 transform
     var block = cont.closest ? cont.closest(RISE_SEL) : null;
     if (block && block.__rise) { return; }          // 跟着整块的 viewIn 走，别另起一条时间线
     var m = AR.Motion ? AR.Motion.get('contentIn') : null;
@@ -5734,7 +5797,7 @@ var AR = window.AR || (window.AR = {});
     if (seg.id) { return 'id:' + seg.id; }
     /**
      * 没有 id 的控件靠"面板 + 同级序号 + 各段文字"认人。
-     * 序号不能省：设置页里两个控件都叫「中」（毛玻璃强度 / 震动强度），
+     * 序号不能省：设置页里两个控件都叫「中」（质感模糊效果 / 震动强度），
      * 只用文字当键会共用同一份记忆，滑块就会从**另一个控件**的坐标开始滑。
      */
     var host = seg.closest ? seg.closest('[id]') : null;
@@ -5843,6 +5906,16 @@ var AR = window.AR || (window.AR = {});
    */
   function slidePill(pill, from, to, dur) {
     if (!pill.animate || !(dur > 0)) { return null; }
+    /**
+     * 进场淡入在播就先收掉：它同样写 transform，跟滑动同播会互相抢。
+     * （先有一次"没动"的 sync 建了淡入、紧接着一次"要滑"的 sync ——
+     *  切 Tab 的双 sync 就是这个次序；enterSegPill 那边有 __anim 守卫，
+     *  两个方向都堵上之后，淡入和滑动永远互斥。）
+     */
+    if (pill.__enter) {
+      try { pill.__enter.cancel(); } catch (e) { }
+      pill.__enter = null;
+    }
     var fx = 'translateX(' + from.x + 'px)';
     var tx = 'translateX(' + to.x + 'px)';
     pill.style.transform = fx;
@@ -5986,9 +6059,11 @@ var AR = window.AR || (window.AR = {});
     /**
      * 正在滑、而且终点没变（几处"过一会儿再校一次"正好落在滑动中间）：
      * 放它播完，别打断 —— 以前这种情况会把动画掐掉，看起来就是"没有动画"。
+     * 这里也**不能**补进场淡入：enterSegPill 同样写 transform / opacity，
+     * 会把正在播的滑动盖成"原地淡入"（点设置时滑块瞬移就是这么来的 ——
+     * renderSettings 与 show() 各同步了一次滑块，第二次走了这个分支）。
      */
     if (same && memo.idx === idx && memo.anim && pill.__anim) {
-      if (opts.enter) { enterSegPill(cont, cls); }
       observeSegSize(cont, opts);
       return;
     }
@@ -6183,7 +6258,7 @@ var AR = window.AR || (window.AR = {});
 
     applyTheme();
     applyMotion();
-    applyGlass();
+    applyPerf();
     Layout.profileKey = breakpointKey(document.documentElement.clientWidth);
     lastTodayKey = U.dateKey(new Date());
     show('today');
@@ -6240,10 +6315,12 @@ var AR = window.AR || (window.AR = {});
   function applyAccentInline(dark) {
     if (dark == null) { dark = document.body.getAttribute('data-theme') === 'dark'; }
     var accent = S.settings.appearance.accent || '#5B8DEF';
+    var perf = (AR.Motion && AR.Motion.perfLevel) ? AR.Motion.perfLevel() : 'full';
     var bs = document.body.style;
     bs.setProperty('--accent', accent);
     bs.setProperty('--accent-soft', hexA(accent, 0.14));
-    bs.setProperty('--accent-glow', hexA(accent, 0.22));
+    // 流畅模式下光晕是纯开销（大半径 shadow 模糊），压成透明，回到关闭档再恢复
+    bs.setProperty('--accent-glow', perf === 'full' ? hexA(accent, 0.22) : 'transparent');
     bs.setProperty('--accent-contrast', '#ffffff');
     // 背景柔光斑跟着主题色走，毛玻璃后面才有对应的色相（暗色下更亮一点）
     bs.setProperty('--blob-a', hexA(accent, dark ? 0.30 : 0.26));
@@ -6584,6 +6661,24 @@ var AR = window.AR || (window.AR = {});
       AR.Bridge.setSystemBars(dark ? '#0E1116' : '#FFFFFF', !dark);
       return;
     }
+    /**
+     * 流畅模式快路径：墨滴扩散 / 顶部下扫都要"整页快照 + 大面积光效"，
+     * 标准档砍掉光效只留整页颜色渐变（更短），深度档直接落位。
+     */
+    var perf = (AR.Motion && AR.Motion.perfLevel) ? AR.Motion.perfLevel() : 'full';
+    if (perf !== 'full' && mode !== 'boot') {
+      stopThemeTween();
+      stopThemeInk();
+      if (perf === 'lite') {
+        // 只渐变色：没有快照、没有墨滴，逐帧只写颜色令牌（旧色要靠它在内部先读）
+        playColorTween(dark, Math.round(260 / motionSpeed()), { ease: 'soft' });
+      } else {
+        document.body.setAttribute('data-theme', dark ? 'dark' : 'light');
+        applyAccentInline(dark);
+      }
+      AR.Bridge.setSystemBars(dark ? '#0E1116' : '#FFFFFF', !dark);
+      return;
+    }
     var st = AR.Motion ? AR.Motion.get('themeSwitch') : null;
     var k = st && st.k;
     /**
@@ -6876,7 +6971,7 @@ var AR = window.AR || (window.AR = {});
      自绘下拉（替换原生 <select>）
 
      原生 select 在 Android 上弹的是**系统自己的窗口**：ColorOS / MIUI / 原生
-     各长各的样，字体、圆角、选中样式和应用完全对不上，也不跟随"毛玻璃强度"
+     各长各的样，字体、圆角、选中样式和应用完全对不上，也不跟随"质感模糊效果"
      设置。所以这里自己画一个：
        · 毛玻璃 / 描边 / 阴影全部用 CSS 变量（和别的弹窗同一套）；
        · 进出场走 AR.Motion 的 modal 场景 —— 和位置 / 时间 / 老师 / 备注弹窗
@@ -7066,9 +7161,25 @@ var AR = window.AR || (window.AR = {});
   function applyGlass() {
     var lvl = S.settings.appearance.glassLevel || 'medium';
     var degraded = AR.Bridge.sdkInt && AR.Bridge.sdkInt() > 0 && AR.Bridge.sdkInt() < 31;
+    var perf = (AR.Motion && AR.Motion.perfLevel) ? AR.Motion.perfLevel() : 'full';
     document.body.setAttribute('data-degraded', degraded && lvl !== 'off' ? 'on' : 'off');
-    document.body.setAttribute('data-glass', lvl);
-    AR.Bridge.setBackdrop(lvl !== 'off');
+    document.body.setAttribute('data-glass', perf !== 'full' ? 'off' : lvl);
+    AR.Bridge.setBackdrop(lvl !== 'off' && perf === 'full');
+  }
+
+  /**
+   * 流畅模式：body 上挂 data-perf="lite|min"（关闭档移除属性）。
+   * CSS 见 app.css 末尾「流畅模式」一节；质感模糊 / 光斑 / 光晕一起降。
+   * 切换后立刻重挂，并顺手把当前正在补间的主题令牌收掉，避免残留行内样式。
+   */
+  function applyPerf() {
+    var perf = (AR.Motion && AR.Motion.perfLevel) ? AR.Motion.perfLevel() : 'full';
+    if (perf === 'full') { document.body.removeAttribute('data-perf'); }
+    else { document.body.setAttribute('data-perf', perf); }
+    stopThemeTween();
+    stopThemeInk();
+    applyGlass();
+    applyAccentInline();
   }
 
   function applyMotion() {
@@ -7105,6 +7216,7 @@ var AR = window.AR || (window.AR = {});
     applyTheme: applyTheme,
     themeSwitch: themeSwitch,
     applyGlass: applyGlass,
+    applyPerf: applyPerf,
     applyMotion: applyMotion,
     applyLayout: applyLayout,
     setPreset: setPreset,
