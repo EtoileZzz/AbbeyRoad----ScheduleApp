@@ -29,6 +29,7 @@ var AR = window.AR || (window.AR = {});
     back: 'cubic-bezier(.28,1.30,.46,1)',      // 明显回弹
     gentle: 'cubic-bezier(.25,.80,.35,1)',
     tile: 'cubic-bezier(.20,.80,.20,1)',       // 磁贴式：先快后稳
+    reveal: 'cubic-bezier(.45,0,.55,1)',       // 揭示式扩散：S 型，波前一路匀速走完
     quartOut: 'cubic-bezier(.17,.84,.44,1)',
     expoIn: 'cubic-bezier(.70,0,.84,0)',       // 缓入（用于"先离场"）
     overshoot: 'cubic-bezier(.22,1.35,.36,1)',
@@ -140,10 +141,12 @@ var AR = window.AR || (window.AR = {});
     },
     modal: {
       name: '弹窗 · 进入 / 退出',
-      default: 'cascade',
+      // 默认改成磁贴翻转：所有弹窗（位置 / 时间 / 老师 / 备注 / 课程详情 …）
+      // 都从点击处翻入、原路翻回，和卡片、页面切换是同一套语言。
+      default: 'tileFlip',
       styles: [
         {
-          k: 'cascade', name: '内容逐条拼合（默认）',
+          k: 'cascade', name: '内容逐条拼合',
           in: { dur: 320, ease: 'quint', from: { o: 0, y: 18, s: .985 }, childStagger: 45 },
           out: { dur: 200, ease: 'soft', to: { o: 0, y: 8, s: .98 } }
         },
@@ -153,7 +156,7 @@ var AR = window.AR || (window.AR = {});
           out: { dur: 190, ease: 'soft', to: { o: 0, y: 6, s: .975 } }
         },
         {
-          k: 'tileFlip', name: '磁贴翻转',
+          k: 'tileFlip', name: '磁贴翻转（默认）',
           in: { dur: 460, ease: 'tile', from: { o: 0, ry: 94, s: .94 }, origin: 'click', childStagger: 40 },
           out: { dur: 320, ease: 'tile', to: { o: 0, ry: 88, s: .96 }, origin: 'click' },
           tile: true
@@ -234,6 +237,74 @@ var AR = window.AR || (window.AR = {});
         { k: 'zoom', name: '逐条放大', dur: 260, ease: 'back', stagger: 30, s: .94 },
         { k: 'none', name: '无动画', dur: 0 }
       ]
+    },
+    /**
+     * 切换日期（今日页的「今天 / 前一天 / 后一天」，以及本周概览里点日期）。
+     * 只描述"内容层"的姿态，方向由代码按 dir（+1 往后一天 / -1 往前一天）代入：
+     *   dir: true  → 位移跟着方向走（往后一天从右边进、往前一天从左边进）
+     *   flip: true → 方向感更强的绕 Y 轴翻入
+     * 日期栏上的滑块不受这里影响，它永远是一条顺滑的滑动动画。
+     */
+    dateSwitch: {
+      name: '切换日期 · 今日 / 前后天',
+      default: 'settle',
+      styles: [
+        /**
+         * 默认：位移小、时间稍长、曲线更柔 —— "沉稳优雅"。
+         * 以前默认是 30px 的强滑入（340ms expo），整页三块内容一起甩，
+         * 看着躁；现在换成 12px 侧移 + 8px 上浮、440ms gentle。
+         */
+        { k: 'settle', name: '沉稳落定（默认）', dir: true, dur: 440, ease: 'gentle', x: 12, y: 8, s: .994, o: .42 },
+        { k: 'slideDir', name: '随方向滑入', dir: true, dur: 380, ease: 'expo', x: 26, s: .992, o: .2 },
+        { k: 'slideSoft', name: '轻柔侧移', dir: true, dur: 300, ease: 'ios', x: 18, s: 1 },
+        { k: 'tile', name: '磁贴翻转（从滑动方向翻入）', dir: true, flip: true, dur: 380, ease: 'tile', x: 8, s: .99, tile: true },
+        { k: 'rise', name: '上浮落定', dir: false, dur: 320, ease: 'gentle', x: 0, y: 14, s: .994 },
+        { k: 'zoom', name: '轻微放大', dir: false, dur: 300, ease: 'back', x: 0, y: 0, s: .96 },
+        { k: 'fade', name: '原地淡入', dir: false, dur: 240, ease: 'soft', x: 0, y: 0, s: 1 },
+        { k: 'none', name: '无动画', dir: false, dur: 0 }
+      ]
+    },
+    /**
+     * 明暗主题切换。切的是"整页颜色"，所以这里的 dur 同时决定
+     * 颜色令牌插值的总时长（见 ui.js playThemeSwitch）：
+     *   fx: ripple → 以点击处为圆心扩散一层柔光
+     *   fx: sweep  → 从最顶上一整条往下扫（系统自己切换时用）
+     *   fx: none   → 只做颜色渐变，不叠加光
+     *   cross      → 整页交叉淡入（View Transitions 可用时；否则等同只渐变）
+     */
+    themeSwitch: {
+      name: '切换主题 · 亮 / 暗',
+      default: 'auto',
+      styles: [
+        {
+          k: 'auto', name: '自动（点按=扩散 / 系统=顶部下扫）',
+          dur: 420, ease: 'linear', fx: 'auto'
+        },
+        {
+          /**
+           * 点击处扩散（v0.3.7 第 3 版）：
+           *   · 底层是"旧主题快照"，上层是一块目标主题底色的"墨滴"；
+           *   · 墨滴用 transform: scale() 线性长大（合成器直接跑，不再逐帧改 mask）；
+           *   · 墨滴的不透明度随扩散从 0.35 涨到 1，铺满后淡出 140ms。
+           * 线性是用户要的：不用缓动，靠"透明度随扩散增加"来出层次。
+           */
+          k: 'ripple', name: '点击处扩散', dur: 420, ease: 'linear',
+          fx: 'ripple', feather: 96
+        },
+        {
+          k: 'sweepTop', name: '顶部整条下扫', dur: 460, ease: 'linear',
+          fx: 'sweep', feather: 96
+        },
+        {
+          k: 'colorOnly', name: '只渐变色', dur: 420, ease: 'quint', fx: 'none'
+        },
+        {
+          k: 'cross', name: '整页交叉淡入', dur: 380, ease: 'soft', fx: 'cross'
+        },
+        {
+          k: 'none', name: '无动画（瞬切）', dur: 0, ease: 'linear', fx: 'none'
+        }
+      ]
     }
   };
 
@@ -243,7 +314,7 @@ var AR = window.AR || (window.AR = {});
     modal: ['modalIn', 'modalOut']
   };
 
-  var ORDER = ['zoneFocus', 'contentIn', 'modal', 'viewIn', 'listIn'];
+  var ORDER = ['zoneFocus', 'contentIn', 'dateSwitch', 'themeSwitch', 'modal', 'viewIn', 'listIn'];
 
   /** 是否开着"全局磁贴风格" */
   function tileMode() {
@@ -304,6 +375,16 @@ var AR = window.AR || (window.AR = {});
     return st[which] || st[which === 'out' ? 'in' : 'out'] || null;
   }
 
+  /** 按 k 取某个场景里的具体样式（主题切换的「自动」要靠它落到 ripple / sweepTop） */
+  function styleOf(scenario, key) {
+    var sc = SCENARIOS[scenario];
+    if (!sc || !key) { return null; }
+    for (var i = 0; i < sc.styles.length; i++) {
+      if (sc.styles[i].k === key) { return sc.styles[i]; }
+    }
+    return null;
+  }
+
   function set(scenario, key) {
     var sc = SCENARIOS[scenario];
     if (!sc) { return false; }
@@ -333,6 +414,31 @@ var AR = window.AR || (window.AR = {});
   function ease(name) { return EASE[name] || EASE.quint; }
 
   /**
+   * 在某个进度上求曲线值 —— 给"不归浏览器管"的插值用（比如主题切换的颜色渐变：
+   * CSS 变量没法交给 CSS transition，只能自己逐帧算，但曲线必须和别处同一条）。
+   * 二分求 x(t)=p 的 t，再算 y(t)，24 次迭代精度足够（误差 < 1e-6）。
+   */
+  function cubicAt(nameOrCurve, p) {
+    if (!(p > 0)) { return 0; }
+    if (p >= 1) { return 1; }
+    var str = EASE[nameOrCurve] || nameOrCurve || 'linear';
+    var m = /cubic-bezier\(([^)]+)\)/.exec(str);
+    if (!m) { return p; }                       // linear
+    var v = m[1].split(',').map(function (s) { return parseFloat(s); });
+    if (v.length < 4) { return p; }
+    function bez(t, a, b) {
+      var u = 1 - t;
+      return 3 * u * u * t * a + 3 * u * t * t * b + t * t * t;
+    }
+    var lo = 0, hi = 1, mid = p;
+    for (var i = 0; i < 24; i++) {
+      mid = (lo + hi) / 2;
+      if (bez(mid, v[0], v[2]) < p) { lo = mid; } else { hi = mid; }
+    }
+    return bez(mid, v[1], v[3]);
+  }
+
+  /**
    * 姿势 → WAAPI 关键帧。
    *   o 不透明度 / x,y 位移 / s 缩放 / rot 平面旋转 / rx 绕 X 轴 / blur 模糊
    * 缺省就是"原始状态"，所以同一个函数既描述进场起点，也描述退场终点。
@@ -357,10 +463,12 @@ var AR = window.AR || (window.AR = {});
     table: SCENARIOS,
     legacy: LEGACY,
     ease: ease,
+    cubicAt: cubicAt,
     easeTable: EASE,
     pose: pose,
     get: get,
     dir: dir,
+    styleOf: styleOf,
     set: set,
     reset: reset,
     saved: saved,

@@ -5,6 +5,14 @@
    ────────────────────────────────────────────────────────────── */
 
 * { box-sizing: border-box; }
+
+/**
+ * hidden 就是"不渲染"，必须是硬规则。
+ * 组件里写了 display: flex 的元素（比如 .hw-done 已完成列表、.hw-earlier 更早的已完成）
+ * 会盖掉 [hidden] 自带的 display:none —— 结果就是 box.hidden = true 之后它照样摊在
+ * 界面上，「已完成」怎么点都折叠不了。全局兜一条，任何人都别再踩这个坑。
+ */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -126,6 +134,44 @@ input, textarea { user-select: text; }
 .view-title { margin: 0; font-size: 22px; font-weight: 650; letter-spacing: 0.2px; }
 .view-sub { margin: 2px 0 0; color: var(--text-secondary); font-size: 12.5px; }
 
+/* ── 今日页顶栏：左边「今日 + 时间」一行 + 副标题，右上角一行三个日期按钮 ──
+   这排按钮**永远**待在标题右边，绝不另起一行 —— 窄屏（直板机）上把
+   「前一天 / 后一天」的文字收掉只留箭头，宽度立刻从 ~200px 降到 ~110px。 */
+.today-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.today-head-main { flex: 1 1 auto; min-width: 0; }
+.today-head-top {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.today-head-top .view-sub { margin: 0; }
+/* 覆盖窄屏那条「head-right 占满整行 + 可横滑」的规则：这排按钮自成一组 */
+.today-head .today-day-nav {
+  flex: 0 0 auto; width: auto; display: flex; flex-direction: row;
+  align-items: center; justify-content: flex-end; gap: 6px;
+  overflow: visible; padding-bottom: 0; flex-wrap: nowrap;
+}
+.today-head .today-day-nav .chip-btn {
+  flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  padding: 4px 9px; font-size: 12px; line-height: 1.25;
+  white-space: nowrap; text-align: center;
+}
+/**
+ * 箭头用 SVG 蒙版画，不用「‹ ›」字符、也不用旋转的方块：
+ * 字符按字身框对齐，窄屏只剩一个字符时怎么调都不正；旋转方块画出来的
+ * 箭头视觉重心也不在盒子中心（左边那条偏左、右边那条偏右，各差 4px 左右）。
+ * 蒙版里的路径本身关于底线左右对称（9.5 ↔ 14.5，画在 24×24 里），
+ * contain 居中铺满，所以箭头**几何居中**，两条箭头完全一致。
+ */
+.today-day-nav .dnav-ico {
+  display: inline-block; flex: 0 0 12px; width: 12px; height: 12px;
+  background-color: currentColor;
+  -webkit-mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M14.5 5L9.5 12l5 7'/></svg>");
+  mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M14.5 5L9.5 12l5 7'/></svg>");
+}
+.dnav-next .dnav-ico {
+  -webkit-mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M9.5 5L14.5 12l-5 7'/></svg>");
+  mask-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'><path d='M9.5 5L14.5 12l-5 7'/></svg>");
+}
+
 /* 底部 Tab（窄屏） */
 .tabbar {
   position: fixed; left: var(--sp-3); right: var(--sp-3); bottom: var(--sp-3);
@@ -134,6 +180,19 @@ input, textarea { user-select: text; }
   background: var(--glass-modal);
 }
 .tabbar .nav-btn { flex-direction: row; justify-content: center; gap: 6px; font-size: 12.5px; }
+/**
+ * 底部 Tab 栏的滑块：和分段控件的胶囊同一套观感（毛玻璃 + 描边），
+ * 位置/动画由 syncTabPill 走统一引擎（只有选中项变了才滑）。
+ */
+.tabbar { position: fixed; }
+.tabbar .tab-pill {
+  position: absolute; left: 0; top: 0; z-index: 0; pointer-events: none;
+  border-radius: var(--r-chip); background: var(--glass-modal);
+  box-shadow: inset 0 0 0 1px var(--glass-stroke);
+}
+.tabbar .nav-btn { position: relative; z-index: 1; background: transparent; }
+/* 选中态交给滑块：格子本身不再画底色，否则会把滑块盖住 */
+.tabbar .nav-btn.active { background: transparent; box-shadow: none; }
 
 /* ── 今日页布局引擎 ─────────────────────────────────────────── */
 /* 区域用绝对定位 + JS 计算坐标，这样预设切换、聚焦态、滑块调整
@@ -410,7 +469,16 @@ input, textarea { user-select: text; }
               color 160ms var(--ease-fade-out);
 }
 .sld-step:active { transform: scale(0.92); background: var(--accent-soft); color: var(--accent); }
-.slider-row input[type="range"] { flex: 1 1 auto; min-width: 0; height: 34px; touch-action: none; }
+/**
+ * touch-action 用 pan-y 而不是 none：
+ * 横向拖 = 调滑块，纵向拖 = 正常滚动设置页。
+ * 之前写死 none，手指只要落在滑块上（它几乎占满一整行）页面就完全滚不动，
+ * 手机上给人的感觉就是"这个滑块没法用"。
+ */
+.slider-row input[type="range"] {
+  flex: 1 1 auto; min-width: 0; height: 34px;
+  touch-action: pan-y; cursor: pointer;
+}
 input[type="range"] {
   -webkit-appearance: none; appearance: none; width: 100%; height: 22px; background: transparent; margin: 0;
 }
@@ -421,7 +489,7 @@ input[type="range"]::-webkit-slider-runnable-track {
               var(--divider) var(--fill, 50%) 100%);
 }
 input[type="range"]::-webkit-slider-thumb {
-  -webkit-appearance: none; appearance: none; width: 24px; height: 24px; margin-top: -9px;
+  -webkit-appearance: none; appearance: none; width: 26px; height: 26px; margin-top: -10px;
   border-radius: 50%; background: #fff; border: 2px solid var(--accent);
   box-shadow: var(--shadow-card);
   transition: transform 120ms var(--ease-smooth);
@@ -690,6 +758,34 @@ input[type="range"]::-moz-range-thumb {
   .fix-row { grid-template-columns: 1fr; }
   .modal-card { width: calc(100vw - 20px); padding: var(--sp-4); }
   .panel { padding: var(--sp-4); }
+
+  /* ── 直板机（≤560px）的今日页顶栏 ─────────────────────────────
+     ① .today-head 不换行：那排日期按钮永远留在标题右边；
+     ② 时钟可以自己折到第二行（.today-head-top 仍允许 wrap），
+        但绝不会把按钮顶下去另起一排；
+     ③ 「前一天 / 后一天」只留箭头，中间那颗「今天」保留文字。 */
+  .today-head { flex-wrap: nowrap; align-items: center; gap: 6px; }
+  .today-head-main { min-width: 0; }
+  .today-head-top { flex-wrap: wrap; gap: 6px; }
+  .today-head .today-day-nav { flex-wrap: nowrap; gap: 4px; }
+  .today-head .today-day-nav .chip-btn { padding: 5px 7px; font-size: 12px; min-width: 30px; }
+  .today-day-nav #btnPrevDay .dnav-txt,
+  .today-day-nav #btnNextDay .dnav-txt { display: none; }
+  /* 时钟收紧一点，给右上角的按钮腾位置（时间保留到秒）；
+     nowrap + 不许折行：宁可整块折到第二行，也不把「周二」拆成两行 */
+  .clock-box { padding: 3px 9px; gap: 6px; flex-wrap: nowrap; max-width: 100%; }
+  .clock-time { font-size: 18px; letter-spacing: 0.2px; white-space: nowrap; }
+  .clock-date { font-size: 11px; white-space: nowrap; }
+}
+
+/**
+ * 更窄的直板机（≤430px）：时钟只留「时:分:秒」。
+ * 日期与星期在标题（切到别的日子会显示「9 月 21 日」）和副标题里都有，
+ * 少这一段最省横向空间，顶栏因此稳定保持两行 —— 那排日期按钮也就绝不会
+ * 被挤到「今日」下面去。
+ */
+@media (max-width: 430px) {
+  .clock-date { display: none; }
 }
 
 /* 打印/减少动效偏好 */
@@ -780,14 +876,22 @@ input[type="range"]::-moz-range-thumb {
 /* ── 月视图 ──────────────────────────────────────────────── */
 .month-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
 .month-title { font-size: 14px; font-weight: 620; }
-.month-head { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 4px; }
+/**
+ * 月视图的列宽一律 minmax(0, 1fr)：
+ * 以前写 1fr，轨道下限是内容的 min-content —— 日期格里有数字 + 圆点、又有边框，
+ * 7 列挤在"本周概览"这种窄栏里时轨道被撑开，网格横向溢出（周日那一列被卡片裁掉），
+ * 而且表头（纯文字、更窄）和日期网格算出来的列宽还不一样，看着就是"星期和日期错位"。
+ * 给 0 下限之后两行轨道永远等宽，也永远不会溢出。
+ */
+.month-head { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; margin-bottom: 4px; }
 .month-head span { text-align: center; font-size: 11px; color: var(--text-tertiary); }
-.month-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; }
+.month-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
 .month-cell {
   aspect-ratio: 1 / 1; border-radius: 10px; border: 1px solid transparent;
   background: var(--bg-subtle); color: var(--text-secondary);
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
   font-size: 12.5px; cursor: pointer; padding: 0;
+  min-width: 0; overflow: hidden;
   transition: background 180ms var(--ease-standard), transform 220ms var(--ease-emphasized),
               border-color 180ms var(--ease-standard), box-shadow 240ms var(--ease-standard);
 }
@@ -796,8 +900,20 @@ input[type="range"]::-moz-range-thumb {
 .month-cell.out { opacity: 0.35; }
 .month-cell.today { border-color: var(--accent); color: var(--accent); font-weight: 620; }
 .month-cell.selected { background: var(--accent-soft); border-color: var(--accent); }
-.month-cell .dots { display: flex; gap: 2px; height: 5px; }
-.month-cell .dots i { width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+/* 圆点永远一行、居中、不换行；超过 3 节课时改成一个"n"小圆牌（见 ui.js） */
+.month-cell .dots {
+  display: flex; flex-wrap: nowrap; align-items: center; justify-content: center;
+  gap: 2px; height: 5px; max-width: 100%; overflow: hidden;
+}
+.month-cell .dots i { flex: 0 0 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
+.month-cell .dots .n {
+  font-size: 8px; font-weight: 700; line-height: 1; color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+/* 「本周概览」这种窄栏里的月视图：格子更小、字更小，仍然保持 7 列不溢出 */
+.zone-body .month-head span { font-size: 10px; }
+.zone-body .month-cell { border-radius: 8px; font-size: 11px; gap: 2px; }
+.zone-body .month-head, .zone-body .month-grid { gap: 3px; }
 
 /* ── 区域展开 ─────────────────────────────────────────────── */
 .zone { cursor: pointer; }
@@ -919,21 +1035,33 @@ input[type="range"]::-moz-range-thumb {
 .week-table.wt-tight .wt-day { padding: 2px 1px; }
 .week-table.wt-tight .wt-day .n { font-size: 12px; }
 
-/* 「本周概览」切日期：选中那天落定时的高亮描边 */
-.mg-day.day-picked, .wt-day.day-picked {
-  background: var(--accent-soft);
-  box-shadow: 0 0 0 2px var(--accent), 0 4px 14px var(--accent-glow);
-  z-index: 2;
-}
-.mg-day.day-picked .n, .wt-day.day-picked .n { color: var(--accent); }
-/* 「本周概览」日期滑块：和分段控件同一种观感（在表格里滑到选中那天） */
+/**
+ * 「本周概览」日期滑块：在日期栏上滑到选中的那一天。
+ * 表格每次重画都会重建 DOM，位置记在 JS 里（ui.js · slideDayPill），
+ * 重画后先落在旧位置再滑到新位置，所以看着是一块连续的滑块。
+ * z-index 压在日期格之上、只描边 + 一层淡主题色，日期数字照样清楚。
+ * 落定的轻收（scale）也在这块滑块上，不会再另画第二个框。
+ */
 .mini-table, .week-table { position: relative; }
 .day-pill {
-  position: absolute; left: 0; top: 0; z-index: 1; pointer-events: none;
-  border-radius: 8px; background: var(--accent-soft);
-  box-shadow: inset 0 0 0 1px var(--accent);
+  position: absolute; left: 0; top: 0; z-index: 3; pointer-events: none;
+  border-radius: 9px; background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1.5px var(--accent), 0 4px 14px var(--accent-glow);
+  will-change: transform, width, height;
 }
 .mg-day, .wt-day { position: relative; z-index: 2; }
+/**
+ * 「今天」在缩略图里也要有一块可见的框：以前为了给滑块让位把它改成透明的，
+ * 结果缩略图上除了滑块那一格就再没有框了（滑块落在周末时整张图一个框都没有）。
+ * 现在今天保留一层淡主题色底 + 圆点，滑块仍旧压在它上面，两者不冲突。
+ */
+.rail-table .wt-day.today { background: var(--bg-subtle); }
+.mini-table .mg-day.today::after, .rail-table .wt-day.today::after {
+  content: ""; position: absolute; left: 50%; bottom: 1px;
+  width: 3px; height: 3px; margin-left: -1.5px; border-radius: 50%;
+  background: var(--accent);
+}
+.mg-day.picked .n, .wt-day.picked .n { font-weight: 700; color: var(--accent); }
 
 /* ── 导入选项 ─────────────────────────────────────────────── */
 .opt-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: var(--sp-3); margin-bottom: var(--sp-3); }
@@ -1293,51 +1421,108 @@ body { text-size-adjust: 100%; }
 .strip.detailed .st-title { font-size: 15px; }
 .strip-empty { font-size: 12px; color: var(--text-tertiary); padding: 2px 0 8px; }
 
+/* ── 今日日程 · 紧凑行（默认）：两行一条，课多也不用滑很久 ──── */
+.strip.dense { padding: 7px 11px; margin-bottom: 6px; gap: 8px; align-items: center; }
+.strip.dense .st-line1 { display: flex; align-items: baseline; gap: 8px; min-width: 0; flex-wrap: wrap; }
+.strip.dense .st-line1 .st-time {
+  flex: 0 0 auto; font-size: 12px; font-weight: 620; color: var(--accent);
+  font-variant-numeric: tabular-nums;
+}
+.strip.dense .st-line1 .st-title {
+  flex: 1 1 auto; min-width: 0; font-size: 13px; font-weight: 620;
+  color: var(--text-primary); overflow-wrap: anywhere;
+}
+.strip.dense .st-line1 .st-badges { flex: 0 0 auto; display: inline-flex; gap: 4px; }
+.strip.dense .st-line1 .st-status { flex: 0 0 auto; font-size: 11px; color: var(--text-tertiary); }
+.strip.dense .st-line2 {
+  margin-top: 2px; display: flex; flex-wrap: wrap; gap: 3px 10px;
+  font-size: 11px; color: var(--text-secondary);
+}
+.strip.dense .st-line2 .st-period { color: var(--text-tertiary); }
+.strip.dense .st-line2 .st-loc { overflow-wrap: anywhere; }
+
 /* ── ② 本周概览：迷你周表 ─────────────────────────────────── */
 .mini-table {
   display: grid; gap: 2px; width: 100%; min-width: 0;   /* 覆盖 .week-table 的 372px 下限 */
   grid-auto-rows: auto;
+  /* .week-table 有 min-height: 100%（周表页要铺满面板），缩略图不能继承：
+     否则表格被撑到卡片那么高，行高却只有十几 px，底部白白多出一截空档 */
+  min-height: 0;
+  /* 行高由 JS 按卡片高度算好（9–20px）；这里再兜一道，防止 1fr 被拉满 */
+  align-content: start;
 }
 .mg-corner, .mg-day {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
   font-size: 9.5px; color: var(--text-tertiary); border-radius: 5px;
   padding: 1px 0; min-width: 0; overflow: hidden;
+  /* 缩略图表头只占一行：以前「9 / 月」折成两行，把整个表头顶到 31px，
+     缩略图光表头就吃掉六分之一高度 */
+  line-height: 1.15; white-space: nowrap;
 }
-.mg-day .n { font-size: 11px; font-weight: 620; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.mg-corner { font-size: 8.5px; }
+.mg-day .w { font-size: 8px; line-height: 1.1; color: var(--text-tertiary); }
+.mg-day .n { font-size: 11px; line-height: 1.15; font-weight: 620; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .mg-day.today { background: var(--accent-soft); }
 .mg-day.today .n { color: var(--accent); }
 .mg-time {
   display: flex; align-items: center; justify-content: center;
-  font-size: 8.5px; color: var(--text-tertiary); background: var(--bg-subtle);
+  font-size: 8px; color: var(--text-tertiary); background: var(--bg-subtle);
   border-radius: 4px; font-variant-numeric: tabular-nums;
 }
 .mg-empty { background: var(--bg-subtle); opacity: 0.5; border-radius: 4px; }
-.mg-block { border-radius: 4px; min-height: 8px; cursor: pointer; }
+.mg-block { border-radius: 3px; min-height: 6px; cursor: pointer; }
 .mg-block:hover { filter: brightness(1.05); }
+/* 节次多到行高只剩几像素时：只留色块，不画数字（否则糊成一团） */
+.mini-table.mg-thin .mg-time { background: transparent; font-size: 0; }
 .mini-foot { margin-top: 6px; font-size: 10.5px; color: var(--text-tertiary); }
 
-/* ── ②b 迷你周表：横向滚动（窄栏里也能滑出整周 7 天）─────────
-   表格有最小宽度，卡片放不下就左右滑动；左边「节次 / 时间」那一列
-   用 position: sticky 吸住，滑到周日后仍然知道这是第几节。 */
-.mg-scroll {
+/* ── ②b 本周概览「展开态」的周表：可以左右滑动 ─────────────────
+   缩略图（折叠态）固定周一到周五、不可滑动；滑动只在这里 ——
+   卡片窄时每列保留 42px 下限，放不下就横滑，时间列 sticky 吸左。 */
+.wt-scroll {
   overflow-x: auto; overflow-y: hidden;
   -webkit-overflow-scrolling: touch;
   overscroll-behavior-x: contain;
   margin: 0 -2px; padding: 0 2px;
-  /* 滚动条不占高度：卡片的竖向空间本来就很紧，底部提示不能被挤出去 */
-  scrollbar-width: none;
+  scrollbar-width: none;          /* 卡片竖向空间紧，不让滚动条占高度 */
 }
-.mg-scroll::-webkit-scrollbar { height: 0; display: none; }
-/* 7 列 × 40px + 16px 时间列 + 列间距 = 310px：低于这个宽度就横向滚动 */
-.mg-scroll .mini-table { min-width: 312px; }
-.mg-scroll .mg-corner,
-.mg-scroll .mg-time,
-.mg-scroll .mg-evlabel {
+.wt-scroll::-webkit-scrollbar { height: 0; display: none; }
+.wt-scroll .wt-corner,
+.wt-scroll .wt-time,
+.wt-scroll .wt-evlabel {
   position: sticky; left: 0; z-index: 3;
+}
+/**
+ * 左上角那个「9 月」属于**表头那一行**，不是悬停列的成员：
+ * 它跟日期格同一种底色、跟着表头一起左右走（所以不再"跟着课次时间悬停"），
+ * 剩下的悬停列就只剩节次和时间。
+ */
+.wt-scroll .wt-corner {
+  position: static;
+  background: var(--bg-subtle);
+  box-shadow: none;
+}
+.wt-scroll .wt-time,
+.wt-scroll .wt-evlabel {
   background: var(--bg-base);
   box-shadow: 1px 0 0 var(--divider);
 }
-.mg-scroll .mg-time { background: var(--bg-subtle); }
+/**
+ * 悬停的时间列：横向滑动时课程卡片会从它下面滑过（重叠）。
+ * 一旦检测到重叠（scrollLeft > 0）就换成毛玻璃 —— 半透明 + 高斯模糊，
+ * 既看得出下面有课卡在动，节次和时间又依然清楚。
+ * 模糊半径与透明度直接取应用里的「毛玻璃强度」（关 / 低 / 中 / 高），
+ * 关掉毛玻璃时它会退化成接近不透明的底色。
+ */
+.wt-scroll.wt-stuck .wt-time,
+.wt-scroll.wt-stuck .wt-evlabel {
+  background: var(--glass-modal);
+  /* 比卡片再翻一倍模糊：从下面滑过的课名会被彻底糊开，节次/时间才读得清；
+     毛玻璃关掉时 --blur-card 是 0，这里也保持 0（跟全局设置一致）。 */
+  -webkit-backdrop-filter: blur(calc(var(--blur-card) * 2)) saturate(1.4);
+  backdrop-filter: blur(calc(var(--blur-card) * 2)) saturate(1.4);
+  box-shadow: 1px 0 0 var(--glass-stroke), 8px 0 18px rgba(0, 0, 0, 0.08);
+}
 
 /* ── ④ 卡片之间的小白条（长按空白处出现，可拖动改尺寸） ───── */
 .splitter {
@@ -1855,6 +2040,10 @@ body { text-size-adjust: 100%; }
 
 /* 学期 / 导出清单里「当前」那一项 */
 .export-row.active { border-color: var(--accent); background: var(--accent-soft); }
+/* 危险操作行（长按学期 → 删除）：只换文字色与描边，不抢主题色 */
+.export-row.danger { border-color: var(--danger, #d9534f); }
+.export-row.danger .er-name { color: var(--danger, #d9534f); }
+.export-row.danger:hover { background: rgba(217, 83, 79, 0.10); border-color: var(--danger, #d9534f); }
 
 /* 关于与帮助：开源地址卡片 */
 .repo-box {
@@ -1928,7 +2117,8 @@ body { text-size-adjust: 100%; }
 }
 .next-hero .nh-bar { flex: 0 0 4px; border-radius: 4px; }
 .next-hero .nh-main { flex: 1 1 auto; min-width: 0; }
-.next-hero .nh-top { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+/* 时间徽章 + 「今天 周二」：窄卡片上宁可折成两行，也不把「周二」切掉半截 */
+.next-hero .nh-top { display: flex; align-items: center; gap: 4px 8px; justify-content: space-between; flex-wrap: wrap; }
 .next-hero .nh-time {
   font-size: 12.5px; font-weight: 620; color: var(--accent);
   background: var(--accent-soft); padding: 2px 9px; border-radius: 999px;
@@ -2048,11 +2238,9 @@ body { text-size-adjust: 100%; }
 .dev-row:first-of-type { border-top: 0; }
 .dev-name { flex: 1 1 auto; min-width: 0; font-size: 12.5px; color: var(--text-secondary); }
 .dev-select {
-  flex: 0 1 auto; max-width: 46%;
-  font: inherit; font-size: 12.5px; padding: 6px 8px; border-radius: 9px;
-  border: 1px solid var(--glass-stroke); background: var(--glass-surface);
-  color: var(--text-primary);
+  flex: 0 1 auto; max-width: 46%; min-width: 0;
 }
+.dev-select .pick-trigger { font-size: 12.5px; padding: 6px 8px; border-radius: 9px; }
 .dev-row .chip-btn { flex: 0 0 auto; }
 .dev-preview-card {
   width: 220px; padding: 22px 16px; text-align: center;
@@ -2242,3 +2430,298 @@ body.dev-outline .segmented, body.dev-outline .btn, body.dev-outline .chip-btn {
               0 0 16px var(--accent-glow);
 }
 .zone.compact { cursor: pointer; }
+
+/* ══════════════════════════════════════════════════════════════
+   v0.3.4 · 备注分层 + 作业卡片
+   备注：本次（override.newNote，只属于那一天）/ 本课（course.note，所有时段）
+   作业：来自「本次备注」的每一行，左右滑划掉 → 落进底部「已完成」
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 备注格子里的「本课」小尾巴（没写就不显示） ───────────── */
+.info-cell .ic-extra {
+  margin-top: 5px; display: flex; gap: 5px; align-items: flex-start;
+  font-size: 11px; line-height: 1.35; color: var(--text-tertiary);
+}
+.info-cell .ic-tag {
+  flex: 0 0 auto; font-size: 10px; padding: 1px 5px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.note-once.focus > .field-label, .note-course.focus > .field-label { color: var(--accent); }
+
+/* ── 作业卡片 ─────────────────────────────────────────────── */
+.hw-card {
+  margin-top: 10px; border-radius: 14px; overflow: hidden;
+  border: 1px solid var(--glass-stroke); background: var(--glass-surface);
+}
+.hw-sum, .hw-done-head, .hw-more {
+  appearance: none; font: inherit; cursor: pointer; text-align: left; width: 100%;
+  display: flex; align-items: center; gap: 8px; padding: 9px 12px;
+  background: transparent; border: 0; color: var(--text-secondary);
+}
+.hw-head { display: flex; align-items: center; gap: 8px; padding: 9px 12px 2px; color: var(--text-secondary); }
+.hw-ico { color: var(--accent); font-size: 13px; }
+.hw-t { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+.hw-n { font-size: 11.5px; color: var(--text-tertiary); }
+/* 展开箭头：统一用"▸ 旋转 90°"表示展开，避免换字符导致的跳变 */
+.hw-chev {
+  margin-left: auto; font-size: 11px; color: var(--text-tertiary);
+  display: inline-block; transition: transform var(--dur-standard) var(--ease-standard);
+}
+.hw-sum.open .hw-chev, .hw-done-head.open .hw-chev, .hw-more.open .hw-chev { transform: rotate(90deg); }
+.hw-more .hw-chev { margin-left: 0; margin-right: 4px; }
+.hw-done-hint { font-size: 10.5px; color: var(--text-tertiary); opacity: .8; }
+.hw-body { padding: 0 10px 10px; }
+.hw-list { display: flex; flex-direction: column; gap: 6px; padding: 2px 0; }
+.hw-row {
+  position: relative; display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px; border-radius: 10px; background: var(--bg-subtle);
+  font-size: 12.5px; color: var(--text-primary);
+  transition: background 160ms var(--ease-fade-out);
+}
+.hw-row.swiping { transition: none; }
+.hw-row.swiping { will-change: transform; }
+.hw-row.swipe-ok { background: var(--accent-soft); }
+.hw-swipe-hint {
+  position: absolute; right: 10px; top: 50%; transform: translateY(-50%);
+  font-size: 10.5px; color: var(--accent); opacity: 0; transition: opacity 140ms;
+}
+.hw-row.swiping .hw-swipe-hint { opacity: .85; }
+.hw-row.swipe-ok .hw-swipe-hint { opacity: 1; font-weight: 600; }
+.hw-date {
+  flex: 0 0 auto; font-size: 10.5px; padding: 1px 5px; border-radius: 6px;
+  background: var(--accent-soft); color: var(--accent);
+}
+.hw-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; line-height: 1.35; }
+.hw-empty { padding: 8px 4px; font-size: 12px; }
+.hw-done-head { margin-top: 6px; border-top: 1px dashed var(--divider); font-size: 12px; }
+.hw-done { display: flex; flex-direction: column; gap: 6px; padding: 2px 0 0; }
+.hw-row.done {
+  opacity: .5; background: transparent; border: 1px dashed var(--divider); cursor: pointer;
+}
+.hw-row.done .hw-text { text-decoration: line-through; }
+/* 已完成：长按找回的提示 + 600ms 进度线（走满即找回） */
+.hw-hold {
+  flex: 0 0 auto; font-size: 10px; color: var(--text-tertiary);
+  opacity: .75;
+}
+.hw-row.done { overflow: hidden; }
+.hw-row.done.lp-wait { box-shadow: inset 0 0 0 1.5px var(--accent); border-color: transparent; }
+.hw-row.done.lp-wait::after {
+  content: ""; position: absolute; left: 0; bottom: 0; height: 2px;
+  background: var(--accent); animation: hwHold 600ms linear forwards;
+}
+@keyframes hwHold { from { width: 0; } to { width: 100%; } }
+.hw-tick { flex: 0 0 auto; color: var(--accent); font-size: 12px; }
+.hw-when { margin-left: auto; flex: 0 0 auto; font-size: 10.5px; color: var(--text-tertiary); }
+.hw-more { padding: 4px 2px; font-size: 11.5px; color: var(--accent); }
+.hw-earlier { display: flex; flex-direction: column; gap: 6px; padding-top: 4px; }
+
+/* 作业 · 按课程分组（v0.3.7）：组头是课程色点 + 课程名 + 条数 */
+.hw-group {
+  display: flex; align-items: center; gap: 6px;
+  margin: 6px 0 1px; padding: 0 4px;
+  font-size: 11.5px; color: var(--text-secondary);
+}
+.hw-group:first-child { margin-top: 0; }
+.hw-dot {
+  flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%;
+  box-shadow: 0 0 0 2px var(--glass-stroke);
+}
+.hw-group-name { font-weight: 600; color: var(--text-primary); }
+.hw-group-n {
+  margin-left: auto; font-size: 10.5px; color: var(--text-tertiary);
+  padding: 0 5px; border-radius: 6px; background: var(--accent-soft);
+}
+
+/* ── 长期任务（v0.3.7）────────────────────────────────────── */
+.lt-block { margin-top: 8px; padding-top: 6px; border-top: 1px dashed var(--divider); }
+.lt-head { display: flex; align-items: center; gap: 8px; padding: 2px 4px 4px; color: var(--text-secondary); }
+.lt-ico { color: var(--accent); font-size: 13px; }
+.lt-t { font-size: 12.5px; font-weight: 600; color: var(--text-primary); }
+.lt-n { font-size: 11px; color: var(--text-tertiary); }
+.lt-row {
+  appearance: none; font: inherit; text-align: left; cursor: pointer;
+  width: 100%; display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; margin-top: 6px; border-radius: 10px;
+  background: var(--bg-subtle); border: 1px solid transparent; color: var(--text-primary);
+}
+.lt-row.done { border-color: var(--accent); }
+.lt-dot { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 50%; }
+.lt-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.lt-name { font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere; }
+.lt-bar {
+  display: block; height: 5px; border-radius: 3px; background: var(--glass-stroke); overflow: hidden;
+}
+.lt-bar i { display: block; height: 100%; border-radius: 3px; transition: width var(--dur-standard) var(--ease-standard); }
+.lt-bar.big { height: 8px; margin: 8px 0 6px; }
+.lt-val {
+  flex: 0 0 auto; text-align: right; font-size: 11.5px; font-variant-numeric: tabular-nums;
+  display: flex; flex-direction: column; gap: 2px; color: var(--text-secondary);
+}
+.lt-val em { font-style: normal; color: var(--text-tertiary); }
+.lt-today { font-size: 10.5px; color: var(--accent); }
+
+/* 记一笔 / 新建编辑的弹窗内容 */
+.lt-sheet .lt-top-name { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+.lt-top-val { margin-top: 2px; font-size: 22px; line-height: 1.1; color: var(--text-primary); }
+.lt-top-val b { font-variant-numeric: tabular-nums; }
+.lt-top-sub { font-size: 11.5px; color: var(--text-tertiary); }
+.lt-quick { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 12px; }
+.lt-recent { margin-top: 12px; }
+.lt-recent-title { font-size: 11.5px; color: var(--text-tertiary); margin-bottom: 6px; }
+.lt-recent-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  border-radius: 8px; background: var(--bg-subtle); margin-bottom: 6px; font-size: 12px;
+}
+.lt-recent-amt { flex: 0 0 auto; font-weight: 600; font-variant-numeric: tabular-nums; }
+.lt-recent-day { flex: 0 0 auto; font-size: 10.5px; color: var(--text-tertiary); }
+.lt-recent-note { flex: 1 1 auto; min-width: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
+.lt-del {
+  appearance: none; border: 0; background: transparent; cursor: pointer;
+  color: var(--danger); font-size: 12px; padding: 2px 6px; border-radius: 6px;
+}
+.lt-units { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.lt-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; font-size: 12.5px; color: var(--text-secondary); }
+.lt-check input { margin-top: 3px; }
+
+/* 设置页里的长期任务清单 */
+.lt-list { margin-top: 10px; display: flex; flex-direction: column; gap: 8px; }
+.lt-set-row {
+  display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+  border-radius: 12px; background: var(--glass-surface); border: 1px solid var(--glass-stroke);
+}
+.lt-set-row .lt-sub { font-size: 11px; color: var(--text-tertiary); }
+.lt-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+/* 小号开关：设置行里的那种三倍太占地方，这里缩到 40×22 */
+.switch.sm { width: 38px; height: 22px; flex: 0 0 38px; }
+.switch.sm .knob { width: 16px; height: 16px; }
+.switch.sm input:checked ~ .knob { transform: translateX(16px); }
+
+/* ── 作业记录（设置 → 课程与课表 → 作业记录…）───────────────── */
+.task-log .tl-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 12px; }
+.task-log .tl-stat {
+  text-align: center; padding: 8px 4px; border-radius: 12px;
+  background: var(--bg-subtle); border: 1px solid var(--glass-stroke);
+}
+.task-log .tl-stat b { display: block; font-size: 18px; color: var(--accent); font-weight: 650; }
+.task-log .tl-stat span { font-size: 11px; color: var(--text-tertiary); }
+.task-log .tl-group { margin-bottom: 12px; }
+.task-log .tl-title { font-size: 12px; font-weight: 620; color: var(--text-secondary); margin-bottom: 6px; }
+.task-log .tl-line { display: flex; gap: 8px; justify-content: space-between; font-size: 12px; padding: 3px 2px; }
+.task-log .tl-name { color: var(--text-primary); overflow-wrap: anywhere; }
+.task-log .tl-num { color: var(--text-tertiary); flex: 0 0 auto; }
+.task-log .tl-row {
+  display: flex; align-items: center; gap: 8px; padding: 7px 10px; margin-bottom: 5px;
+  border-radius: 10px; background: var(--bg-subtle); font-size: 12.5px; position: relative;
+}
+.task-log .tl-row.done { opacity: .55; }
+.task-log .tl-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
+.task-log .tl-row.done .tl-text { text-decoration: line-through; }
+.task-log .tl-when { flex: 0 0 auto; font-size: 10.5px; color: var(--text-tertiary); }
+.task-log .tl-del {
+  flex: 0 0 auto; appearance: none; border: 0; background: transparent;
+  color: var(--text-tertiary); font-size: 12px; cursor: pointer; padding: 2px 4px;
+}
+.task-log .tl-del:hover { color: var(--danger, #d9534f); }
+
+/* ── 设置里的作业概览卡片 ─────────────────────────────────── */
+.hw-overview {
+  margin-top: 8px; padding: 10px 12px; border-radius: 14px;
+  background: var(--bg-subtle); border: 1px solid var(--glass-stroke);
+}
+.hw-overview .hwo-stats { display: flex; gap: 8px; justify-content: space-between; }
+.hw-overview .hwo-item { text-align: center; flex: 1 1 0; }
+.hw-overview .hwo-item b { display: block; font-size: 18px; font-weight: 650; color: var(--accent); }
+.hw-overview .hwo-item span { font-size: 11px; color: var(--text-tertiary); }
+.hw-overview .hwo-bar {
+  margin-top: 8px; height: 6px; border-radius: 999px; overflow: hidden;
+  background: var(--divider);
+}
+.hw-overview .hwo-bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+.hw-overview .hwo-foot { margin-top: 6px; font-size: 11px; color: var(--text-tertiary); }
+
+/* ══════════════════════════════════════════════════════════════
+   ⑧ 自绘下拉（替换原生 <select>）
+
+   原生 select 在 Android 上弹的是系统窗口：各家 ROM 长得都不一样，
+   圆角、字体、选中样式和应用对不上，也不跟随"毛玻璃强度"设置。
+   这里改成应用自己的浮层 —— 毛玻璃变量、进出场动画都和其它弹窗共用。
+   ══════════════════════════════════════════════════════════════ */
+
+/* 触发器：看上去就是个输入框，右侧一个箭头，尺寸和原生下拉一致 */
+.pick-slot { display: block; min-width: 0; }
+.pick-trigger {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  text-align: left; cursor: pointer; min-width: 0;
+}
+.pick-trigger .pick-txt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pick-trigger .pick-arrow { flex: 0 0 auto; opacity: .45; font-size: 11px; }
+.pick-trigger.is-empty .pick-txt { color: var(--text-tertiary); }
+
+/* 选择浮层：独立一层，盖在课程编辑器上面，关掉后编辑器还在原处 */
+.pk-root {
+  position: fixed; inset: 0; z-index: calc(var(--z-modal) + 7);
+  display: flex; align-items: center; justify-content: center;
+  padding: 16px; box-sizing: border-box;
+}
+.pk-root .modal-scrim { opacity: 0; transition: opacity 200ms var(--ease-standard); }
+.pk-root.open .modal-scrim { opacity: 1; }
+.pk-card { width: min(430px, calc(100vw - 32px)); }
+.pk-list {
+  display: flex; flex-direction: column; gap: 2px;
+  max-height: min(52vh, 420px); overflow: auto; overscroll-behavior: contain;
+  margin: -4px -6px 0; padding: 0 6px;
+}
+.pk-list::-webkit-scrollbar { width: 8px; }
+.pk-list::-webkit-scrollbar-thumb { background: var(--glass-stroke); border-radius: 8px; }
+.pk-opt {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  width: 100%; text-align: left; font: inherit; font-size: 14px; cursor: pointer;
+  padding: 11px 12px; border-radius: 11px; border: 0; background: transparent;
+  color: var(--text-primary);
+  transition: background var(--dur-quick) var(--ease-standard),
+              transform 120ms var(--ease-standard);
+}
+.pk-opt:hover { background: var(--glass-surface); }
+.pk-opt:active { transform: scale(.985); }
+.pk-opt.on { color: var(--accent); font-weight: 600; background: var(--accent-soft); }
+.pk-opt .pk-txt { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pk-opt .pk-sub { font-size: 11.5px; font-weight: 400; font-style: normal; color: var(--text-tertiary); }
+.pk-opt .pk-tick { flex: 0 0 auto; opacity: 0; color: var(--accent); }
+.pk-opt.on .pk-tick { opacity: 1; }
+
+/* 滑块：位置/尺寸每帧都在写，提前提层，避免大卡片里跟着重绘 */
+.seg-pill { will-change: transform, width, height; }
+.tabbar .tab-pill { will-change: transform, width, height; }
+
+/* ══════════════════════════════════════════════════════════════
+   切换主题的揭示层（.theme-snap）
+
+   这一层是**旧主题的整页快照**（ui.js 里 cloneNode 出来的），盖在最上面，
+   然后用 mask 从点击处开洞：
+     洞内 = 真实页面的新主题（内容清清楚楚）
+     洞外 = 刚才那一帧的旧主题（内容也清清楚楚，不是灰膜）
+   铺满后整层撤掉。
+
+   遮罩带了 mask，会自己形成 backdrop root —— 所以快照内部的毛玻璃模糊的是
+   "快照自己那层的底色"，不会串到下面的新主题（否则玻璃会偏色）。
+   ══════════════════════════════════════════════════════════════ */
+.theme-snap, .theme-ink {
+  position: fixed; left: 0; top: 0; width: 100%; height: 100%;
+  z-index: calc(var(--z-toast) + 10);
+  pointer-events: none;
+  overflow: hidden;
+  will-change: opacity;
+}
+
+/* 扩散用的"墨滴"：一块目标主题底色的圆（下扫时是一条），
+   每帧只改 transform 与 opacity —— 这两个属性由合成器直接处理，不重新光栅化。
+   上一版逐帧改 mask 半径，浏览器每帧都要重做一张全屏遮罩，手机上就是掉帧的来源。 */
+.theme-spread {
+  position: fixed; left: 0; top: 0;
+  z-index: calc(var(--z-toast) + 11);
+  pointer-events: none;
+  will-change: transform, opacity;
+  transform: translate3d(-50%, -50%, 0) scale(0);
+  opacity: 0;
+}

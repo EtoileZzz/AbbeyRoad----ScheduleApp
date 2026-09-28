@@ -9,7 +9,7 @@ var AR = window.AR || (window.AR = {});
 (function () {
   'use strict';
 
-var APP_VERSION = '0.3.0';
+var APP_VERSION = '0.3.7';
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
@@ -221,7 +221,12 @@ var APP_VERSION = '0.3.0';
       integration: {
         university: '', campus: '', city: '', navApp: 'system',
         trimRoom: true, keepCampus: true, autoPrependUniversity: true,
-        appendCityWhenAmbiguous: true, onlineTreatAsNoNav: true
+        appendCityWhenAmbiguous: true, onlineTreatAsNoNav: true,
+        /**
+         * 闹钟 / 系统日历的提前量（分钟）：默认 15 —— 上课前十几分钟响，
+         * 才有时间从宿舍走到教室。0 = 就用上课时间本身。可在设置 → 系统集成 调整。
+         */
+        earlyMinutes: 15
       },
       onboardingCompletedAt: null
     };
@@ -245,6 +250,14 @@ var APP_VERSION = '0.3.0';
       periods: makePeriods(semId),
       teachers: [], locations: [], courses: [], blocks: [], overrides: [],
       events: [],
+      tasks: [],                 // 作业条目（从「本次备注」里识别出来的，见 parseNoteTasks）
+      /**
+       * 长期任务（v0.3.7）：志愿时长、阅读量这类"一点点攒"的任务。
+       * 每条 { id, name, unit, target, colorKey, showInToday, entries:[{id,amount,at,note}] }
+       * 进度 = entries 里 amount 的合计（今日 / 本周 / 累计 分别算），不写死一个数字，
+       * 这样"记一笔"之后随时能改、能删，也不会和作业条目混在一起。
+       */
+      longTasks: [],
       reminders: [], promptTemplates: [{
         id: 'default', version: PROMPT_VERSION, title: '默认课表整理提示词',
         body: PROMPT_TEXT, isDefault: true
@@ -270,6 +283,348 @@ var APP_VERSION = '0.3.0';
     return state;
   }
 
+  /* ══════════════════════════════════════════════════════════════
+     备注分层 + 作业条目（v0.3.4）
+
+     备注两层：
+       本次备注 = 单次记录 override(blockId,date).newNote —— 只影响那一天
+       本课备注 = course.note                             —— 这门课所有时段
+     作业条目从「本次备注」里识别，单独存一张 tasks 表（可选同步），
+     划掉状态因此不会污染备注原文。
+     ══════════════════════════════════════════════════════════════ */
+
+  /** 作业识别：带列表符号的行（- * • 1. ① [ ] ✓ 之类） */
+  var TASK_PREFIX = /^\s*(?:[-*•·‣▪–—]+|\(\d+\)|\d+[.、)]|[①②③④⑤⑥⑦⑧⑨⑩]|\[\s?\]|\[[xX✓]\]|□|√|✓|☐)\s*/;
+  /** 作业关键词：只在「智能识别」模式下用来兜住没写列表符号的行 */
+  var TASK_KEYWORDS = /(作业|练习|习题|实验|报告|论文|复习|预习|提交|截止|背诵|抄写|阅读|听力|上机|编程|画图|做完|改写|总结)/;
+
+  /** 作业设置（设置 → 课程与课表）：总开关 + 识别方式 */
+  function homeworkSettings(s) {
+    var src = (s || state) || {};
+    var hw = (src.settings && src.settings.schedule && src.settings.schedule.homework) || {};
+    return {
+      on: hw.on !== false,
+      mode: hw.mode === 'smart' ? 'smart' : 'line',
+      groupByCourse: hw.groupByCourse !== false   // v0.3.7：作业按课程分组（默认开，可在设置里关）
+    };
+  }
+
+  function normTaskText(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+
+  /**
+   * 把一段「本次备注」拆成作业条目。
+   *   mode = 'line'  → 一行算一条（默认，所见即所得）
+   *   mode = 'smart' → 只收"带列表符号"或"命中作业关键词"的行
+   * `[x]` / `√` 开头的行直接算已完成。
+   */
+  function parseNoteTasks(text, mode) {
+    var lines = String(text || '').split(/\r?\n/);
+    var out = [];
+    for (var i = 0; i < lines.length; i++) {
+      var raw = lines[i];
+      if (!raw || !raw.trim()) { continue; }
+      var m = raw.match(TASK_PREFIX);
+      var body = (m ? raw.slice(m[0].length) : raw).trim();
+      if (!body) { continue; }
+      var done = !!(m && (/\[[xX✓]\]/.test(m[0]) || /[√✓]/.test(m[0])));
+      if (mode === 'smart' && !m && !TASK_KEYWORDS.test(body)) { continue; }
+      out.push({ text: body, done: done });
+    }
+    return out;
+  }
+
+  function taskList() { return (state.tasks || (state.tasks = [])); }
+
+  function findTask(blockId, dateK, text) {
+    var key = normTaskText(text);
+    var list = taskList();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].blockId === blockId && list[i].date === dateK && normTaskText(list[i].text) === key) { return list[i]; }
+    }
+    return null;
+  }
+
+  /**
+   * 备注保存之后同步作业条目：按 (blockId, date, 文字) 复用旧记录，
+   * 已经划掉的状态不会因为重新解析而丢失；备注里删掉的行才真的删掉。
+   */
+  function syncTasksFor(blockId, courseId, dateK, text) {
+    var hw = homeworkSettings(state);
+    var list = taskList();
+    if (!hw.on) { return []; }
+    var parsed = parseNoteTasks(text, hw.mode);
+    var keep = {};
+    var out = [];
+    for (var i = 0; i < parsed.length; i++) {
+      var p = parsed[i];
+      var key = normTaskText(p.text);
+      if (!key || keep[key]) { continue; }
+      keep[key] = true;
+      var rec = findTask(blockId, dateK, p.text);
+      if (!rec) {
+        rec = {
+          id: uid(), courseId: courseId || '', blockId: blockId || '', date: dateK || '',
+          text: p.text, done: !!p.done, doneAt: p.done ? new Date().toISOString() : '',
+          updatedAt: new Date().toISOString()
+        };
+        list.push(rec);
+      } else if (p.done && !rec.done) {
+        rec.done = true; rec.doneAt = new Date().toISOString();
+      }
+      out.push(rec);
+    }
+    // 备注里已经删掉的行：连作业条目一起删
+    for (var j = list.length - 1; j >= 0; j--) {
+      var t = list[j];
+      if (t.blockId === blockId && t.date === dateK && !keep[normTaskText(t.text)]) { list.splice(j, 1); }
+    }
+    save(true);
+    return out;
+  }
+
+  /** 某一天那节课的作业 */
+  function tasksOf(dateK) {
+    var list = taskList();
+    var out = [];
+    for (var i = 0; i < list.length; i++) { if (list[i].date === dateK) { out.push(list[i]); } }
+    return out;
+  }
+
+  /**
+   * 今日作业面板要显示的条目：
+   *   · 今天课上识别出来的全部条目；
+   *   · 之前没划掉的（跨天挂账，带日期标签）；
+   *   · 今天划掉的（进「已完成」区）。
+   * 更早划掉的会自动隐藏，但记录还在（点「已完成」区可以翻出来恢复）。
+   */
+  function taskBoard(todayK) {
+    var list = taskList();
+    var open = [], doneToday = [], doneWeek = [];
+    var t0 = parseDateKey(todayK);
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i];
+      // 划掉是哪一天要按**本地日期**算：doneAt 是 ISO（UTC），
+      // 直接切前 10 位在晚上 8 点后会偏成前一天，今天划掉的会被算成"更早"。
+      var doneDay = taskDoneDay(t);
+      if (!t.done) {
+        if (!t.date || t.date <= todayK) { open.push(t); }
+      } else if (doneDay === todayK) { doneToday.push(t); }
+      else {
+        /**
+         * 已完成的时间规矩（用户定的）：
+         *   今天划掉的 → 就按现在这样显示；
+         *   过一天 → 折进「更早的已完成」，默认收起；
+         *   过一周 → 不在已完成界面里显示（记录还留着，不删数据）。
+         */
+        var dd = parseDateKey(doneDay);
+        var days = (dd && t0) ? Math.round((t0.getTime() - dd.getTime()) / 86400000) : 99;
+        if (days >= 1 && days <= 7) { doneWeek.push(t); }
+      }
+    }
+    open.sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    doneToday.sort(function (a, b) { return String(b.doneAt).localeCompare(String(a.doneAt)); });
+    doneWeek.sort(function (a, b) { return String(b.doneAt).localeCompare(String(a.doneAt)); });
+    return { open: open, done: doneToday, doneWeek: doneWeek, todayK: todayK };
+  }
+
+  /** 作业是本地哪一天划掉的（用于「保留今天一天、第二天自动隐藏」） */
+  function taskDoneDay(t) {
+    if (!t || !t.doneAt) { return ''; }
+    var d = new Date(t.doneAt);
+    return isNaN(d.getTime()) ? '' : dateKey(d);
+  }
+
+  function setTaskDone(id, done) {
+    var t = null;
+    var list = taskList();
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { t = list[i]; break; } }
+    if (!t) { return null; }
+    t.done = !!done;
+    t.doneAt = t.done ? new Date().toISOString() : '';
+    t.updatedAt = new Date().toISOString();
+    save(true);
+    return t;
+  }
+
+  function removeTask(id) {
+    var list = taskList();
+    for (var i = list.length - 1; i >= 0; i--) { if (list[i].id === id) { list.splice(i, 1); save(true); return true; } }
+    return false;
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     长期任务（v0.3.7）
+
+     志愿时长、跑步里程、阅读量这种"攒进度"的目标：
+       · 每条自带单位和目标值，**各自统计**（各自算进度、完成率）；
+       · 每一笔记录单独存（entries），所以"今日 / 本周 / 累计"都能算出来，
+         记错了可以删掉某一笔，不会像"直接改总数"那样说不清；
+       · 每条一个 showInToday：要不要在今日页和普通作业一起出现，用户自己定。
+     和「作业」是两张表，互不影响：作业的条数 / 完成率里不会混进长期任务。
+     ══════════════════════════════════════════════════════════════ */
+
+  function longTaskList() { return (state.longTasks || (state.longTasks = [])); }
+
+  function longTaskById(id) {
+    var list = longTaskList();
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { return list[i]; } }
+    return null;
+  }
+
+  /** 一笔记录落在本地哪一天（at 是 ISO，跨时区直接切前 10 位会偏） */
+  function longTaskEntryDay(e) {
+    if (!e || !e.at) { return ''; }
+    var d = new Date(e.at);
+    return isNaN(d.getTime()) ? '' : dateKey(d);
+  }
+
+  /** 某条长期任务的进度：今日 / 近 7 天 / 累计（都从 entries 现算） */
+  function longTaskStats(t, todayK) {
+    var entries = (t && t.entries) || [];
+    var total = 0, today = 0, week = 0;
+    var weekFrom = todayK ? dateKey(addDays(parseDateKey(todayK), -6)) : '';
+    for (var i = 0; i < entries.length; i++) {
+      var amt = Number(entries[i].amount) || 0;
+      total += amt;
+      var day = longTaskEntryDay(entries[i]);
+      if (todayK && day === todayK) { today += amt; }
+      if (weekFrom && day && day >= weekFrom) { week += amt; }
+    }
+    var target = Number((t && t.target) || 0);
+    var round2 = function (n) { return Math.round(n * 100) / 100; };
+    return {
+      total: round2(total), today: round2(today), week: round2(week),
+      target: target,
+      rate: target > 0 ? Math.min(1, total / target) : 0,
+      percent: target > 0 ? Math.round(Math.min(1, total / target) * 100) : 0,
+      done: target > 0 && total >= target
+    };
+  }
+
+  /** 今日页要显示的那些（按列表顺序） */
+  function longTaskTodayList() {
+    var list = longTaskList();
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].showInToday !== false && !list[i].archived) { out.push(list[i]); }
+    }
+    return out;
+  }
+
+  /** 新建或更新一条（没有 id 就新建） */
+  function longTaskUpsert(patch) {
+    patch = patch || {};
+    var t = patch.id ? longTaskById(patch.id) : null;
+    var nowIso = new Date().toISOString();
+    if (!t) {
+      t = {
+        id: uid(), name: '', unit: '小时', target: 0,
+        colorKey: '#5B8DEF', showInToday: true, entries: [], updatedAt: nowIso
+      };
+      longTaskList().push(t);
+    }
+    var keys = ['name', 'unit', 'target', 'colorKey', 'showInToday', 'archived'];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (Object.prototype.hasOwnProperty.call(patch, k)) { t[k] = patch[k]; }
+    }
+    t.target = Number(t.target) || 0;
+    t.updatedAt = nowIso;
+    save(true);
+    return t;
+  }
+
+  function longTaskRemove(id) {
+    var list = longTaskList();
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (list[i].id === id) { list.splice(i, 1); save(true); return true; }
+    }
+    return false;
+  }
+
+  /** 记一笔（数量可正可负，方便手滑改回来） */
+  function longTaskAddEntry(id, amount, note) {
+    var t = longTaskById(id);
+    if (!t) { return null; }
+    var amt = Number(amount);
+    if (!isFinite(amt) || !amt) { return null; }
+    if (!t.entries) { t.entries = []; }
+    var e = {
+      id: uid(), amount: amt, note: String(note || '').slice(0, 120),
+      at: new Date().toISOString()
+    };
+    t.entries.push(e);
+    t.updatedAt = e.at;
+    save(true);
+    return e;
+  }
+
+  function longTaskRemoveEntry(id, entryId) {
+    var t = longTaskById(id);
+    if (!t || !t.entries) { return false; }
+    for (var i = t.entries.length - 1; i >= 0; i--) {
+      if (t.entries[i].id === entryId) { t.entries.splice(i, 1); t.updatedAt = new Date().toISOString(); save(true); return true; }
+    }
+    return false;
+  }
+
+  /** 最近的几笔（弹窗里列出来，可删） */
+  function longTaskRecentEntries(t, limit) {
+    var arr = ((t && t.entries) || []).slice();
+    arr.sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); });
+    return arr.slice(0, limit || 8);
+  }
+
+  /** 迁移用：拿"最后改过的时间"算出这一时段落在哪一天 */
+  function occurrenceDateFor(block, sem, when) {
+    var start = sem && sem.startDate ? parseDateKey(sem.startDate) : null;
+    var base = start ? mondayOf(start) : mondayOf(new Date());
+    var day = when && !isNaN(when.getTime()) ? when : new Date();
+    var week = Math.floor((mondayOf(day).getTime() - base.getTime()) / (7 * 86400000)) + 1;
+    var maxWeek = (sem && sem.weekCount) || 20;
+    week = Math.max(1, Math.min(maxWeek, week));
+    return addDays(base, (week - 1) * 7 + (Math.max(1, block.weekday || 1) - 1));
+  }
+
+  /** v0.3.4 迁移：把老数据里写在 block 上的备注按「只在那一周」搬到单次记录上 */
+  function splitLegacyBlockNotes(s) {
+    var blocks = s.blocks || [], courses = s.courses || [], sems = s.semesters || [];
+    var overrides = (s.overrides || (s.overrides = []));
+    var byCourse = {};
+    for (var c = 0; c < courses.length; c++) { byCourse[courses[c].id] = courses[c]; }
+    for (var b = 0; b < blocks.length; b++) {
+      var block = blocks[b];
+      if (typeof block.note !== 'string' || !block.note.trim()) { continue; }
+      var text = block.note;
+      var course = byCourse[block.courseId];
+      // 导入时同一段备注会同时写进 course 和 block：只清掉 block 那份，课程级保留
+      if (course && typeof course.note === 'string' && course.note === text) { delete block.note; continue; }
+      var sem = null;
+      for (var k = 0; k < sems.length; k++) {
+        if (sems[k].id === (course && course.semesterId)) { sem = sems[k]; break; }
+      }
+      if (!sem) { sem = sems[0] || null; }
+      var when = parseDateKey(block.updatedAt ? String(block.updatedAt).slice(0, 10) : '');
+      var dateK = dateKey(occurrenceDateFor(block, sem, when));
+      var ov = null;
+      for (var o = 0; o < overrides.length; o++) {
+        if (overrides[o].blockId === block.id && overrides[o].date === dateK) { ov = overrides[o]; break; }
+      }
+      if (!ov) {
+        overrides.push({
+          id: uid(), courseId: block.courseId, blockId: block.id, date: dateK, type: 'edit',
+          newWeekday: null, newDate: null, newPeriodStart: null, newPeriodEnd: null,
+          newStartTime: '', newEndTime: '', newLocationIds: null, newTeacherIds: null,
+          newNote: text, reason: '备注迁移', updatedAt: new Date().toISOString()
+        });
+      } else if (!ov.newNote) {
+        ov.newNote = text;
+        ov.updatedAt = new Date().toISOString();
+      }
+      delete block.note;
+    }
+  }
+
   /** 版本迁移入口：目前只有 v1，保留结构方便以后加字段 */
   function migrate(s) {
     if (!s.settings) { s.settings = defaultSettings((s.semesters && s.semesters[0] && s.semesters[0].id) || uid()); }
@@ -278,6 +633,10 @@ var APP_VERSION = '0.3.0';
     s.settings.layout.preset = (s.settings.layout.preset === 'stacked-vertical') ? 'stacked-vertical' : 'dual-horizontal';
     // 左手模式：老数据补默认值（关），布尔值原样保留
     if (typeof s.settings.layout.leftHand !== 'boolean') { s.settings.layout.leftHand = false; }
+    // 闹钟 / 系统日历提前量：老数据补默认值（15 分钟）
+    if (s.settings.integration && !(Number(s.settings.integration.earlyMinutes) >= 0)) {
+      s.settings.integration.earlyMinutes = 15;
+    }
     // v0.1.8：「减少动效」入口已删除，旧数据里的开关一并清掉，避免"动画不动"的残留状态
     if (s.settings.appearance) { delete s.settings.appearance.reduceMotion; }
     // v0.1.9：「最近的课」状态色（老数据补默认值，阈值与颜色都保留用户改过的）
@@ -344,8 +703,25 @@ var APP_VERSION = '0.3.0';
     if (!s.promptTemplates || !s.promptTemplates.length) {
       s.promptTemplates = [{ id: 'default', version: PROMPT_VERSION, title: '默认课表整理提示词', body: PROMPT_TEXT, isDefault: true }];
     }
-    var lists = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events', 'reminders', 'tombstones'];
+    var lists = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events',
+      'tasks', 'longTasks', 'reminders', 'tombstones'];
     for (var i = 0; i < lists.length; i++) { if (!Array.isArray(s[lists[i]])) { s[lists[i]] = []; } }
+    /**
+     * v0.3.4：备注分层。
+     *
+     * 以前备注只有一层（时段 block），于是"这一次课的作业"写完会在每一周都冒出来。
+     * 现在拆成：
+     *   · 本次备注 = 单次记录 override(blockId,date).newNote，只影响那一天；
+     *   · 本课备注 = course.note，这门课所有时段共用。
+     * 老数据里写在 block.note 上的备注按"只在那一周"迁移：
+     * 用 block.updatedAt 定位写入那一周，落到那一天的 override 上；
+     * 如果它和 course.note 一模一样（导入时双写的那种），只清掉 block 上那份。
+     */
+    if (!s.meta || !s.meta.notesSplitAt) {
+      splitLegacyBlockNotes(s);
+      if (!s.meta) { s.meta = {}; }
+      s.meta.notesSplitAt = APP_VERSION;
+    }
     s.schemaVersion = SCHEMA_VERSION;
     return s;
   }
@@ -1042,6 +1418,21 @@ var APP_VERSION = '0.3.0';
 
     // 1) 单次覆盖：停课 / 调课（改到别的日期）
     var ovs = overridesOfBlock(block.id);
+    /**
+     * "模板上这一天本来就该上课吗"（星期 + 周次）。
+     *
+     * 下面这几类单次记录（仅这次改的备注 / 地点 / 时间 / 换教室）只对
+     * **真正排了课的这一天**生效 —— 否则把课程星期从周一改到周三之后，
+     * 周一那条"本次备注"记录还会把课重新拉回周一，
+     * 用户看到的就是"我明明把课改到周三了，周一怎么还挂着这门课"。
+     *
+     * 停课（cancel）不受影响，照旧立即生效；搬课（move）的目标日
+     * 由下面读 newDate 的那一段认领，所以调休 / 借课一行都没动。
+     * 只有存在单次记录的课才算（大多数时段 ovs 是空的，不额外开销量量周次）。
+     */
+    var weeks = null;
+    if (ovs.length) { weeks = expandWeeks(block, sem ? sem.weekCount : 20); }
+    var onTemplate = ovs.length ? ((block.weekday === wd) && (weeks.indexOf(week) >= 0)) : false;
     for (var i = 0; i < ovs.length; i++) {
       var ov = ovs[i];
       var ovDate = parseDateKey(ov.date);
@@ -1054,6 +1445,7 @@ var APP_VERSION = '0.3.0';
        * 用户看到的就是「备注改了但没用」。
        */
       if (ov.type === 'move' || ov.type === 'time' || ov.type === 'room' || ov.type === 'edit') {
+        if (!onTemplate) { continue; }
         item.override = ov;
         item.kind = ov.type;
         return item;
@@ -1074,7 +1466,7 @@ var APP_VERSION = '0.3.0';
 
     // 2) 常规模板
     if (block.weekday !== wd) { return null; }
-    var weeks = expandWeeks(block, sem ? sem.weekCount : 20);
+    if (!weeks) { weeks = expandWeeks(block, sem ? sem.weekCount : 20); }
     if (weeks.indexOf(week) < 0) { return null; }
     return item;
   }
@@ -1141,9 +1533,17 @@ var APP_VERSION = '0.3.0';
      * src 记录每个字段到底来自哪一层，编辑窗口据此把改动写回正确的位置
      * （override = 只影响这一天；block = 这门课所有时段）。
      */
-    var note = (typeof block.note === 'string') ? block.note : (course.note || '');
+    /**
+     * v0.3.4 备注分层（这是"备注会重复出现在每一周"的根治）：
+     *   note       = 本次备注，只属于这一天 —— 存在单次记录 override.newNote 上；
+     *   courseNote = 本课备注，这门课所有时段共用 —— 存在 course.note 上。
+     * block.note 只作为老数据的兜底（迁移时已经把它搬到单次记录里）。
+     * src.note 固定为 override：点备注永远写"这一次"，长按才写课程级。
+     */
+    var note = (typeof block.note === 'string') ? block.note : '';
+    var courseNote = course.note || '';
     var src = {
-      note: (typeof block.note === 'string') ? 'block' : 'course',
+      note: 'override',
       teacher: (block.teacherIds && block.teacherIds.length) ? 'block'
         : ((course.teacherIds && course.teacherIds.length) ? 'course' : 'block'),
       location: (block.locationIds && block.locationIds.length) ? 'block'
@@ -1185,6 +1585,7 @@ var APP_VERSION = '0.3.0';
       start: pr ? pr.start : '', end: pr ? pr.end : '',
       startMin: startMin, endMin: endMin,
       location: loc, teachers: teachers, note: note, src: src,
+      courseNote: courseNote,      // 本课备注（所有时段共用），空字符串表示没写
       color: colorHex(course.colorKey),
       isConsecutive: !!block.isConsecutive,
       segments: block.segments || null
@@ -1523,7 +1924,8 @@ var APP_VERSION = '0.3.0';
    * 计算合并预览：新增 / 更新 / 冲突 / 删除。
    * 采用「字段级新者胜 + 冲突清单」策略。
    */
-  var MERGE_TABLES = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events', 'reminders'];
+  var MERGE_TABLES = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events',
+    'tasks', 'longTasks', 'reminders'];
   var REF_MAP_NAME = {
     semesters: 'semester', teachers: 'teacher', locations: 'location',
     courses: 'course', blocks: 'block', overrides: 'override'
@@ -1564,6 +1966,11 @@ var APP_VERSION = '0.3.0';
       return ['o', bid || rec.courseId, rec.date, rec.type].join('|');
     }
     if (table === 'events') { return ['e', rec.date, rec.type || '', rec.title || ''].join('|'); }
+    // 作业条目：跨设备按「哪天的哪节课 + 文字」配对，划掉状态才能对上
+    if (table === 'tasks') {
+      bid = rec.blockId && maps.block ? (maps.block[rec.blockId] || rec.blockId) : rec.blockId;
+      return ['t', bid || rec.courseId || '', rec.date || '', normTaskText(rec.text)].join('|');
+    }
     return null;
   }
 
@@ -1819,6 +2226,13 @@ var APP_VERSION = '0.3.0';
     addSemester: addSemester,
     eventsOf: eventsOf, eventsBetween: eventsBetween, eventsInWeek: eventsInWeek,
     saveEvent: saveEvent, removeEvent: removeEvent,
+    tasksOf: tasksOf, taskBoard: taskBoard, syncTasksFor: syncTasksFor,
+    parseNoteTasks: parseNoteTasks, setTaskDone: setTaskDone, removeTask: removeTask,
+    homeworkSettings: homeworkSettings, taskDoneDay: taskDoneDay,
+    longTaskList: longTaskList, longTaskById: longTaskById, longTaskStats: longTaskStats,
+    longTaskTodayList: longTaskTodayList, longTaskUpsert: longTaskUpsert, longTaskRemove: longTaskRemove,
+    longTaskAddEntry: longTaskAddEntry, longTaskRemoveEntry: longTaskRemoveEntry,
+    longTaskRecentEntries: longTaskRecentEntries, longTaskEntryDay: longTaskEntryDay,
     renameCourse: renameCourse, unifyColorsByName: unifyColorsByName,
     EVENT_TYPES: EVENT_TYPES, eventType: eventType,
     exportPayload: exportPayload, exportFileName: exportFileName,
