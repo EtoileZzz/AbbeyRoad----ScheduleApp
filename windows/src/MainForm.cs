@@ -34,9 +34,16 @@ namespace AbbeyRoad
                 }
             }
             Text = AppPaths.Product + " · 课表与日程";
-            Width = 1320;
-            Height = 860;
-            MinimumSize = new Size(900, 620);
+            // 清单声明 PerMonitorV2 后，这里的像素值就是物理像素；按系统缩放折算，
+            // 保持与旧版（DPI 拉伸时）完全一致的窗口大小与内部排布，只是不再发糊
+            float s;
+            using (System.Drawing.Graphics g = System.Drawing.Graphics.FromHwnd(IntPtr.Zero))
+            {
+                s = g.DpiX / 96f;
+            }
+            Width = (int)Math.Round(1320 * s);
+            Height = (int)Math.Round(860 * s);
+            MinimumSize = new Size((int)Math.Round(900 * s), (int)Math.Round(620 * s));
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = Color.White;
             KeyPreview = true;

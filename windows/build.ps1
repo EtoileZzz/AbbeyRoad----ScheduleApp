@@ -39,6 +39,10 @@ if (-not (Test-Path (Join-Path $assets 'abbeyroad.ico'))) {
 }
 $ico = Join-Path $assets 'abbeyroad.ico'
 
+# DPI 感知清单（PerMonitorV2）：不带上的话进程会被系统整体位图拉伸，高缩放屏发糊
+$manifest = Join-Path $root 'app.manifest'
+if (-not (Test-Path $manifest)) { throw ("缺少清单文件：" + $manifest) }
+
 # 2) 打包界面资源（app/ → web.zip，作为 EXE 的内嵌资源）
 Write-Host '== 打包界面资源 =='
 $webZip = Join-Path $out 'web.zip'
@@ -58,6 +62,7 @@ $appSources = Get-ChildItem (Join-Path $root 'src') -Filter *.cs | ForEach-Objec
 $appArgs = @('/nologo', '/target:winexe', '/platform:x64', '/langversion:7.3', '/optimize+',
              ('/out:' + (Join-Path $out 'AbbeyRoad.exe')),
              ('/win32icon:' + $ico),
+             ('/win32manifest:' + $manifest),
              ('/resource:' + $webZip + ',web.zip')) + $refs + $appSources
 & $roslyn @appArgs
 if ($LASTEXITCODE -ne 0) { throw '主程序编译失败' }
@@ -97,6 +102,7 @@ $setupOut = Join-Path $dist "AbbeyRoad-Setup-v$version.exe"
 $setupArgs = @('/nologo', '/target:winexe', '/platform:x64', '/langversion:7.3', '/optimize+',
                ('/out:' + $setupOut),
                ('/win32icon:' + $ico),
+               ('/win32manifest:' + $manifest),
                ('/resource:' + $appZip + ',app.zip')) + $setupRefs +
              @((Join-Path $root 'installer\Installer.cs'))
 & $roslyn @setupArgs

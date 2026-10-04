@@ -255,8 +255,13 @@ namespace AbbeyRoadSetup
         public SetupForm()
         {
             Text = "Abbey Road 安装程序";
-            Width = 560;
-            Height = 330;
+            // 清单声明 PerMonitorV2 后，这里的像素值就是物理像素；按系统缩放折算，
+            // 保持与旧版完全一致的对话框观感（只是不再发糊）
+            float s;
+            using (Graphics g = Graphics.FromHwnd(IntPtr.Zero)) { s = g.DpiX / 96f; }
+            Func<int, int> B = v => (int)Math.Round(v * s);
+            Width = B(560);
+            Height = B(330);
             StartPosition = FormStartPosition.CenterScreen;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = false;
@@ -266,29 +271,29 @@ namespace AbbeyRoadSetup
             Label title = new Label();
             title.Text = "Abbey Road · 课表与日程";
             title.Font = new Font("Microsoft YaHei UI", 15F, FontStyle.Bold);
-            title.SetBounds(24, 20, 480, 30);
+            title.SetBounds(B(24), B(20), B(480), B(30));
             Controls.Add(title);
 
             Label sub = new Label();
             sub.Text = "版本 " + "0.3.8a" + " · 本地优先，不联网、不收集数据\n"
                 + "安装到当前用户目录，无需管理员权限。";
-            sub.SetBounds(24, 54, 500, 40);
+            sub.SetBounds(B(24), B(54), B(500), B(40));
             sub.ForeColor = Color.FromArgb(90, 96, 114);
             Controls.Add(sub);
 
             Label pathLabel = new Label();
             pathLabel.Text = "安装位置";
-            pathLabel.SetBounds(24, 104, 80, 22);
+            pathLabel.SetBounds(B(24), B(104), B(80), B(22));
             Controls.Add(pathLabel);
 
             _path = new TextBox();
             _path.Text = Program.DefaultInstallDir;
-            _path.SetBounds(24, 128, 400, 26);
+            _path.SetBounds(B(24), B(128), B(400), B(26));
             Controls.Add(_path);
 
             Button browse = new Button();
             browse.Text = "浏览…";
-            browse.SetBounds(432, 127, 92, 28);
+            browse.SetBounds(B(432), B(127), B(92), B(28));
             browse.Click += delegate
             {
                 using (FolderBrowserDialog dlg = new FolderBrowserDialog())
@@ -300,32 +305,32 @@ namespace AbbeyRoadSetup
             Controls.Add(browse);
 
             _bar = new ProgressBar();
-            _bar.SetBounds(24, 170, 500, 8);
+            _bar.SetBounds(B(24), B(170), B(500), B(8));
             _bar.Style = ProgressBarStyle.Continuous;
             _bar.Value = 0;
             Controls.Add(_bar);
 
             _status = new Label();
             _status.Text = "准备就绪";
-            _status.SetBounds(24, 184, 500, 22);
+            _status.SetBounds(B(24), B(184), B(500), B(22));
             _status.ForeColor = Color.FromArgb(90, 96, 114);
             Controls.Add(_status);
 
             _launch = new CheckBox();
             _launch.Text = "安装完成后启动 Abbey Road";
             _launch.Checked = true;
-            _launch.SetBounds(24, 212, 300, 24);
+            _launch.SetBounds(B(24), B(212), B(300), B(24));
             Controls.Add(_launch);
 
             _install = new Button();
             _install.Text = "安装";
-            _install.SetBounds(250, 248, 90, 32);
+            _install.SetBounds(B(250), B(248), B(90), B(32));
             _install.Click += delegate { RunInstall(); };
             Controls.Add(_install);
 
             _uninstall = new Button();
             _uninstall.Text = "卸载";
-            _uninstall.SetBounds(346, 248, 90, 32);
+            _uninstall.SetBounds(B(346), B(248), B(90), B(32));
             _uninstall.Click += delegate
             {
                 _status.Text = "正在卸载…";
@@ -337,7 +342,7 @@ namespace AbbeyRoadSetup
 
             _close = new Button();
             _close.Text = "退出";
-            _close.SetBounds(442, 248, 80, 32);
+            _close.SetBounds(B(442), B(248), B(80), B(32));
             _close.Click += delegate { Close(); };
             Controls.Add(_close);
         }
