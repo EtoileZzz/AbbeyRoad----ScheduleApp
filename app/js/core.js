@@ -9,7 +9,7 @@ var AR = window.AR || (window.AR = {});
 (function () {
   'use strict';
 
-var APP_VERSION = '0.3.8a';
+var APP_VERSION = '0.4.0';
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
@@ -118,8 +118,66 @@ var APP_VERSION = '0.3.8a';
   ];
 
   function eventType(key) {
-    for (var i = 0; i < EVENT_TYPES.length; i++) { if (EVENT_TYPES[i].key === key) { return EVENT_TYPES[i]; } }
-    return EVENT_TYPES[3];
+    var list = (state && Object.prototype.toString.call(state.types) === '[object Array]') ? state.types : [];
+    for (var i = 0; i < list.length; i++) { if (list[i].key === key) { return list[i]; } }
+    for (var j = 0; j < EVENT_TYPES.length; j++) { if (EVENT_TYPES[j].key === key) { return EVENT_TYPES[j]; } }
+    return EVENT_TYPES[EVENT_TYPES.length - 1];   // 无类型 / 未知 → 「其他」
+  }
+
+  /**
+   * 日程类型（v0.4.0）：内置 考试/讲座/活动/其他 + 用户自建。
+   * state.types 每条与 EVENT_TYPES 同构 { key, label, hex, mark }，
+   * 所以老代码里 eventType(x).label / .hex 一行不用改。
+   */
+  function typeEnsure() {
+    if (!state) { return []; }
+    if (Object.prototype.toString.call(state.types) !== '[object Array]') { state.types = []; }
+    for (var i = 0; i < EVENT_TYPES.length; i++) {
+      var b = EVENT_TYPES[i], found = false;
+      for (var j = 0; j < state.types.length; j++) {
+        if (state.types[j].key === b.key) { found = true; break; }
+      }
+      if (!found) { state.types.push({ key: b.key, label: b.label, hex: b.hex, mark: b.mark, builtIn: true }); }
+    }
+    return state.types;
+  }
+  function typeList() { return typeEnsure(); }
+
+  /** 新建 / 改名 / 改色用户类型；key 不传 = 新建 */
+  function typeUpsert(patch) {
+    typeEnsure();
+    patch = patch || {};
+    var rec = null;
+    if (patch.key) {
+      for (var i = 0; i < state.types.length; i++) {
+        if (state.types[i].key === patch.key) { rec = state.types[i]; break; }
+      }
+    }
+    if (!rec) {
+      rec = { key: patch.key || uid(), label: '', hex: '#5B8DEF', mark: '事', custom: true };
+      state.types.push(rec);
+    }
+    if (patch.label != null) { rec.label = String(patch.label).slice(0, 12); rec.mark = rec.label.charAt(0) || '事'; }
+    if (patch.hex != null) { rec.hex = patch.hex; }
+    save(true);
+    return rec;
+  }
+
+  /** 删除用户类型：内置的删不掉；用它的日程退回「其他」 */
+  function typeRemove(key) {
+    typeEnsure();
+    for (var i = 0; i < EVENT_TYPES.length; i++) { if (EVENT_TYPES[i].key === key) { return false; } }
+    var kept = [];
+    for (var j = 0; j < state.types.length; j++) {
+      if (state.types[j].key !== key) { kept.push(state.types[j]); }
+    }
+    state.types = kept;
+    var evs = state.events || [];
+    for (var k = 0; k < evs.length; k++) {
+      if (evs[k].type === key) { evs[k].type = 'other'; }
+    }
+    save(true);
+    return true;
   }
 
   /** 默认 12 节作息（可在设置里改） */
@@ -220,6 +278,18 @@ var APP_VERSION = '0.3.8a';
       },
       haptics: { enabled: true, intensity: 'medium' },
       notifications: { enabled: false, defaultOffset: 15 },
+      /**
+       * 实验性功能（开关和设置都在 开发者模式 里，普通设置页看不到）。
+       * customTab：导入完课表后，把底栏 / 左侧栏的「导入」标签换成「模块」页 ——
+       * 作业、长期任务、作业统计… 按 modules 的顺序自由组合。
+       */
+      experimental: {
+        /**
+         * v0.4.0：默认开启 —— 导入过课表之后，底栏「导入」直接变成「我的」。
+         * 开关仍在 设置 → 我的页面 里，用户可以关掉换回「导入」。
+         */
+        customTab: { enabled: true, modules: ['homework', 'longterm', 'hwstats', 'weekgrid'] }
+      },
       integration: {
         university: '', campus: '', city: '', navApp: 'system',
         trimRoom: true, keepCampus: true, autoPrependUniversity: true,
@@ -251,7 +321,8 @@ var APP_VERSION = '0.3.8a';
       }],
       periods: makePeriods(semId),
       teachers: [], locations: [], courses: [], blocks: [], overrides: [],
-      events: [],
+      events: [],       // v0.4.0 起统一叫「日程」：{ title,date,start,end,place,type,star,showOnTimetable,note }
+      types: [],        // 日程类型（内置 + 用户自建），migrate 里补内置
       tasks: [],                 // 作业条目（从「本次备注」里识别出来的，见 parseNoteTasks）
       /**
        * 长期任务（v0.3.7）：志愿时长、阅读量这类"一点点攒"的任务。
@@ -260,6 +331,17 @@ var APP_VERSION = '0.3.8a';
        * 这样"记一笔"之后随时能改、能删，也不会和作业条目混在一起。
        */
       longTasks: [],
+      /**
+       * 倒计时（v0.3.8b）：自定义日期倒数，比如「四六级」「放假」。
+       * 每条 { id, title, date: 'YYYY-MM-DD' }。属于随手记的数据，
+       * 跨设备合并（MERGE_TABLES）暂不参与，本地跟着 localStorage 走。
+       */
+      countdowns: [],
+      /**
+       * 待办速记（v0.3.8b）：不进作业系统的临时小清单。
+       * 每条 { id, text, done, at }。同上，只存本地。
+       */
+      quickTodos: [],
       reminders: [], promptTemplates: [{
         id: 'default', version: PROMPT_VERSION, title: '默认课表整理提示词',
         body: PROMPT_TEXT, isDefault: true
@@ -711,8 +793,48 @@ var APP_VERSION = '0.3.8a';
       s.promptTemplates = [{ id: 'default', version: PROMPT_VERSION, title: '默认课表整理提示词', body: PROMPT_TEXT, isDefault: true }];
     }
     var lists = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events',
-      'tasks', 'longTasks', 'reminders', 'tombstones'];
+      'tasks', 'longTasks', 'countdowns', 'quickTodos', 'reminders', 'tombstones'];
     for (var i = 0; i < lists.length; i++) { if (!Array.isArray(s[lists[i]])) { s[lists[i]] = []; } }
+
+    /* ── v0.4.0：日程统一 ──────────────────────────────────────
+       ① 类型表补内置种子（用户自建类型保留）；
+       ② 老事件补 star / showOnTimetable：默认上周表（本来就是周表来的）、考试自动星标；
+       ③ 倒计时并入日程：自动星标、不上周表。旧 countdowns 字段只读保留
+          一个版本周期（meta.countdownsMigrated 记账），回滚旧版数据不丢。 */
+    if (!s.meta) { s.meta = {}; }
+    if (Object.prototype.toString.call(s.types) !== '[object Array]') { s.types = []; }
+    for (var ti = 0; ti < EVENT_TYPES.length; ti++) {
+      var bt = EVENT_TYPES[ti], bf = false;
+      for (var tj = 0; tj < s.types.length; tj++) { if (s.types[tj].key === bt.key) { bf = true; break; } }
+      if (!bf) { s.types.push({ key: bt.key, label: bt.label, hex: bt.hex, mark: bt.mark, builtIn: true }); }
+    }
+    for (var ei = 0; ei < s.events.length; ei++) {
+      if (s.events[ei].star == null) { s.events[ei].star = (s.events[ei].type === 'exam'); }
+      if (s.events[ei].showOnTimetable == null) { s.events[ei].showOnTimetable = true; }
+      if (s.events[ei].archived == null) { s.events[ei].archived = false; }
+    }
+    /**
+     * v0.4.0：「我的」页默认开启（导入过课表后「导入」直接变「我的」）。
+     * 只翻转一次（meta.customTabDefaultOn 记账），之后用户手动关掉就尊重用户选择。
+     */
+    if (!s.meta.customTabDefaultOn) {
+      if (s.settings && s.settings.experimental && s.settings.experimental.customTab) {
+        s.settings.experimental.customTab.enabled = true;
+      }
+      s.meta.customTabDefaultOn = APP_VERSION;
+    }
+    if (!s.meta.countdownsMigrated) {
+      for (var ci = 0; ci < s.countdowns.length; ci++) {
+        var cd = s.countdowns[ci];
+        if (!cd || !cd.date) { continue; }
+        s.events.push({
+          id: 'cdm-' + (cd.id || uid()), title: String(cd.title || '未命名').trim(),
+          type: 'other', date: cd.date, start: '', end: '', place: '', note: '',
+          star: true, showOnTimetable: false, updatedAt: new Date().toISOString()
+        });
+      }
+      s.meta.countdownsMigrated = APP_VERSION;
+    }
     /**
      * v0.3.4：备注分层。
      *
@@ -813,28 +935,41 @@ var APP_VERSION = '0.3.8a';
 
   /* ── 特殊事件（考试 / 讲座 / 活动）───────────────────────── */
 
-  /** 某一天的事件，按开始时间排序 */
+  /** 某一天的事件，按开始时间排序（v0.4.0：归档的不出现） */
   function eventsOf(date) {
     var key = (typeof date === 'string') ? date : dateKey(date);
     var out = [];
     var list = state.events || [];
-    for (var i = 0; i < list.length; i++) { if (list[i].date === key) { out.push(list[i]); } }
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].date === key && !list[i].archived) { out.push(list[i]); }
+    }
     out.sort(function (a, b) { return String(a.start || '99:99').localeCompare(String(b.start || '99:99')); });
     return out;
   }
 
-  /** 日期区间（含两端）内的事件 */
+  /** 日期区间（含两端）内的事件；归档的不出现 */
   function eventsBetween(fromKey, toKey) {
     var out = [];
     var list = state.events || [];
     for (var i = 0; i < list.length; i++) {
       var d = list[i].date || '';
-      if (d >= fromKey && d <= toKey) { out.push(list[i]); }
+      if (d >= fromKey && d <= toKey && !list[i].archived) { out.push(list[i]); }
     }
     out.sort(function (a, b) {
       var c = String(a.date).localeCompare(String(b.date));
       return c !== 0 ? c : String(a.start || '99:99').localeCompare(String(b.start || '99:99'));
     });
+    return out;
+  }
+
+  /** 已归档的日程（按日期倒序）——「已归档」区里找回或删除 */
+  function archivedEvents() {
+    var out = [];
+    var list = state.events || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].archived) { out.push(list[i]); }
+    }
+    out.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
     return out;
   }
 
@@ -846,7 +981,7 @@ var APP_VERSION = '0.3.8a';
     return eventsBetween(dateKey(monday), dateKey(addDays(monday, 6)));
   }
 
-  /** 新增 / 更新一个事件 */
+  /** 新增 / 更新一个日程（v0.4.0：事件统一叫日程，star=星标、showOnTimetable=是否上周表） */
   function saveEvent(ev) {
     state.events = state.events || [];
     var rec = {
@@ -858,6 +993,9 @@ var APP_VERSION = '0.3.8a';
       end: ev.end || '',
       place: ev.place || '',
       note: ev.note || '',
+      star: !!ev.star,
+      showOnTimetable: ev.showOnTimetable == null ? false : !!ev.showOnTimetable,
+      archived: !!ev.archived,
       updatedAt: new Date().toISOString()
     };
     var replaced = false;
@@ -2232,6 +2370,7 @@ var APP_VERSION = '0.3.8a';
     courseCountOfSemester: courseCountOfSemester,
     addSemester: addSemester,
     eventsOf: eventsOf, eventsBetween: eventsBetween, eventsInWeek: eventsInWeek,
+    archivedEvents: archivedEvents,
     saveEvent: saveEvent, removeEvent: removeEvent,
     tasksOf: tasksOf, taskBoard: taskBoard, syncTasksFor: syncTasksFor,
     parseNoteTasks: parseNoteTasks, setTaskDone: setTaskDone, removeTask: removeTask,
@@ -2242,6 +2381,7 @@ var APP_VERSION = '0.3.8a';
     longTaskRecentEntries: longTaskRecentEntries, longTaskEntryDay: longTaskEntryDay,
     renameCourse: renameCourse, unifyColorsByName: unifyColorsByName,
     EVENT_TYPES: EVENT_TYPES, eventType: eventType,
+    typeList: typeList, typeUpsert: typeUpsert, typeRemove: typeRemove,
     exportPayload: exportPayload, exportFileName: exportFileName,
     previewMerge: previewMerge, applyMerge: applyMerge, markDeleted: markDeleted,
     defaultPeriodTimes: defaultPeriodTimes, makePeriods: makePeriods

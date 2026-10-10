@@ -7,8 +7,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Abbey Road · 课表与日程</title>
-<link rel="stylesheet" href="css/tokens.css">
-<link rel="stylesheet" href="css/app.css">
+<link rel="stylesheet" href="css/tokens.css?v=0.4.0">
+<link rel="stylesheet" href="css/app.css?v=0.4.0">
 </head>
 <body data-theme="light" data-platform="web" data-preset="dual-horizontal" data-focus="off">
 
@@ -325,6 +325,22 @@
       <button class="btn primary fab" id="btnApplyJson" type="button" disabled hidden>合并导入</button>
     </section>
 
+    <!-- 自定义模块页（实验性：开发者选项开启后顶替「导入」标签） -->
+    <section class="view" id="view-custom" data-view="custom" hidden>
+      <header class="view-head">
+        <div class="head-left">
+          <h1 class="view-title">我的</h1>
+          <p class="view-sub">自由添加你的模块</p>
+        </div>
+        <div class="head-right">
+          <button class="chip-btn" id="btnCustomToImport" type="button" title="打开导入页">导入</button>
+        </div>
+      </header>
+      <div class="pane-scroll">
+        <div class="custom-modules" id="customModules"></div>
+      </div>
+    </section>
+
     <!-- 设置 -->
     <section class="view" id="view-settings" data-view="settings" hidden>
       <header class="view-head">
@@ -334,7 +350,6 @@
         </div>
       </header>
       <div class="settings-shell">
-        <nav class="settings-nav glass" id="settingsNav"></nav>
         <div class="settings-body" id="settingsBody">
           <div class="settings-grid" id="settingsGrid"></div>
         </div>
@@ -365,17 +380,17 @@
 
 <div class="toast-host" id="toastHost"></div>
 
-<script src="js/core.js"></script>
-<script src="js/mdparse.js"></script>
-  <script src="js/bridge.js"></script>
+<script src="js/core.js?v=0.4.0"></script>
+<script src="js/mdparse.js?v=0.4.0"></script>
+  <script src="js/bridge.js?v=0.4.0"></script>
   <!-- 过渡动画注册表：ui.js 里的所有动效都从这里取参数（开发者模式可换样式） -->
-  <script src="js/motion.js"></script>
+  <script src="js/motion.js?v=0.4.0"></script>
   <!-- 课程配色：按文理/公共/体育/水课分色系（设置里可一键应用） -->
-  <script src="js/palette.js"></script>
-  <script src="js/ui.js"></script>
-<script src="js/widgetdata.js"></script>
-<script src="js/configio.js"></script>
-<script src="js/panels.js"></script>
-<script src="js/boot.js"></script>
+  <script src="js/palette.js?v=0.4.0"></script>
+  <script src="js/ui.js?v=0.4.0"></script>
+<script src="js/widgetdata.js?v=0.4.0"></script>
+<script src="js/configio.js?v=0.4.0"></script>
+<script src="js/panels.js?v=0.4.0"></script>
+<script src="js/boot.js?v=0.4.0"></script>
 </body>
 </html>

@@ -51,11 +51,18 @@
     AR.UI.toast(view === 'week' ? '已打开周表' : '已打开今天');
   };
 
-  /* Android 返回键 / Windows Esc 之外的返回动作 */
+  /* Android 返回键 / Windows Esc / 侧滑返回 */
   AR.onBack = function () {
     if (AR.UI.modalOpen()) { AR.UI.closeModal(); return; }
     var ob = document.getElementById('onboarding');
     if (ob && !ob.hidden) { return; }          // 引导中不退出
+    /**
+     * v0.4.0：设置的二级页要按「一层一层退」——
+     * 停在某个分类页时，返回（含侧滑）先回设置首页，而不是一路弹回今日页。
+     */
+    if (AR.Panels && AR.Panels.settingsBackStep && AR.UI.currentView() === 'settings') {
+      if (AR.Panels.settingsBackStep()) { return; }
+    }
     if (AR.UI.currentView() !== 'today') { AR.UI.show('today'); return; }
     AR.Bridge.exitApp();
   };

@@ -720,84 +720,401 @@ var AR = window.AR || (window.AR = {});
 
   /* ══════════════════════════ 设置页 ══════════════════════════ */
 
+  /* ── v0.4.0 设置（B′）：首页 = 分类列表，每条挂几个高频项 ──────────
+     点分类行 → 二级页（该类全部设置）；高频项在首页行内直接可改。
+     改一项只重渲染当前页（不再整页重建），并保住滚动位置 —— 不再跳回顶部。 */
+
+  var settingsCat = null;      // null = 首页；否则是当前分类 key
+  var syncTab = 'sync';        // 「数据与同步」二级页的页内标签
+  var settingsSearchQ = '';
+  var pendingHighlight = '';
+
+  /** 七个分类：icon / 名称 / 说明 / 首页高频项 / 二级页面板（提醒归到课表里了） */
+  function settingsCats() {
+    return [
+      { key: 'prefs', icon: '🎨', label: '外观与布局', desc: '主题、主题色、流畅模式、布局',
+        quick: quickPrefs, panels: [panelAppearance, panelLayout] },
+      { key: 'widgets', icon: '📱', label: '桌面卡片', desc: '把课表放到手机桌面',
+        panels: [panelWidgets] },
+      { key: 'course', icon: '📚', label: '课程与课表', desc: '学期、作息、配色、提醒',
+        panels: [panelSchedule, panelNotify] },
+      { key: 'work', icon: '📝', label: '作业与日程', desc: '作业开关、长期任务、日程类型',
+        quick: quickWork, panels: [panelWork, panelLongTasks] },
+      { key: 'mine', icon: '🧩', label: '我的页面', desc: '模块自由组合',
+        quick: quickMine, panels: [panelMine] },
+      { key: 'syncdata', icon: '💾', label: '数据与同步', desc: '导入、系统集成、备份与清空',
+        quick: quickData, panels: [panelSync, panelIntegration, panelData] },
+      { key: 'about', icon: 'ℹ️', label: '关于与帮助', desc: '版本、引导、反馈',
+        quick: quickAbout, panels: [panelAbout] }
+    ];
+  }
+
+  /* ── 首页高频项的小控件 ─────────────────────────────────── */
+
+  function qItem(label, node) {
+    var w = el('<div class="q-item"><span class="q-label">' + esc(label) + '</span></div>');
+    if (node) { w.appendChild(node); }
+    return w;
+  }
+  function qSwitch(checked, onChange) {
+    var s = el('<label class="switch sm"><input type="checkbox"' + (checked ? ' checked' : '') + '>'
+      + '<span class="track"></span><span class="knob"></span></label>');
+    s.querySelector('input').addEventListener('change', function (ev) {
+      AR.Bridge.haptic('light', s);
+      onChange(ev.currentTarget.checked);
+    });
+    return s;
+  }
+  function qBtn(label, onClick) {
+    var b = el('<button class="chip-btn" type="button">' + esc(label) + '</button>');
+    b.addEventListener('click', function () {
+      AR.Bridge.haptic('light', b);
+      onClick(b);
+    });
+    return b;
+  }
+
+  function quickPrefs() {
+    var ap = S.settings.appearance;
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('主题', segmented([
+      { label: '跟随系统', value: 'system' }, { label: '浅色', value: 'light' }, { label: '深色', value: 'dark' }
+    ], ap.theme, function (v) {
+      ap.theme = v; AR.Store.save(true); AR.UI.applyTheme();
+    })));
+    row.appendChild(qItem('流畅模式', segmented([
+      { label: '关闭', value: 'full' }, { label: '标准', value: 'lite' }, { label: '深度', value: 'min' }
+    ], ap.perfMode || 'full', function (v) {
+      ap.perfMode = v; AR.Store.save(true);
+      if (AR.UI.applyPerf) { AR.UI.applyPerf(); } else if (AR.UI.applyMotion) { AR.UI.applyMotion(); }
+    })));
+    // 只用 q-swatches（不带调色板那套 swatches 类，否则被它的宽度规则抢走）
+    var sw = el('<div class="q-swatches"></div>');
+    var pal = AR.Util.PALETTE;
+    for (var i = 0; i < pal.length; i++) {
+      (function (p) {
+        var s = el('<button type="button" class="swatch' + (ap.accent === p.hex ? ' active' : '')
+          + '" title="' + esc(p.name) + '" style="background:' + p.hex + '"></button>');
+        s.addEventListener('click', function () {
+          ap.accent = p.hex;
+          AR.Store.save(true);
+          AR.UI.applyTheme();
+          AR.Bridge.haptic('light', s);
+          var all = sw.querySelectorAll('.swatch');
+          for (var k = 0; k < all.length; k++) { all[k].classList.toggle('active', all[k] === s); }
+        });
+        sw.appendChild(s);
+      })(pal[i]);
+    }
+    row.appendChild(qItem('主题色', sw));
+    return row;
+  }
+
+  function quickWork() {
+    var hw = (S.settings.schedule.homework = S.settings.schedule.homework || { on: true, mode: 'line' });
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('作业功能', qSwitch(hw.on !== false, function (v) {
+      hw.on = v;
+      AR.Store.save(true);
+      refreshAll();
+    })));
+    row.appendChild(qItem('按课程分组', qSwitch(hw.groupByCourse !== false, function (v) {
+      hw.groupByCourse = v;
+      AR.Store.save(true);
+      if (AR.UI.refreshHomeworkPanels) { AR.UI.refreshHomeworkPanels(); }
+    })));
+    row.appendChild(qItem('日程类型', qBtn('管理 ›', function () {
+      if (AR.UI.openTypeManage) { AR.UI.openTypeManage(); }
+    })));
+    return row;
+  }
+
+  function quickMine() {
+    var ct = AR.UI.customTabCfg ? AR.UI.customTabCfg() : null;
+    if (!ct) { return null; }
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('自定义模块页', qSwitch(ct.enabled, function (v) {
+      ct.enabled = v;
+      AR.Store.save(true);
+      if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+      if (!v && AR.UI.currentView && AR.UI.currentView() === 'custom') { AR.UI.show('import'); }
+      AR.UI.toast(v ? '已开启：导入课表后「导入」会换成「我的」' : '已关闭：「导入」恢复');
+    })));
+    row.appendChild(qItem('模块组成', qBtn((ct.modules || []).length + ' 个 ›', function () {
+      openSettingsCat('mine');
+    })));
+    return row;
+  }
+
+  function quickNotify() {
+    var n = S.settings.notifications;
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('课前提醒', qSwitch(n.enabled, function (v) {
+      n.enabled = v; AR.Store.save(true);
+    })));
+    var val = n.defaultOffset || 15;
+    var step = el('<div class="q-step"></div>');
+    var valEl = el('<b>' + val + '</b><span class="muted"> 分</span>');
+    var minus = el('<button class="chip-btn" type="button">−</button>');
+    var plus = el('<button class="chip-btn" type="button">＋</button>');
+    var bump = function (d) {
+      val = Math.max(5, Math.min(60, val + d));
+      valEl.querySelector('b').textContent = val;
+      n.defaultOffset = val;
+      AR.Store.save();
+    };
+    minus.addEventListener('click', function () { bump(-5); AR.Bridge.haptic('light', minus); });
+    plus.addEventListener('click', function () { bump(5); AR.Bridge.haptic('light', plus); });
+    step.appendChild(minus);
+    step.appendChild(valEl);
+    step.appendChild(plus);
+    row.appendChild(qItem('提前量', step));
+    return row;
+  }
+
+  function quickData() {
+    var row = el('<div class="q-row"></div>');
+    var box = el('<div class="q-btns"></div>');
+    box.appendChild(qBtn('导出备份', function (b) { AR.ConfigIO.exportFile(b); }));
+    box.appendChild(qBtn('导出到微信', function (b) { AR.ConfigIO.exportToApp(b); }));
+    row.appendChild(qItem('备份', box));
+    var size = 0;
+    try { size = (JSON.stringify(S).length / 1024).toFixed(1); } catch (e) { }
+    row.appendChild(el('<div class="q-item"><span class="q-label muted">数据约 ' + size + ' KB · 只存本机</span></div>'));
+    return row;
+  }
+
+  function quickAbout() {
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('版本', el('<span class="q-ver">v' + esc(AR.Const.APP_VERSION) + '</span>')));
+    row.appendChild(qItem('引导', qBtn('重新观看', function () {
+      AR.Panels.startOnboarding(true);
+    })));
+    return row;
+  }
+
+  /* ── 搜索：命中清单（分类 · 项目），点一条直接进二级页并高亮 ── */
+
+  function settingsSearchBox() {
+    var wrap = el('<div class="set-search"></div>');
+    var input = el('<input class="input" id="setSearch" type="search"'
+      + ' placeholder="搜索设置项…（比如 主题 / 提醒 / 备份）">');
+    if (settingsSearchQ) { input.value = settingsSearchQ; }
+    var hits = el('<div class="set-hits" id="setHits"></div>');
+    input.addEventListener('input', function (ev) {
+      settingsSearchQ = ev.currentTarget.value;
+      paintSettingsHits(hits, settingsSearchQ);
+    });
+    wrap.appendChild(input);
+    wrap.appendChild(hits);
+    paintSettingsHits(hits, settingsSearchQ);
+    return wrap;
+  }
+
+  function paintSettingsHits(host, q) {
+    host.innerHTML = '';
+    q = String(q || '').trim().toLowerCase();
+    if (!q) { return; }
+    var cats = settingsCats();
+    var hits = [];
+    for (var i = 0; i < cats.length; i++) {
+      var cat = cats[i];
+      if ((cat.label + ' ' + cat.desc).toLowerCase().indexOf(q) >= 0) {
+        hits.push({ cat: cat, item: cat.label + '（整类）', mode: 'cat' });
+      }
+      for (var p = 0; p < cat.panels.length && hits.length < 24; p++) {
+        var node = cat.panels[p]();
+        var rows = node.querySelectorAll('.setting-row, .field, .slider-row, .widget-card, .lt-set-row, .row.gap');
+        for (var r = 0; r < rows.length; r++) {
+          var txt = (rows[r].textContent || '').replace(/\s+/g, ' ').trim();
+          if (!txt || txt.toLowerCase().indexOf(q) < 0) { continue; }
+          hits.push({ cat: cat, item: txt.slice(0, 22), mode: 'item' });
+          if (hits.length >= 24) { break; }
+        }
+      }
+    }
+    if (!hits.length) {
+      host.appendChild(el('<div class="muted" style="padding:4px 2px">没找到「' + esc(q) + '」相关的设置项。</div>'));
+      return;
+    }
+    for (var h = 0; h < hits.length; h++) {
+      (function (hit) {
+        var b = el('<button class="set-hit" type="button">'
+          + '<span class="hit-cat">' + esc(hit.cat.icon + ' ' + hit.cat.label) + '</span>'
+          + '<span class="hit-item">' + esc(hit.item) + '</span>'
+          + '<span class="set-cat-go">›</span></button>');
+        b.addEventListener('click', function () {
+          pendingHighlight = hit.mode === 'item' ? hit.item : '';
+          settingsSearchQ = '';
+          settingsCat = hit.cat.key;
+          AR.Bridge.haptic('light', b);
+          renderSettings();
+          var bd = $('settingsBody');
+          if (bd) { bd.scrollTop = 0; }
+          playSettingsEnter();
+        });
+        host.appendChild(b);
+      })(hits[h]);
+    }
+  }
+
+  /* ── 首页 / 二级页 ─────────────────────────────────────── */
+
+  /** 首页 ⇄ 二级页：走统一的整块入场（viewIn / listIn），和切页同一套动画 */
+  function playSettingsEnter() {
+    var grid = $('settingsGrid');
+    if (!grid) { return; }
+    if (AR.UI.enterRise) { AR.UI.enterRise(grid); }
+    else if (AR.UI.fadeInList) { AR.UI.fadeInList(grid, '.set-cat, .set-section'); }
+  }
+
+  function openSettingsCat(key) {
+    settingsCat = key;
+    renderSettings();
+    var b = $('settingsBody');
+    if (b) { b.scrollTop = 0; }
+    playSettingsEnter();
+  }
+
+  /** 从二级页回设置首页（返回条 / 返回键 / 侧滑都用它） */
+  function settingsGoHome() {
+    settingsCat = null;
+    renderSettings();
+    var b = $('settingsBody');
+    if (b) { b.scrollTop = 0; }
+    playSettingsEnter();
+  }
+
+  /**
+   * 返回键 / 侧滑：如果正停在设置的二级页，就回设置首页并"吃掉"这次返回
+   * （返回 true）。否则返回 false，交给上层逻辑（回今日页 / 退出）。
+   */
+  function settingsBackStep() {
+    if (!settingsCat) { return false; }
+    settingsGoHome();
+    return true;
+  }
+
+  /** 从别处进设置：回到分类首页（并清掉搜索框） */
+  function resetSettingsHome() {
+    settingsCat = null;
+    settingsSearchQ = '';
+  }
+
+  function renderSettingsHome(grid) {
+    grid.appendChild(settingsSearchBox());
+    var list = el('<div class="set-home"></div>');
+    var cats = settingsCats();
+    for (var i = 0; i < cats.length; i++) {
+      (function (cat) {
+        var card = el('<div class="set-cat" id="set-' + cat.key + '" data-key="' + cat.key + '"></div>');
+        var head = el('<button class="set-cat-head" type="button">'
+          + '<span class="set-cat-ico">' + cat.icon + '</span>'
+          + '<span class="set-cat-main"><b>' + esc(cat.label) + '</b><i>' + esc(cat.desc) + '</i></span>'
+          + '<span class="set-cat-go">进入 ›</span></button>');
+        head.addEventListener('click', function () {
+          AR.Bridge.haptic('light', head);
+          openSettingsCat(cat.key);
+        });
+        // 彩蛋锚点：长按首页「关于与帮助」这一行（左栏没了的替代），
+        // 二级页里长按「外观」小标题同样有效
+        if (cat.key === 'about') { bindDevModeLongPress(head); }
+        card.appendChild(head);
+        if (cat.quick) {
+          var q = cat.quick();
+          if (q) { card.appendChild(q); }
+        }
+        list.appendChild(card);
+      })(cats[i]);
+    }
+    grid.appendChild(list);
+  }
+
+  function renderSettingsDetail(grid) {
+    var cats = settingsCats();
+    var cat = null;
+    for (var i = 0; i < cats.length; i++) { if (cats[i].key === settingsCat) { cat = cats[i]; } }
+    if (!cat) { settingsCat = null; renderSettingsHome(grid); return; }
+    var bar = el('<div class="set-back">'
+      + '<button class="chip-btn" type="button" id="setBackBtn">← 设置</button>'
+      + '<span class="set-crumb">' + cat.icon + ' ' + esc(cat.label) + '</span></div>');
+    bar.querySelector('#setBackBtn').addEventListener('click', function () {
+      AR.Bridge.haptic('light', bar);
+      settingsGoHome();
+    });
+    grid.appendChild(bar);
+    // 「数据与同步」面板多：页内标签切换，不滚动
+    if (cat.key === 'syncdata') {
+      var tabs = [['sync', '导入与同步'], ['integration', '系统集成'], ['data', '数据与备份']];
+      var tabRow = el('<div class="segmented set-tabs"></div>');
+      for (var t = 0; t < tabs.length; t++) {
+        (function (tk, tl) {
+          var b = el('<button class="seg' + (syncTab === tk ? ' active' : '') + '" type="button">' + tl + '</button>');
+          b.addEventListener('click', function () {
+            syncTab = tk;
+            AR.Bridge.haptic('light', b);
+            renderSettings();
+            playSettingsEnter();
+          });
+          tabRow.appendChild(b);
+        })(tabs[t][0], tabs[t][1]);
+      }
+      grid.appendChild(tabRow);
+      var one = syncTab === 'sync' ? panelSync() : (syncTab === 'integration' ? panelIntegration() : panelData());
+      var host0 = el('<div class="set-detail" id="set-' + cat.key + '"></div>');
+      host0.appendChild(one);
+      grid.appendChild(host0);
+    } else {
+      var host = el('<div class="set-detail" id="set-' + cat.key + '"></div>');
+      for (var p = 0; p < cat.panels.length; p++) { host.appendChild(cat.panels[p]()); }
+      grid.appendChild(host);
+    }
+    // 彩蛋双轨：长按「外观」小标题也能进 / 出开发者模式
+    var apTitle = grid.querySelector('#set-appearance .panel-title');
+    if (apTitle) { bindDevModeLongPress(apTitle); }
+    // 搜索点进来的高亮
+    if (pendingHighlight) {
+      var lab = pendingHighlight.slice(0, 16);
+      var cand = grid.querySelectorAll('.setting-row, .field, .slider-row');
+      for (var c = 0; c < cand.length; c++) {
+        if ((cand[c].textContent || '').indexOf(lab) >= 0) {
+          cand[c].classList.add('set-hit-flash');
+          try { cand[c].scrollIntoView({ block: 'center' }); } catch (e) { }
+          break;
+        }
+      }
+      pendingHighlight = '';
+    }
+  }
+
   function renderSettings() {
     ensure();
     var grid = $('settingsGrid');
     if (!grid) { return; }
+    var body = $('settingsBody');
+    var keepScroll = (body && !settingsSearchQ) ? body.scrollTop : 0;
     grid.innerHTML = '';
-    grid.appendChild(panelAppearance());
-    grid.appendChild(panelLayout());
-    grid.appendChild(panelWidgets());
-    grid.appendChild(panelSchedule());
-    grid.appendChild(panelNotify());
-    grid.appendChild(panelSync());
-    grid.appendChild(panelIntegration());
-    grid.appendChild(panelData());
-    grid.appendChild(panelAbout());
-    renderSettingsNav();
-    /**
-     * 面板全部插进 DOM 之后再对齐分段控件的滑块。
-     * 之前是在 panel 里、控件还没挂进文档时就量宽度（clientWidth = 0），
-     * 结果滑块要么不显示、要么停在旧位置 —— 也就是"设置里的滑块显示有问题"。
-     * 这里先落位一次，等入场动画结束再校一次（动画期间量到的是缩放后的宽度）。
-     */
-    // 带补间：切换分段后设置页会重渲染，滑块从旧位置滑到新位置
+    if (settingsCat) { renderSettingsDetail(grid); }
+    else { renderSettingsHome(grid); }
+    // 面板全部插进 DOM 之后再对齐分段控件的滑块
     if (AR.UI.enhanceSegmented) { AR.UI.enhanceSegmented(grid); }
     else if (AR.UI.syncSegments) { AR.UI.syncSegments(grid); }
+    // 局部重渲染也要保住滚动位置（不然拨个开关就跳回顶部）
+    if (body) { body.scrollTop = keepScroll; }
   }
 
   var SETTINGS_SECTIONS = [
-    { key: 'appearance', label: '外观' },
-    { key: 'layout', label: '布局与尺寸' },
-    { key: 'widgets', label: '桌面卡片' },
-    { key: 'schedule', label: '课程与课表' },
-    { key: 'notify', label: '提醒与通知' },
-    { key: 'sync', label: '导入与同步' },
-    { key: 'integration', label: '系统集成' },
-    { key: 'data', label: '数据与备份' },
-    { key: 'about', label: '关于与帮助' }
+    { key: 'prefs', label: '外观与布局', icon: '🎨' },
+    { key: 'widgets', label: '桌面卡片', icon: '▦' },
+    { key: 'course', label: '课程与课表', icon: '📚' },
+    { key: 'work', label: '作业与日程', icon: '📝' },
+    { key: 'mine', label: '我的页面', icon: '🧩' },
+    { key: 'syncdata', label: '数据与同步', icon: '💾' },
+    { key: 'about', label: '关于与帮助', icon: 'ℹ️' }
   ];
 
-  /**
-   * 左侧分类导航：点击滚动到对应分类，滚动时自动高亮当前分类。
-   *
-   * 只在第一次构建，之后只更新高亮 —— 以前每次切换设置项都会把整条导航
-   * 重建一遍，重建时按钮从"未选中态"重新长出来，看着就是左侧导航在闪。
-   */
-  function renderSettingsNav() {
-    var nav = $('settingsNav');
-    if (!nav) { return; }
-    if (nav.__built) {
-      setActiveNav(currentVisibleSection() || SETTINGS_SECTIONS[0].key);
-      return;
-    }
-    nav.__built = true;
-    nav.innerHTML = '';
-    for (var i = 0; i < SETTINGS_SECTIONS.length; i++) {
-      (function (sec) {
-        var b = el('<button type="button" data-key="' + sec.key + '">' + esc(sec.label) + '</button>');
-        b.addEventListener('click', function () {
-          var target = document.getElementById('set-' + sec.key);
-          var body = $('settingsBody');
-          if (target && body) {
-            // 自己算滚动位置（scrollIntoView 在嵌套滚动容器里不一定生效）
-            var delta = target.getBoundingClientRect().top - body.getBoundingClientRect().top;
-            var top = body.scrollTop + delta - 8;
-            navClickLock = Date.now();          // 平滑滚动期间先别让滚动监听改高亮
-            try { body.scrollTo({ top: top, behavior: 'smooth' }); }
-            catch (e) { body.scrollTop = top; }
-          }
-          setActiveNav(sec.key);
-          AR.Bridge.haptic('light', b);
-        });
-        // 长按「外观」进入 / 退出开发者模式（不提示、不显眼，避免普通用户误触）
-        if (sec.key === 'appearance') { bindDevModeLongPress(b); }
-        nav.appendChild(b);
-      })(SETTINGS_SECTIONS[i]);
-    }
-    bindSettingsScroll();
-    setActiveNav(currentVisibleSection() || SETTINGS_SECTIONS[0].key);
-  }
+  /** v0.4.0：左侧分类栏去掉了 —— 设置只剩「首页分类列表 → 二级页 → 返回」这一条路 */
+  function renderSettingsNav() { /* 保留空实现，避免老调用点报错 */ }
 
   /**
    * 长按 800ms 进入开发者模式（再长按一次退出）。
@@ -817,7 +1134,13 @@ var AR = window.AR || (window.AR = {});
         S.settings.appearance.devMode = on;
         AR.Store.save(true);
         AR.Bridge.haptic('heavy', btn);
+        // 开启后直接进「外观与布局」二级页 —— 动画面板在那里，
+        // 不然用户长按完什么都看不到（还以为没生效）。
+        if (on) { settingsCat = 'prefs'; }
         renderSettings();
+        var body = $('settingsBody');
+        if (body && on) { body.scrollTop = 0; }
+        if (on) { playSettingsEnter(); }
         if (AR.UI && AR.UI.toast) {
           AR.UI.toast(on ? '开发者模式已开启：外观页底部可调过渡动画' : '开发者模式已关闭');
         }
@@ -837,47 +1160,6 @@ var AR = window.AR || (window.AR = {});
     });
     btn.addEventListener('pointerleave', cancel);
     btn.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
-  }
-
-  function setActiveNav(key) {
-    var nav = $('settingsNav');
-    if (!nav) { return; }
-    var btns = nav.querySelectorAll('button');
-    for (var i = 0; i < btns.length; i++) {
-      var on = btns[i].getAttribute('data-key') === key;
-      btns[i].classList.toggle('active', on);
-      if (on && btns[i].scrollIntoView) {
-        try { btns[i].scrollIntoView({ block: 'nearest', inline: 'nearest' }); } catch (e) { }
-      }
-    }
-  }
-
-  function currentVisibleSection() {
-    var body = $('settingsBody');
-    if (!body) { return null; }
-    var secs = body.querySelectorAll('.set-section');
-    var bodyTop = body.getBoundingClientRect().top;
-    var current = null;
-    for (var i = 0; i < secs.length; i++) {
-      if (secs[i].getBoundingClientRect().top - bodyTop <= 46) {
-        current = secs[i].getAttribute('data-key');
-      }
-    }
-    return current;
-  }
-
-  var settingsScrollBound = false;
-  var navClickLock = 0;
-  function bindSettingsScroll() {
-    if (settingsScrollBound) { return; }
-    var body = $('settingsBody');
-    if (!body) { return; }
-    settingsScrollBound = true;
-    body.addEventListener('scroll', AR.Util.debounce(function () {
-      if (Date.now() - navClickLock < 900) { return; }
-      var cur = currentVisibleSection();
-      if (cur) { setActiveNav(cur); }
-    }, 90));
   }
 
   function panel(title, inner, key) {
@@ -1135,6 +1417,7 @@ var AR = window.AR || (window.AR = {});
     dRow.appendChild(copyDiag);
     dRow.appendChild(closeAll);
     box.appendChild(dRow);
+
     return box;
   }
 
@@ -1759,8 +2042,18 @@ var AR = window.AR || (window.AR = {});
     });
     box.appendChild(save);
 
+    return panel('课程与课表', box, 'schedule');
+  }
+
+  /**
+   * 作业与日程（v0.4.0 新分类）：之前挤在「课程与课表」里的作业开关搬到这里，
+   * 再挂上长期任务和日程类型管理 —— "跟学习任务有关的"都在这一页。
+   */
+  function panelWork() {
+    var box = el('<div></div>');
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '作业从「本次备注」里自动识别；长期任务、日程类型也在这里管。</p>'));
     /* ── 作业功能（v0.3.4）────────────────────────────────────
-       从「本次备注」里自动识别作业条目，显示在今日日程底部和最近的课卡片里。
        识别方式两档：一行算一条（所见即所得）/ 智能识别（只收列表符号或关键词行）。 */
     box.appendChild(el('<h3 class="set-sub">作业</h3>'));
     var hw = (S.settings.schedule.homework = S.settings.schedule.homework || { on: true, mode: 'line' });
@@ -1796,31 +2089,18 @@ var AR = window.AR || (window.AR = {});
     box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
       + '「一行算一条」= 备注里每个非空行都是一条作业；'
       + '「智能识别」= 只收「- 、1. 、[ ] 、①」这类列表行，或含"作业 / 练习 / 报告 / 复习 / 提交"等关键词的行。</p>'));
-    // 带补间：切换识别方式后设置页会重渲染，滑块从旧位置滑过去
     if (AR.UI.syncSegPill) { AR.UI.syncSegPill(modeSeg, true); }
-    /**
-     * v0.3.7：作业列表「按课程分组」。
-     * 分组只作用在"未完成"那一段（已完成仍然是一条折叠头，不再套一层组）。
-     */
     box.appendChild(rowSwitch('作业按课程分组',
-      '今日页的未完成作业按课程归类，每组显示课程色点和条数；关掉就是现在的一条条平铺',
+      '今日页的未完成作业按课程归类，每组显示课程色点和条数；关掉就是一条条平铺',
       hw.groupByCourse !== false, function (v) {
         hw.groupByCourse = v;
         AR.Store.save(true);
         AR.Bridge.haptic('light', $('settingsGrid'));
         if (AR.UI.refreshHomeworkPanels) { AR.UI.refreshHomeworkPanels(); }
       }));
-    /**
-     * 作业记录：统计 + 找回（「已完成」在界面上只留今天，超过一周自动隐藏，
-     * 全部记录都在这里看得到、能找回、能清理）。
-     */
-    /**
-     * 概览卡片：不用点开二级菜单就能看到作业概况（未完成 / 已完成 / 完成率 + 本周完成）。
-     * 数字实时算，不新增存储。
-     */
+    // 作业概况 + 作业记录（跟着作业走）
     (function () {
       var all = AR.Store.get().tasks || [];
-      var todayK = U.dateKey(new Date());
       var weekAgo = U.dateKey(U.addDays(new Date(), -6));
       var openN = 0, doneN = 0, doneWeek = 0;
       for (var i = 0; i < all.length; i++) {
@@ -1830,15 +2110,14 @@ var AR = window.AR || (window.AR = {});
         if (d && d >= weekAgo) { doneWeek++; }
       }
       var rate = all.length ? Math.round(doneN / all.length * 100) : 0;
-      var card = el('<div class="hw-overview">'
+      box.appendChild(el('<div class="hw-overview">'
         + '<div class="hwo-stats">'
         + '<div class="hwo-item"><b>' + openN + '</b><span>未完成</span></div>'
         + '<div class="hwo-item"><b>' + doneN + '</b><span>已完成</span></div>'
         + '<div class="hwo-item"><b>' + rate + '%</b><span>完成率</span></div>'
         + '</div>'
         + '<div class="hwo-bar"><i style="width:' + rate + '%"></i></div>'
-        + '<div class="hwo-foot">本周完成 ' + doneWeek + ' 条 · 共 ' + all.length + ' 条</div></div>');
-      box.appendChild(card);
+        + '<div class="hwo-foot">本周完成 ' + doneWeek + ' 条 · 共 ' + all.length + ' 条</div></div>'));
     })();
     var logBtn = el('<button class="btn" type="button" style="margin-top:10px">作业记录…</button>');
     logBtn.addEventListener('click', function () {
@@ -1847,13 +2126,124 @@ var AR = window.AR || (window.AR = {});
     });
     box.appendChild(logBtn);
 
-    /* ── 长期任务（v0.3.7）────────────────────────────────────
-       志愿时长、阅读量这类"攒进度"的目标：各自统计（今日 / 近 7 天 / 累计），
-       每条单独决定要不要在今日页和作业一起出现。数据进配置文件。 */
-    box.appendChild(el('<h3 class="set-sub">长期任务</h3>'));
+    /* ── 日程类型（v0.4.0）：考试 / 讲座 / 活动 / 其他 + 自建类型 ── */
+    var tList = AR.Store.typeList ? AR.Store.typeList() : [];
+    box.appendChild(el('<h3 class="set-sub">日程类型</h3>'));
+    var tags = el('<div class="row gap" style="flex-wrap:wrap"></div>');
+    for (var ti = 0; ti < tList.length; ti++) {
+      tags.appendChild(el('<span class="cm-tag" style="background:' + esc(tList[ti].hex) + '">'
+        + esc(tList[ti].label) + '</span>'));
+    }
+    box.appendChild(tags);
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '日程上的类型由你说了算：在添加日程时「＋ 新类型」就能加「社团 / DDL / 面试」这种；'
+      + '筛选条会按你用到的类型自动出现。</p>'));
+    var typeBtn = el('<button class="btn" type="button" style="margin-top:10px">管理类型…</button>');
+    typeBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('light', typeBtn);
+      if (AR.UI.openTypeManage) { AR.UI.openTypeManage(); }
+    });
+    box.appendChild(typeBtn);
+    return panel('作业与日程', box, 'work');
+  }
+
+  /**
+   * 我的页面（v0.4.0：从开发者选项搬出来，单独一个分类）。
+   * 导入过课表后，「导入」标签会换成自由组合的「我的」页。
+   */
+  function panelMine() {
+    var box = el('<div></div>');
+    var ct = AR.UI.customTabCfg ? AR.UI.customTabCfg() : null;
+    if (!ct) { return panel('我的页面', box, 'mine'); }
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '导入过课表之后，底栏的「导入」会变成「我的」—— 里面按你自己排的顺序显示这些模块。</p>'));
+    box.appendChild(rowSwitch('自定义模块页',
+      '导入课表后把「导入」换成「我的」，模块自由组合',
+      ct.enabled, function (v) {
+        ct.enabled = v;
+        AR.Store.save(true);
+        if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+        if (!v && AR.UI.currentView && AR.UI.currentView() === 'custom') { AR.UI.show('import'); }
+        AR.Bridge.haptic('medium', $('settingsGrid'));
+        AR.UI.toast(v ? '已开启：导入课表后「导入」会换成「我的」' : '已关闭：「导入」恢复');
+        renderSettings();
+      }));
+    var modBox = el('<div class="dev-modules"></div>');
+    modBox.appendChild(el('<div class="field-label" style="margin-top:8px">模块组成（按显示顺序）</div>'));
+    var avail = AR.UI.CUSTOM_MODULES || [];
+    var byKey = {};
+    for (var mi = 0; mi < avail.length; mi++) { byKey[avail[mi].k] = avail[mi]; }
+    var chosen = ct.modules || [];
+    for (var ci = 0; ci < chosen.length; ci++) {
+      (function (key, idx) {
+        var meta = byKey[key] || { t: key, d: '' };
+        var row = el('<div class="dev-row"><div class="dev-name">' + esc(meta.t)
+          + '<div class="muted" style="font-size:11px;font-weight:400">' + esc(meta.d) + '</div></div></div>');
+        var acts = el('<div class="row gap"></div>');
+        var up = el('<button class="chip-btn" type="button" title="上移">↑</button>');
+        up.disabled = idx === 0;
+        up.addEventListener('click', function () {
+          var m = ct.modules;
+          m.splice(idx, 1); m.splice(idx - 1, 0, key);
+          AR.Store.save(true); AR.Bridge.haptic('light', up); renderSettings();
+        });
+        var down = el('<button class="chip-btn" type="button" title="下移">↓</button>');
+        down.disabled = idx === chosen.length - 1;
+        down.addEventListener('click', function () {
+          var m = ct.modules;
+          m.splice(idx, 1); m.splice(idx + 1, 0, key);
+          AR.Store.save(true); AR.Bridge.haptic('light', down); renderSettings();
+        });
+        var rm = el('<button class="chip-btn" type="button">移除</button>');
+        rm.addEventListener('click', function () {
+          ct.modules.splice(idx, 1);
+          AR.Store.save(true); AR.Bridge.haptic('light', rm);
+          if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+          renderSettings();
+        });
+        acts.appendChild(up); acts.appendChild(down); acts.appendChild(rm);
+        row.appendChild(acts);
+        modBox.appendChild(row);
+      })(chosen[ci], ci);
+    }
+    if (!chosen.length) {
+      modBox.appendChild(el('<p class="muted" style="margin:6px 0 0">至少选一个模块，不然「我的」页是空的。</p>'));
+    }
+    var rest = [];
+    for (var ri = 0; ri < avail.length; ri++) {
+      if (chosen.indexOf(avail[ri].k) < 0) { rest.push(avail[ri]); }
+    }
+    if (rest.length) {
+      modBox.appendChild(el('<div class="field-label" style="margin-top:8px">可添加</div>'));
+      var addRow = el('<div class="row gap" style="flex-wrap:wrap"></div>');
+      for (var ai = 0; ai < rest.length; ai++) {
+        (function (meta) {
+          var b = el('<button class="chip-btn" type="button">＋ ' + esc(meta.t) + '</button>');
+          b.addEventListener('click', function () {
+            ct.modules.push(meta.k);
+            AR.Store.save(true); AR.Bridge.haptic('light', b);
+            if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+            renderSettings();
+          });
+          addRow.appendChild(b);
+        })(rest[ai]);
+      }
+      modBox.appendChild(addRow);
+    }
+    box.appendChild(modBox);
+    return panel('我的页面', box, 'mine');
+  }
+
+  /**
+   * 长期任务（独立设置面板，v0.3.8b：不再和作业挤在「课程与课表」里）。
+   * 志愿时长、阅读量这类"攒进度"的目标：各自统计（今日 / 近 7 天 / 累计），
+   * 每条单独决定要不要在今日页以独立卡片出现。数据进配置文件。
+   */
+  function panelLongTasks() {
+    var box = el('<div></div>');
     box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
       + '志愿时长、阅读量这种要一点点攒的目标：进度各自算，'
-      + '每条单独决定要不要显示在今日页（和普通作业放在同一张卡片里，但分开统计）。</p>'));
+      + '每条单独决定要不要显示在今日页（独立的「长期任务」卡片，和作业分开统计）。</p>'));
     var ltHost = el('<div class="lt-list" id="hwLongTasks"></div>');
     box.appendChild(ltHost);
     renderLongTaskList(ltHost);
@@ -1863,8 +2253,7 @@ var AR = window.AR || (window.AR = {});
       if (AR.UI.openLongTaskEdit) { AR.UI.openLongTaskEdit(null); }
     });
     box.appendChild(ltAdd);
-
-    return panel('课程与课表', box, 'schedule');
+    return panel('长期任务', box, 'longtasks');
   }
 
   /**
@@ -2441,15 +2830,20 @@ var AR = window.AR || (window.AR = {});
 
   function refreshAll() {
     ensure();
+    if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
     AR.UI.renderToday();
     AR.UI.renderWeek();
     if (AR.UI.currentView() === 'settings') { renderSettings(); }
     if (AR.UI.currentView() === 'import') { renderEventList(); }
+    if (AR.UI.currentView() === 'custom' && AR.UI.renderCustom) { AR.UI.renderCustom(); }
   }
 
   AR.Panels = {
     renderImport: renderImport,
     renderSettings: renderSettings,
+    resetSettingsHome: resetSettingsHome,
+    settingsBackStep: settingsBackStep,
+    settingsGoHome: settingsGoHome,
     startOnboarding: startOnboarding,
     openSemesterSetup: openSemesterSetup,
     handleJsonText: handleJsonText,

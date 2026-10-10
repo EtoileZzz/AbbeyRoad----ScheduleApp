@@ -113,6 +113,11 @@ input, textarea { user-select: text; }
   -webkit-mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M12 3l5 5h-3v6h-4V8H7l5-5zM4 18h16v3H4v-3z'/></svg>");
   mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M12 3l5 5h-3v6h-4V8H7l5-5zM4 18h16v3H4v-3z'/></svg>");
 }
+.ico-custom {
+  /* 实验性「模块」页：一大两小的拼版（和周表 2x2 的 ico-week 区分开） */
+  -webkit-mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M4 4h16v6H4V4zm0 8h7v8H4v-8zm9 0h7v8h-7v-8z'/></svg>");
+  mask: no-repeat center/contain url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='black'><path d='M4 4h16v6H4V4zm0 8h7v8H4v-8zm9 0h7v8h-7v-8z'/></svg>");
+}
 .ico-settings {
   /* v0.2.2 重绘：直接采用 Material「settings」标准齿轮（外圈 8 齿 + 中心孔），
      线条比例经过官方调校，小尺寸下比手画的齿轮干净得多。 */
@@ -798,7 +803,7 @@ input[type="range"]::-moz-range-thumb {
    ══════════════════════════════════════════════════════════════ */
 
 /* ── 设置页：左侧分类导航（两端统一，始终在左，可滚动可点击） ── */
-.settings-shell { display: flex; gap: var(--sp-3); flex: 1 1 auto; min-height: 0; }
+.settings-shell { display: flex; gap: var(--sp-3); flex: 1 1 auto; min-height: 0; justify-content: center; }
 .settings-nav {
   flex: 0 0 168px; width: 168px; padding: 10px;
   border-radius: var(--r-panel);
@@ -2558,6 +2563,49 @@ body.dev-outline .segmented, body.dev-outline .btn, body.dev-outline .chip-btn {
   flex: 0 0 auto; text-align: right; font-size: 11.5px; font-variant-numeric: tabular-nums;
   display: flex; flex-direction: column; gap: 2px; color: var(--text-secondary);
 }
+
+/* ── 自定义模块页（实验性）────────────────────────────────── */
+.custom-modules { display: flex; flex-direction: column; padding-bottom: 20px; }
+.custom-modules .hw-card { margin-top: 10px; }
+.custom-modules .hw-card:first-child { margin-top: 0; }
+.cm-stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; padding: 4px 2px 8px; }
+.cm-stat {
+  background: var(--bg-subtle); border-radius: 10px; padding: 8px 6px; text-align: center;
+}
+.cm-stat b {
+  display: block; font-size: 16px; color: var(--accent); font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+.cm-stat span { font-size: 11px; color: var(--text-tertiary); }
+.cm-line {
+  width: 100%; display: flex; align-items: center; gap: 8px; padding: 7px 2px;
+  border: 0; border-top: 1px dashed var(--divider); border-radius: 0;
+  background: transparent; color: var(--text-primary); font: inherit; text-align: left;
+}
+.cm-line:first-child { border-top: 0; }
+button.cm-line { cursor: pointer; }
+.cm-name {
+  flex: 1 1 auto; min-width: 0; font-size: 12.5px; font-weight: 600; overflow-wrap: anywhere;
+}
+.cm-sub { display: block; font-size: 11px; font-weight: 400; color: var(--text-tertiary); margin-top: 2px; }
+.cm-num {
+  flex: 0 0 auto; font-size: 11px; color: var(--text-tertiary); text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cm-tag {
+  flex: 0 0 auto; font-size: 10.5px; padding: 2px 8px; border-radius: 999px; color: #fff;
+}
+.cm-next-top { display: flex; align-items: center; gap: 8px; }
+.cm-next-when { font-size: 11px; font-weight: 650; color: var(--accent); }
+.cm-next-time { font-size: 11px; color: var(--text-tertiary); }
+.cm-next-name { display: block; font-size: 14px; font-weight: 650; margin-top: 3px; }
+.cm-next-sub { display: block; font-size: 11.5px; color: var(--text-tertiary); margin-top: 2px; }
+.cm-semester { padding: 4px 2px 6px; }
+.cm-semester-val { display: flex; align-items: baseline; gap: 6px; margin-bottom: 2px; }
+.cm-semester-val b {
+  font-size: 22px; font-weight: 700; color: var(--accent); font-variant-numeric: tabular-nums;
+}
+.cm-semester-val .muted { font-size: 11.5px; }
 .lt-val em { font-style: normal; color: var(--text-tertiary); }
 .lt-today { font-size: 10.5px; color: var(--accent); }
 
@@ -2578,7 +2626,11 @@ body.dev-outline .segmented, body.dev-outline .btn, body.dev-outline .chip-btn {
 .lt-recent-note { flex: 1 1 auto; min-width: 0; color: var(--text-secondary); overflow-wrap: anywhere; }
 .lt-del {
   appearance: none; border: 0; background: transparent; cursor: pointer;
-  color: var(--danger); font-size: 12px; padding: 2px 6px; border-radius: 6px;
+  color: var(--danger); font-size: 13px;
+  /* 命中区放大到 32px：以前 2×6px 内边距的小 ✕ 很难点中 */
+  min-width: 32px; min-height: 32px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 8px;
 }
 .lt-units { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .lt-check { display: flex; align-items: flex-start; gap: 8px; margin-top: 12px; font-size: 12.5px; color: var(--text-secondary); }
@@ -2747,3 +2799,216 @@ body[data-perf] .blob-a { background: radial-gradient(circle, var(--blob-a) 0%, 
 body[data-perf] .blob-b { background: radial-gradient(circle, var(--blob-b) 0%, transparent 68%); }
 body[data-perf] .blob-c { background: radial-gradient(circle, var(--blob-c) 0%, transparent 68%); }
 body[data-perf="min"] .blob { display: none; }
+
+/* ══════════ 记一笔 · 快速添加区（v0.3.8c） ══════════ */
+.lt-undo { border: 1px dashed var(--danger); color: var(--danger); }
+.lt-quick .lt-undo { margin-left: auto; }
+
+/* ══════════ 本周课表模块：周一到周日 7 列迷你格子 ══════════ */
+.cm-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 5px; padding: 4px 2px 8px; }
+.cm-wcol {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0;
+  padding: 4px 2px; border-radius: 10px; background: var(--bg-subtle);
+}
+.cm-wcol.today { background: var(--accent-soft); }
+.cm-wday { font-size: 10.5px; font-weight: 650; color: var(--text-tertiary); text-align: center; }
+.cm-wcol.today .cm-wday { color: var(--accent); }
+.cm-wfree { font-size: 10px; color: var(--text-tertiary); text-align: center; padding: 6px 0; opacity: .6; }
+.cm-wchip {
+  display: block; width: 100%; border: 0; cursor: pointer;
+  border-radius: 7px; padding: 4px 3px; background: var(--glass-card);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .05); text-align: center;
+}
+.cm-wchip b {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  font-size: 10px; font-weight: 650; color: var(--text-primary); line-height: 1.25;
+  overflow: hidden; white-space: normal; word-break: break-all;
+}
+.cm-wchip span {
+  display: block; font-size: 9px; color: var(--text-tertiary); margin-top: 1px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* ══════════ 日历月视图模块 ══════════ */
+.cm-cal { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 3px; padding: 4px 2px; }
+.cm-cal-wd { font-size: 10px; color: var(--text-tertiary); text-align: center; padding: 3px 0; }
+.cm-cal-cell {
+  position: relative; min-height: 32px; border: 0; cursor: pointer; border-radius: 8px;
+  background: var(--bg-subtle); color: var(--text-primary); font-size: 11.5px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+}
+.cm-cal-cell.empty { background: transparent; cursor: default; }
+.cm-cal-cell.today { background: var(--accent); color: var(--accent-contrast); font-weight: 700; }
+.cm-cal-dots { display: flex; gap: 2px; height: 4px; }
+.cm-cal-dots i { width: 4px; height: 4px; border-radius: 50%; }
+.cm-cal-detail { font-size: 11.5px; padding: 6px 4px 2px; line-height: 1.6; }
+
+/* ══════════ 倒计时模块 ══════════ */
+.cm-cd-day { font-size: 11px; font-weight: 650; color: var(--text-secondary); white-space: nowrap; }
+.cm-cd-day.near { color: #e5484d; }
+
+/* ══════════ 待办速记模块 ══════════ */
+.cm-todo-add { display: flex; gap: 6px; padding: 4px 2px 8px; }
+.cm-todo-add .input { flex: 1; min-width: 0; }
+.cm-todo-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 2px; border-top: 1px solid var(--glass-stroke);
+}
+.cm-todo-check {
+  width: 20px; height: 20px; flex: none; border-radius: 50%;
+  border: 1.5px solid var(--text-tertiary); background: transparent;
+  color: transparent; font-size: 11px; cursor: pointer; line-height: 1;
+}
+.cm-todo-row.done .cm-todo-check { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+.cm-todo-text {
+  flex: 1; min-width: 0; font-size: 13px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cm-todo-row.done .cm-todo-text { text-decoration: line-through; color: var(--text-tertiary); }
+
+/* ══════════ 日历导航 / 选中态（v0.3.9） ══════════ */
+.cm-cal-nav { display: flex; align-items: center; gap: 6px; padding: 2px 2px 8px; }
+.cm-cal-label { font-size: 12px; font-weight: 650; color: var(--text-primary); margin-right: auto; }
+.cm-cal-cell.sel { outline: 2px solid var(--accent); outline-offset: -2px; }
+.cm-cal-daytitle { font-size: 12px; padding: 8px 4px 2px; }
+
+/* ══════════ 重要事件（v0.3.9） ══════════ */
+.cm-tag-cd { background: var(--accent); }
+.cm-num .cm-cd-day { display: block; font-size: 10.5px; font-weight: 600; margin-top: 1px; }
+
+/* ══════════ 日程 / 星标日程（v0.4.0） ══════════ */
+.cm-filters { display: flex; gap: 6px; flex-wrap: wrap; padding: 2px 2px 8px; }
+.chip-btn.active {
+  border-color: var(--accent); color: var(--accent);
+  background: var(--accent-soft); font-weight: 650;
+}
+.cm-group-head {
+  display: flex; align-items: center; gap: 6px; width: 100%;
+  border: 0; background: transparent; cursor: pointer;
+  padding: 8px 2px 4px; font-size: 12px; font-weight: 650;
+  color: var(--text-secondary); text-align: left;
+}
+.cm-group-arrow { width: 12px; flex: none; color: var(--text-tertiary); }
+.cm-group { display: block; }
+.cm-star { flex: none; font-size: 13px; color: #D9A22B; }
+.cm-eye {
+  flex: none; min-width: 30px; min-height: 30px;
+  padding: 0; font-size: 13px; color: var(--text-tertiary);
+}
+.cm-eye.on { color: var(--accent); border-color: var(--accent); }
+.cm-star-day {
+  flex: 0 0 auto; font-size: 12.5px; font-weight: 700;
+  color: var(--text-secondary); white-space: nowrap;
+}
+.cm-star-day.near { color: #e5484d; }
+.cm-star-day.today { color: #D9A22B; }
+.cm-star-day.past { color: var(--text-tertiary); font-weight: 500; }
+
+/* ══════════ 周表上的日程块（v0.4.0） ══════════ */
+.wt-evblock {
+  border: 1.5px dashed rgba(255, 255, 255, 0.75);
+  opacity: .92;
+}
+.wt-evblock.star {
+  border: 2.5px solid #D9A22B;
+  box-shadow: 0 0 0 2px rgba(217, 162, 43, 0.35);
+}
+
+/* ══════════ 设置（v0.4.0 B′）：分类列表 + 行内高频项 ══════════ */
+.settings-body { max-width: 760px; margin: 0 auto; width: 100%; }
+.set-home { display: flex; flex-direction: column; gap: 14px; }
+.set-cat {
+  border: 1px solid var(--glass-stroke); border-radius: 16px;
+  background: var(--glass-card); overflow: hidden;
+}
+/* 分类行：大字 + 粗体 + 48px 行高，和下面的高频项拉开层次 */
+.set-cat-head {
+  display: flex; align-items: center; gap: 12px; width: 100%;
+  border: 0; background: transparent; cursor: pointer;
+  padding: 12px 14px; min-height: 48px; text-align: left;
+}
+.set-cat-ico { font-size: 20px; flex: none; }
+.set-cat-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.set-cat-main b { font-size: 15px; font-weight: 700; color: var(--text-primary); letter-spacing: .01em; }
+.set-cat-main i { font-size: 11.5px; font-style: normal; color: var(--text-tertiary); }
+/* 「进入」= 明显的胶囊按钮（整行也可点，这只是视觉提示） */
+.set-cat-go {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  min-width: 68px; height: 30px; padding: 0 12px;
+  border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+  font-size: 12px; font-weight: 650;
+}
+.set-cat-head:active .set-cat-go { transform: scale(.96); }
+/* 高频项区：缩进 + 左侧主题色竖线 + 浅底 —— 一眼看出"从属于上面那个分类" */
+.q-row {
+  display: flex; flex-direction: column; gap: 10px;
+  margin: 0 10px 10px; padding: 10px 12px;
+  border-top: 1px solid var(--glass-stroke);
+  border-left: 2px solid var(--accent);
+  border-radius: 0 12px 12px 0;
+  background: var(--bg-subtle);
+}
+.q-item { display: flex; align-items: center; gap: 10px; min-height: 34px; }
+.q-label { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
+/* 直板机：控件统一等宽，不再随文字长短参差 */
+.q-item .segmented {
+  flex: 0 0 auto; width: 180px;
+  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr;
+}
+.q-item .segmented .seg { padding: 6px 0; text-align: center; font-size: 11.5px; }
+.q-row .q-swatches {
+  display: flex; gap: 4px; flex-wrap: wrap; max-width: 100%;
+  justify-content: flex-end;
+}
+.q-row .q-swatches .swatch {
+  width: 16px; height: 16px; min-width: 16px;
+  box-shadow: none; border-width: 2px;
+  transition: transform var(--dur-instant) var(--ease-standard);
+}
+.q-step {
+  display: grid; grid-template-columns: 32px 42px 32px;
+  align-items: center; justify-items: center;
+}
+.q-step b { font-variant-numeric: tabular-nums; font-size: 13px; }
+.q-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 208px; }
+.q-btns .chip-btn { width: 100%; text-align: center; }
+.q-ver { font-size: 12px; color: var(--text-secondary); }
+/* 宽屏：高频项两列排，仍然对齐 */
+@media (min-width: 640px) {
+  .q-row { flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .q-item { flex: 1 1 calc(50% - 10px); min-width: 260px; }
+  .q-item .q-label { flex: 0 1 auto; }
+}
+
+/* 搜索：命中清单（分类 · 项目） */
+.set-search { padding: 2px 0 10px; }
+.set-search .input { width: 100%; }
+.set-hits { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+.set-hit {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  border: 1px solid var(--glass-stroke); border-radius: 10px;
+  background: var(--bg-subtle); cursor: pointer;
+  padding: 8px 10px; text-align: left;
+}
+.hit-cat { flex: none; font-size: 11.5px; color: var(--text-tertiary); }
+.hit-item { flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-primary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 二级页：返回条 + 内容 */
+.set-back { display: flex; align-items: center; gap: 10px; padding: 2px 0 12px; }
+.set-crumb { font-size: 14px; font-weight: 700; color: var(--text-primary); }
+.set-detail { display: flex; flex-direction: column; gap: 12px; }
+.set-tabs { margin-bottom: 10px; }
+.set-hit-flash { animation: setHitFlash 1.6s ease-out 1; }
+@keyframes setHitFlash {
+  0% { box-shadow: 0 0 0 3px var(--accent-glow); background: var(--accent-soft); }
+  100% { box-shadow: none; }
+}
+
+/* 日程行：右滑归档的提示（和作业那条"划掉"一个意思） */
+.cm-swipe-hint {
+  flex: none; font-size: 10.5px; color: var(--text-tertiary);
+  opacity: 0; transition: opacity .15s ease;
+}
+.cm-line.swiping .cm-swipe-hint { opacity: 1; }
+.cm-line.swipe-ok .cm-swipe-hint { opacity: 1; color: var(--danger); font-weight: 650; }

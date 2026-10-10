@@ -11,7 +11,7 @@ const path = require('path');
 const root = path.resolve(__dirname, '..');
 const next = process.argv[2];
 const code = process.argv[3];
-if (!/^\d+\.\d+\.\d+[a-z]?$/.test(next || '')) { throw new Error('用法：node tools/bump-version.js 0.2.5 16（小修订可写 0.3.2a）'); }
+if (!/^\d+\.\d+\.\d+([a-z]+)?$/.test(next || '')) { throw new Error('用法：node tools/bump-version.js 0.2.5 16（小修订可写 0.3.2a / 0.4.0beta）'); }
 if (!/^\d+$/.test(code || '')) { throw new Error('缺少 Android versionCode'); }
 
 function read(p) {
@@ -54,5 +54,10 @@ swapRe('windows/src/AppPaths.cs', /Version = "[\d.a-z]+"/, 'Version = "' + next 
 swapRe('windows/build.ps1', /\$version   = '[\d.a-z]+'/, "$version   = '" + next + "'");
 swapRe('windows/README.txt', /v[\d.a-z]+/, 'v' + next);
 swapRe('windows/installer/Installer.cs', /private const string Version = "[\d.a-z]+"/, 'private const string Version = "' + next + '"');
+/**
+ * 网页资源加版本号（?v=x.y.z）：Android 的 WebView 会把上一版 APK 里的 JS/CSS 缓存下来，
+ * 升级后还在跑旧代码。带上版本号就换了缓存键，升级后必定生效。
+ */
+swapRe('app/index.html', /\?v=[\d.a-z]+/g, '?v=' + next);
 swapRe('windows/installer/Installer.cs', /版本 " \+ "[\d.a-z]+"/, '版本 " + "' + next + '"');
 console.log('版本已更新到 ' + next + '（Android versionCode ' + code + '）');

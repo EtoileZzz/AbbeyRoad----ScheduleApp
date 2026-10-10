@@ -6,6 +6,8 @@ import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
+import android.content.pm.PackageInfo;
 import android.content.res.Configuration;
 import android.graphics.Color;
 import android.net.Uri;
@@ -88,7 +90,13 @@ public class MainActivity extends Activity {
         s.setBuiltInZoomControls(false);
         s.setDisplayZoomControls(false);
         s.setMediaPlaybackRequiresUserGesture(true);
-        s.setCacheMode(WebSettings.LOAD_DEFAULT);
+        /**
+         * v0.4.0 修复（"改了没用"的元凶）：网页是从 assets 拦截出来的（https://abbeyroad.local/），
+         * 以前用 LOAD_DEFAULT + 拦截响应只给 no-cache —— WebView 会把**上一版 APK 里的 JS**
+         * 继续吃下去，于是新装的版本里返回逻辑 / 动画都还是旧的。
+         * 现在：不读缓存 + 换版本号时再清一次，保证新资源一定生效。
+         */
+        s.setCacheMode(WebSettings.LOAD_NO_CACHE);
         s.setTextZoom(100);
         // 系统字号放大时不要让网页文字跟着变大（否则会撑破布局）
         try {
@@ -151,6 +159,8 @@ public class MainActivity extends Activity {
             WebView.setWebContentsDebuggingEnabled(true);
         }
 
+        clearWebCacheIfUpgraded();
+        registerBackGesture();
         web.loadUrl(ORIGIN + "index.html");
         pendingView = viewFromIntent(getIntent());
         captureOpenIntent(getIntent());
@@ -256,6 +266,43 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * 换版本（versionCode / versionName 变了）就清一次 WebView 缓存：
+     * 升级安装后绝不会再拿旧 APK 里的 JS / CSS。
+     */
+    private void clearWebCacheIfUpgraded() {
+        try {
+            String ver = appVersionCode() + "/" + appVersionName();
+            SharedPreferences sp = getSharedPreferences("ar_prefs", Context.MODE_PRIVATE);
+            if (!ver.equals(sp.getString("web_cache_ver", ""))) {
+                web.clearCache(true);
+                web.clearHistory();
+                sp.edit().putString("web_cache_ver", ver).apply();
+                Log.i(TAG, "WebView 缓存已清理：" + ver);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "清理 WebView 缓存失败（忽略）", e);
+        }
+    }
+
+    private long appVersionCode() {
+        try {
+            PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) { return pi.getLongVersionCode(); }
+            return pi.versionCode;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Exception e) {
+            return "";
+        }
+    }
+
     /** 从 assets/web/ 读取被拦截的请求；找不到就返回 404，避免整页白屏。 */
     private WebResourceResponse serveAsset(String path) {
         String rel = (path == null || path.isEmpty() || "/".equals(path)) ? "index.html" : path.substring(1);
@@ -276,7 +323,10 @@ public class MainActivity extends Activity {
                     new ByteArrayInputStream(bos.toByteArray()));
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
                 java.util.Map<String, String> headers = new java.util.HashMap<String, String>();
-                headers.put("Cache-Control", "no-cache");
+                // 只有 no-cache 还不够 —— 加上 no-store，别让 WebView 留旧 JS
+                headers.put("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0");
+                headers.put("Pragma", "no-cache");
+                headers.put("Expires", "0");
                 r.setResponseHeaders(headers);
             }
             return r;
@@ -915,10 +965,35 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Android 13+ 的「侧滑返回」：注册 OnBackInvokedCallback，
+     * 和返回键 / Esc 走同一个处理函数 —— 保证侧滑也是"一层一层退"。
+     * （清单里的 enableOnBackInvokedCallback 打开后，系统手势才会走这里。）
+     */
+    private void registerBackGesture() {
+        if (Build.VERSION.SDK_INT < 33) { return; }
+        try {
+            getOnBackInvokedDispatcher().registerOnBackInvokedCallback(
+                android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,
+                new android.window.OnBackInvokedCallback() {
+                    @Override
+                    public void onBackInvoked() {
+                        handleBack();
+                    }
+                });
+        } catch (Throwable e) {
+            Log.w(TAG, "注册返回手势失败（退回 onBackPressed）", e);
+        }
+    }
+
+    /** 交给网页决定：先关弹窗 → 回上一屏（设置二级页先回设置首页）→ 都没有才退出 */
+    private void handleBack() {
+        callJs("window.AR && AR.onBack && AR.onBack()");
+    }
+
     @Override
     public void onBackPressed() {
-        // 交给网页决定：先关弹窗 → 回上一屏 → 都没有才退出
-        callJs("window.AR && AR.onBack && AR.onBack()");
+        handleBack();
     }
 
     @Override

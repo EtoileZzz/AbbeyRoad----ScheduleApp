@@ -507,12 +507,11 @@ const script = String.raw`(async () => {
     AR.UI.setExpanded(null);
     await sleep(300);
 
-    // e) 关于与帮助：开源地址可点
+    // e) 关于与帮助：开源地址可点（v0.4.0：首页点「关于与帮助」分类行进二级页）
     AR.UI.show('settings');
     await sleep(400);
-    const navAbout = Array.prototype.filter.call(document.querySelectorAll('.settings-nav button'),
-      (b) => (b.textContent || '').indexOf('关于') >= 0)[0];
-    if (navAbout) { navAbout.click(); }
+    const rowAbout = document.querySelector('#settingsGrid .set-cat[data-key="about"] .set-cat-head');
+    if (rowAbout) { rowAbout.click(); }
     await sleep(400);
     const repoBtn = $('#stRepo');
     check('关于页有「在浏览器中打开」按钮', !!repoBtn);
@@ -654,9 +653,19 @@ const script = String.raw`(async () => {
     // d) 清空所有数据：提前松手不清、按住 3 秒才清
     AR.UI.show('settings');
     await sleep(400);
-    const navToData = document.querySelectorAll('.settings-nav button');
+    const navToData = document.querySelectorAll('#settingsGrid .set-cat');
     for (let i = 0; i < navToData.length; i++) {
-      if ((navToData[i].textContent || '').indexOf('数据') >= 0) { navToData[i].click(); break; }
+      if (navToData[i].getAttribute('data-key') === 'syncdata') {
+        const h = navToData[i].querySelector('.set-cat-head');
+        if (h) { h.click(); }
+        break;
+      }
+    }
+    await sleep(400);
+    /* v0.4.0 设置 B′：「数据与备份」现在是「数据与同步」二级页里的页内标签 */
+    const dataTabs = document.querySelectorAll('#settingsGrid .set-tabs .seg');
+    for (let i = 0; i < dataTabs.length; i++) {
+      if ((dataTabs[i].textContent || '').indexOf('数据') >= 0) { dataTabs[i].click(); break; }
     }
     await sleep(400);
     check('设置里有「清空所有数据」按钮', !!document.getElementById('stReset'));
@@ -698,35 +707,55 @@ const script = String.raw`(async () => {
     AR.UI.show('settings');
     await sleep(300);
 
-    /* ── ⑩ v0.2.7 开发者模式：长按「外观」调过渡动画 ─────── */
+    /* ── ⑩ 开发者模式：长按首页「关于与帮助」分类行（v0.4.0 左栏已去掉） ── */
     const devBefore = AR.Store.get().settings.appearance.devMode === true;
-    const navAppearance = document.querySelector('.settings-nav button[data-key="appearance"]');
-    check('设置导航里有「外观」入口', !!navAppearance);
+    const navAppearance = document.querySelector('#settingsGrid .set-cat[data-key="about"] .set-cat-head');
+    check('设置首页有「关于与帮助」分类行', !!navAppearance);
     if (navAppearance) {
       navAppearance.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 8, clientY: 8 }));
       await sleep(1000);
       const devAfter = AR.Store.get().settings.appearance.devMode === true;
-      check('长按「外观」切换开发者模式', devAfter !== devBefore, 'devMode=' + devAfter);
+      check('长按「关于与帮助」切换开发者模式', devAfter !== devBefore, 'devMode=' + devAfter);
       await sleep(260);
       check('开发者模式打开后出现动画设置区', !devAfter || !!document.querySelector('.dev-motion'));
-      const rows = document.querySelectorAll('.dev-motion .dev-row');
-      check('5 个可调场景都在（聚焦放大/缩小、内容、弹窗进出、页面、列表）', !devAfter || rows.length === 5,
-        'rows=' + rows.length);
+      /* 只数「场景行」（带样式选择器的）—— .dev-motion 里还混着实验性功能的模块行，
+         直接数 .dev-row 会把它们算进去。场景行数永远跟 AR.Motion 注册表一致。 */
+      const rows = Array.prototype.filter.call(
+        document.querySelectorAll('.dev-motion .dev-row'),
+        (r) => !!r.querySelector('.pick-trigger'));
+      /* 场景会随着 AR.Motion 注册表增长（现在 7 个：聚焦/内容/日期/主题/弹窗/页面/列表），
+         以前写死 rows===5 早就过期了 —— 断言改成「五大场景都在 + 每景一行」。 */
+      const five = ['zoneFocus', 'contentIn', 'modal', 'viewIn', 'listIn'];
+      check('5 个可调场景都在（聚焦放大/缩小、内容、弹窗进出、页面、列表）',
+        !devAfter || (five.every((k) => AR.Motion.order.indexOf(k) >= 0) && rows.length === AR.Motion.order.length),
+        'rows=' + rows.length + '/' + AR.Motion.order.length);
       if (devAfter && rows.length) {
-        const sel = rows[0].querySelector('select');
+        /* 样式下拉是自绘 picker（button.pick-trigger → .pk-root 浮层），
+           不是原生 select —— 以前按 select.options 找，一到这里就 TypeError。 */
+        const trig = rows[0].querySelector('.pick-trigger');
         const before = AR.Motion.get('zoneFocus').k;
-        const alt = Array.prototype.map.call(sel.options, (o) => o.value).filter((v) => v !== before)[0];
-        sel.value = alt;
-        sel.dispatchEvent(new Event('change', { bubbles: true }));
-        await sleep(120);
-        check('换一个动画样式立刻生效', AR.Motion.get('zoneFocus').k === alt,
-          before + ' → ' + AR.Motion.get('zoneFocus').k);
-        check('样式选择已落盘', AR.Motion.saved().zoneFocus === alt);
+        const keys = (trig && trig.__opts || []).map((o) => o.v);
+        const alt = keys.filter((v) => v !== before)[0];
+        check('场景行里有样式选择器', !!trig && keys.length > 1, 'opts=' + keys.length);
+        if (trig && alt) {
+          trig.click();
+          await sleep(150);
+          const optBtns = document.querySelectorAll('.pk-root .pk-opt');
+          const idx = keys.indexOf(alt);
+          if (optBtns[idx]) { optBtns[idx].click(); }
+          await sleep(150);
+          check('换一个动画样式立刻生效', AR.Motion.get('zoneFocus').k === alt,
+            before + ' → ' + AR.Motion.get('zoneFocus').k);
+          check('样式选择已落盘', AR.Motion.saved().zoneFocus === alt);
+        }
         check('进入/退出是同一选项的两个方向（in/out 都在）',
           !!AR.Motion.dir('zoneFocus', 'in') && !!AR.Motion.dir('zoneFocus', 'out'));
-        check('默认动画：今日页=点击处扩散+回弹、弹窗=内容逐条拼合、页面=错峰上浮',
+        /* 断言的默认值跟注册表对齐：弹窗的默认早换成了「磁贴翻转」（tileFlip），
+           以前这里还写「内容逐条拼合」（cascade），又被前面 select 的 TypeError 挡着
+           一直没跑到 —— 现在按 motion.js 里的真实默认值断言。 */
+        check('默认动画：今日页=点击处扩散+回弹、弹窗=磁贴翻转、页面=错峰上浮',
           AR.Motion.table.zoneFocus.default === 'rippleSpring'
-          && AR.Motion.table.modal.default === 'cascade'
+          && AR.Motion.table.modal.default === 'tileFlip'
           && AR.Motion.table.viewIn.default === 'rise');
         AR.Motion.reset();
         await sleep(80);

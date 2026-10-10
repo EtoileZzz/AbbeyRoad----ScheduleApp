@@ -20,7 +20,7 @@ namespace AbbeyRoadSetup
     internal static class Program
     {
         private const string Product = "Abbey Road";
-        private const string Version = "0.3.8a";
+        private const string Version = "0.4.0";
         private const string ExeName = "AbbeyRoad.exe";
         private const string UninstallKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\AbbeyRoad";
 
@@ -275,7 +275,7 @@ namespace AbbeyRoadSetup
             Controls.Add(title);
 
             Label sub = new Label();
-            sub.Text = "版本 " + "0.3.8a" + " · 本地优先，不联网、不收集数据\n"
+            sub.Text = "版本 " + "0.4.0" + " · 本地优先，不联网、不收集数据\n"
                 + "安装到当前用户目录，无需管理员权限。";
             sub.SetBounds(B(24), B(54), B(500), B(40));
             sub.ForeColor = Color.FromArgb(90, 96, 114);

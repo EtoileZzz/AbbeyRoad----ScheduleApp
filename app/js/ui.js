@@ -919,6 +919,7 @@ var AR = window.AR || (window.AR = {});
       配色方案: (S.settings.schedule && S.settings.schedule.colorScheme) || 'classic',
       动画样式: AR.Motion ? AR.Motion.saved() : {},
       开发者工具: devFlags(),
+      自定义模块页: customTabCfg(),
       内存MB: (performance.memory ? Math.round(performance.memory.usedJSHeapSize / 1048576) : '-')
     };
     var text = Object.keys(info).map(function (k) { return k + '：' + JSON.stringify(info[k]); }).join('\n');
@@ -927,8 +928,10 @@ var AR = window.AR || (window.AR = {});
   }
 
   function show(view) {
+    var prevView = currentView;
     currentView = view;
-    var views = ['today', 'week', 'import', 'settings'];
+    syncCustomTabNav();
+    var views = ['today', 'week', 'import', 'custom', 'settings'];
     for (var i = 0; i < views.length; i++) {
       var node = $('view-' + views[i]);
       if (node) { node.hidden = (views[i] !== view); }
@@ -941,14 +944,998 @@ var AR = window.AR || (window.AR = {});
     if (view === 'today') { AR.Bridge.haptic('light', $('zoneNext')); applyLayout(false); renderToday(); }
     if (view !== 'today') { collapseDoneGroups(); }   // 离开今日页：作业展开状态一并重置
     if (view === 'week') { renderWeek(); }
+    // v0.4.0：从别处进设置 = 回到分类首页（上次停在二级页的话，重新进来会找不到北）
+    if (view === 'settings' && prevView !== 'settings' && AR.Panels && AR.Panels.resetSettingsHome) {
+      AR.Panels.resetSettingsHome();
+    }
     if (view === 'settings' && AR.Panels) { AR.Panels.renderSettings(); }
     if (view === 'import' && AR.Panels) { AR.Panels.renderImport(); }
+    if (view === 'custom') { renderCustom(); }
     // 规格书 4.1：整屏区块 60ms 错峰入场
     var viewEl = $('view-' + view);
     enterRise(viewEl);
     // 切页：本页所有滑块（含底部 Tab 栏那颗）落位 + 播一次统一的进场淡入
     enhanceSegmented(viewEl, true);
   }
+
+  /* ══════════════════════════════════════════════════════════════
+     自定义模块页（实验性）
+     开关和模块组成都在 设置 → 长按「外观」→ 开发者模式 → 实验性功能。
+     开关打开 + 课表导入过之后，底栏 / 左侧栏的「导入」标签换成「模块」，
+     点开是这页：模块自由组合（作业 / 长期任务 / 作业统计…），可排序。
+     「导入」页本身不删 —— 这页右上角和设置 → 导入与同步 都能进去。
+     ══════════════════════════════════════════════════════════════ */
+
+  /** 模块注册表：k=键 t=名 d=说明（精简版）。顺序就是「可添加」列表的顺序。 */
+  var CUSTOM_MODULES = [
+    { k: 'homework', t: '作业', d: '今天的作业' },
+    { k: 'longterm', t: '长期任务', d: '一点一点攒的进度' },
+    { k: 'hwstats', t: '作业统计', d: '完成情况一览' },
+    { k: 'todaycourses', t: '今日课表', d: '今天要上的课' },
+    { k: 'nextclass', t: '接下来', d: '下一节课' },
+    { k: 'events', t: '日程', d: '星标 + 时间线 + 归档' },
+    { k: 'semester', t: '学期进度', d: '第几周 · 本周节数' },
+    { k: 'weekgrid', t: '本周课表', d: '一周课表格子' },
+    { k: 'calendar', t: '日历', d: '翻月 · 点一天看安排' },
+    { k: 'freetime', t: '没课时段', d: '课间空档' },
+    { k: 'todo', t: '待办速记', d: '随手小清单' }
+  ];
+
+  function customTabCfg() {
+    var exp = S.settings.experimental;
+    if (!exp || typeof exp !== 'object') { exp = S.settings.experimental = {}; }
+    var ct = exp.customTab;
+    if (!ct || typeof ct !== 'object') {
+      ct = exp.customTab = { enabled: false, modules: ['homework', 'longterm', 'hwstats', 'weekgrid'] };
+    }
+    if (!ct.modules || Object.prototype.toString.call(ct.modules) !== '[object Array]') {
+      ct.modules = ['homework', 'longterm', 'hwstats', 'weekgrid'];
+    }
+    // v0.4.0 旧 key 映射：重要事件 / 倒计时 / 星标日程 → 都并进「日程」一张卡
+    var mapped = [];
+    for (var mi = 0; mi < ct.modules.length; mi++) {
+      var mk = ct.modules[mi];
+      if (mk === 'keyevents' || mk === 'countdown' || mk === 'starevents') { mk = 'events'; }
+      if (mapped.indexOf(mk) < 0) { mapped.push(mk); }
+    }
+    ct.modules = mapped;
+    return ct;
+  }
+
+  /** 「导入」标签换成「模块」的条件：实验开关开着 + 课表已经导入过 */
+  function customTabActive() {
+    if (!customTabCfg().enabled) { return false; }
+    var st = AR.Store.get();
+    return !!((st.courses || []).length > 0);
+  }
+
+  /** 底栏 / 左侧栏的「导入」标签在两种形态间切换（文案和图标都换） */
+  function syncCustomTabNav() {
+    if (!S || !S.settings) { return; }
+    var on = customTabActive();
+    var btns = document.querySelectorAll('.nav-btn');
+    for (var i = 0; i < btns.length; i++) {
+      var nav = btns[i].getAttribute('data-nav');
+      if (nav !== 'import' && nav !== 'custom') { continue; }
+      btns[i].setAttribute('data-nav', on ? 'custom' : 'import');
+      var lbl = btns[i].querySelector('span');
+      if (lbl) { lbl.textContent = on ? '我的' : '导入'; }
+      var ico = btns[i].querySelector('.ico');
+      if (ico) {
+        ico.classList[on ? 'add' : 'remove']('ico-custom');
+        ico.classList[on ? 'remove' : 'add']('ico-import');
+      }
+    }
+  }
+
+  /** 模块页本体：按用户排的顺序把模块卡片拼起来。
+   *  没有加载动画（v0.3.8c 起删掉骨架屏）—— 切进来立刻出内容，
+   *  进场就是全局统一的列表入场（listIn，和设置页列表同一条曲线）。 */
+  function renderCustom() {
+    var host = $('customModules');
+    if (!host) { return; }
+    host.innerHTML = '';
+    var mods = customTabCfg().modules || [];
+    var seen = {};
+    for (var i = 0; i < mods.length; i++) {
+      var k = mods[i];
+      if (seen[k]) { continue; }
+      seen[k] = true;
+      var fn = CUSTOM_MODULE_BUILDERS[k];
+      if (fn) {
+        var node = fn();
+        if (node) { host.appendChild(node); }
+      }
+    }
+    if (!host.children.length) {
+      host.appendChild(el('<div class="empty"><div class="big">🧩</div>'
+        + '<div class="t">还没有选模块</div>'
+        + '<div class="muted">到 设置 → 开发者模式 → 实验性功能 里勾选要显示的模块</div></div>'));
+    }
+    // 进场动画交给统一的 viewIn（enterRise 走 RISE_SEL，模块卡片在名单里），
+    // 这里不另播一套 —— 「我的」和其他页面的进场完全一致。
+  }
+
+  /* ── 各个模块的卡片（都走 data-hwnode 自刷新，改动后不用整页重画） ── */
+
+  function modHomework() {
+    var board = AR.Store.taskBoard ? AR.Store.taskBoard(U.dateKey(new Date())) : { open: [], done: [], doneWeek: [] };
+    var openN = board.open.length, doneN = board.done.length;
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-homework');
+    card.__rebuild = modHomework;
+    card.appendChild(el('<div class="hw-head"><span class="hw-ico">✎</span>'
+      + '<span class="hw-t">作业</span>'
+      + '<span class="hw-n">' + (openN ? openN + ' 条未完成' : (doneN || board.doneWeek.length ? '已全部完成' : '还没有作业'))
+      + (doneN ? ' · 已完成 ' + doneN : '') + '</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    bodyEl.appendChild(hwListBox(board));
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  function modLongterm() {
+    return longTaskCard(false);
+  }
+
+  function modHwstats() {
+    var all = AR.Store.get().tasks || [];
+    var todayK = U.dateKey(new Date());
+    var weekAgo = U.dateKey(U.addDays(new Date(), -6));
+    var openN = 0, doneToday = 0, doneWeek = 0, doneN = 0;
+    var byCourse = {};
+    for (var i = 0; i < all.length; i++) {
+      var t = all[i];
+      var dd = AR.Store.taskDoneDay ? AR.Store.taskDoneDay(t) : '';
+      if (!t.done) { openN++; }
+      else {
+        doneN++;
+        if (dd === todayK) { doneToday++; }
+        if (dd && dd >= weekAgo) { doneWeek++; }
+      }
+      var c = AR.Store.courseById(t.courseId);
+      var name = c ? c.name : '（课程已删）';
+      byCourse[name] = byCourse[name] || { open: 0, done: 0 };
+      if (t.done) { byCourse[name].done++; } else { byCourse[name].open++; }
+    }
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-hwstats');
+    card.__rebuild = modHwstats;
+    card.appendChild(el('<div class="hw-head"><span class="hw-ico">✎</span>'
+      + '<span class="hw-t">作业统计</span><span class="hw-n">共 ' + all.length + ' 条</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    bodyEl.appendChild(el('<div class="cm-stats">'
+      + '<div class="cm-stat"><b>' + openN + '</b><span>未完成</span></div>'
+      + '<div class="cm-stat"><b>' + doneToday + '</b><span>今天完成</span></div>'
+      + '<div class="cm-stat"><b>' + doneWeek + '</b><span>本周完成</span></div>'
+      + '<div class="cm-stat"><b>' + doneN + '</b><span>累计完成</span></div></div>'));
+    var names = Object.keys(byCourse);
+    names.sort(function (a, b) { return byCourse[b].open - byCourse[a].open; });
+    for (var n = 0; n < names.length; n++) {
+      bodyEl.appendChild(el('<div class="cm-line"><span class="cm-name">' + U.escapeHtml(names[n]) + '</span>'
+        + '<span class="cm-num">未完成 ' + byCourse[names[n]].open + ' · 已完成 ' + byCourse[names[n]].done + '</span></div>'));
+    }
+    var logBtn = el('<button class="btn" type="button" style="margin-top:8px">作业记录…</button>');
+    logBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('light', logBtn);
+      if (AR.UI.openTaskLog) { AR.UI.openTaskLog(); }
+    });
+    bodyEl.appendChild(logBtn);
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  function modTodaycourses() {
+    var items = AR.Schedule.dayItems(new Date(), AR.Store.currentSemester());
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-todaycourses');
+    card.__rebuild = modTodaycourses;
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">◷</span>'
+      + '<span class="hw-t">今日课表</span>'
+      + '<span class="hw-n">' + (items.length ? items.length + ' 节' : '今天没课') + '</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    if (!items.length) {
+      bodyEl.appendChild(el('<div class="muted" style="padding:2px 4px 6px">今天没有课，好好休息。</div>'));
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        (function (it) {
+          var room = (it.location && it.location.raw) ? it.location.raw : '';
+          var row = el('<button class="cm-line" type="button">'
+            + '<span class="cm-name">' + U.escapeHtml(it.course.name)
+            + (room ? '<span class="cm-sub">' + U.escapeHtml(room) + '</span>' : '') + '</span>'
+            + '<span class="cm-num">' + U.escapeHtml(fmtRange(it)) + '</span></button>');
+          row.addEventListener('click', function () {
+            AR.Bridge.haptic('light', row);
+            openCourseModal(it);
+          });
+          bodyEl.appendChild(row);
+        })(items[i]);
+      }
+    }
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  function modNextClass() {
+    var now = new Date();
+    var ongoing = AR.Schedule.ongoingItem(now);
+    var next = AR.Schedule.nextItem(now);
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-nextclass');
+    card.__rebuild = modNextClass;
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">◔</span>'
+      + '<span class="hw-t">接下来</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    if (!ongoing && !next) {
+      bodyEl.appendChild(el('<div class="muted" style="padding:2px 4px 6px">未来两周都没有课。</div>'));
+      card.appendChild(bodyEl);
+      return card;
+    }
+    var target = ongoing
+      ? { item: ongoing, day: U.startOfDay(now), offsetDays: 0, ongoing: true }
+      : next;
+    var it = target.item;
+    var whenText = target.ongoing ? '正在进行'
+      : (target.offsetDays === 0 ? '就在今天'
+        : (target.offsetDays === 1 ? '明天' : target.offsetDays + ' 天后'));
+    var block = el('<button class="cm-line" type="button" style="flex-direction:column;align-items:stretch;gap:0">'
+      + '<span class="cm-next-top"><span class="cm-next-when">' + U.escapeHtml(whenText) + '</span>'
+      + '<span class="cm-next-time">' + U.escapeHtml(fmtRange(it)) + '</span></span>'
+      + '<span class="cm-next-name">' + U.escapeHtml(it.course.name) + '</span>'
+      + '<span class="cm-next-sub">' + U.escapeHtml(it.periodLabel || '')
+      + (it.location && it.location.raw ? ' · ' + U.escapeHtml(it.location.raw) : '')
+      + ' · ' + U.escapeHtml(relativeText(it, now, target.day) || '') + '</span></button>');
+    block.addEventListener('click', function () {
+      AR.Bridge.haptic('light', block);
+      openCourseModal(it);
+    });
+    bodyEl.appendChild(block);
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  /* ── v0.4.0 日程（统一时间线）────────────────────────────
+     单表多视图：这张卡管「浏览」，星标日程管「紧迫」，周表管「空间」。
+     筛选 chips 按用户实际用到的类型自动生成并记住。
+     星标增删不走行内按钮（防止误触）：点行进编辑表单，或长按菜单（带确认）。 */
+
+  var agendaFilter = 'all';      // 记住上次筛选
+  var agendaOpen = {};           // 分组折叠状态
+
+  /** 改星标 / 周表显示 / 归档：整条保存（saveEvent 全字段重建） */
+  function patchEvent(ev, patch) {
+    AR.Store.saveEvent({
+      id: ev.id, title: ev.title, type: ev.type, date: ev.date,
+      start: ev.start, end: ev.end, place: ev.place, note: ev.note,
+      star: patch.star != null ? patch.star : !!ev.star,
+      showOnTimetable: patch.showOnTimetable != null ? patch.showOnTimetable : !!ev.showOnTimetable,
+      archived: patch.archived != null ? patch.archived : !!ev.archived
+    });
+  }
+
+  /** 长按菜单：标星 / 取消星标（确认）/ 删除（确认）/ 编辑 —— 没有任何一键星标 */
+  function openAgendaActions(ev) {
+    var acts = [];
+    if (!ev.star) {
+      acts.push({
+        label: '★ 标为星标', kind: 'primary', onClick: function (close) {
+          patchEvent(ev, { star: true });
+          AR.Bridge.haptic('medium', $('modalCard'));
+          close(); afterEventChange();
+          toast('已标为星标：' + (ev.title || ''));
+        }
+      });
+    } else {
+      acts.push({
+        label: '取消星标', onClick: function (close) {
+          close();
+          openModal({
+            title: '取消星标？', sub: ev.title || '',
+            body: '<p class="muted">取消后它会从「星标日程」移走，日程列表里还在。</p>',
+            actions: [
+              { label: '再想想', onClick: function (c2) { c2(); } },
+              {
+                label: '确认取消星标', kind: 'danger', onClick: function (c2) {
+                  patchEvent(ev, { star: false });
+                  AR.Bridge.haptic('warn', $('modalCard'));
+                  c2(); afterEventChange();
+                  toast('已取消星标');
+                }
+              }
+            ]
+          });
+        }
+      });
+    }
+    acts.push({
+      label: ev.archived ? '取消归档' : '归档', onClick: function (close) {
+        close();
+        if (ev.archived) {
+          confirmDanger({
+            title: '取消归档？', sub: ev.title || '',
+            text: '取消后它会回到日程列表。',
+            okLabel: '找回这条日程',
+            onOk: function () { patchEvent(ev, { archived: false }); afterEventChange(); toast('已找回：' + (ev.title || '')); }
+          });
+          return;
+        }
+        confirmDanger({
+          title: '归档这条日程？', sub: ev.title || '',
+          text: '归档后会从日程和周表里隐藏，随时能在「已归档」里找回。',
+          okLabel: '确认归档',
+          onOk: function () {
+            patchEvent(ev, { archived: true });
+            AR.Bridge.haptic('medium', $('modalCard'));
+            afterEventChange();
+            toast('已归档：' + (ev.title || ''));
+          }
+        });
+      }
+    });
+    acts.push({
+      label: '删除', kind: 'danger', onClick: function (close) {
+        close();
+        // 星标日程：删除必须"按住确认"（比点一下更难误触）
+        confirmDanger({
+          title: '删除这条日程？', sub: ev.title || '',
+          text: '删了就找不回来了' + (ev.star ? '。这条是星标日程，需要按住确认。' : '。'),
+          okLabel: '确认删除',
+          hold: ev.star ? 2000 : 0,
+          onOk: function () {
+            AR.Store.removeEvent(ev.id);
+            AR.Bridge.haptic('warn', $('modalCard'));
+            afterEventChange();
+            toast('已删除');
+          }
+        });
+      }
+    });
+    acts.push({ label: '编辑', onClick: function (close) { close(); openEventForm(ev); } });
+    acts.push({ label: '关闭', onClick: function (close) { close(); } });
+    openModal({
+      title: ev.title || '日程',
+      sub: ev.date + (ev.start ? ' ' + ev.start : ''),
+      body: '<p class="muted">选一个操作。</p>',
+      actions: acts
+    });
+  }
+
+  /** 行长按（450ms）弹快捷菜单；移动/抬手取消 */
+  function bindAgendaLongPress(node, ev) {
+    var timer = null, sx = 0, sy = 0;
+    var cancel = function () { if (timer) { clearTimeout(timer); timer = null; } };
+    node.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+    node.addEventListener('pointerdown', function (e) {
+      sx = e.clientX || 0; sy = e.clientY || 0;
+      cancel();
+      timer = setTimeout(function () {
+        timer = null;
+        AR.Bridge.haptic('medium', node);
+        openAgendaActions(ev);
+      }, 450);
+    });
+    node.addEventListener('pointermove', function (e) {
+      if (timer && (Math.abs((e.clientX || 0) - sx) > 8 || Math.abs((e.clientY || 0) - sy) > 8)) { cancel(); }
+    });
+    node.addEventListener('pointerup', cancel);
+    node.addEventListener('pointercancel', cancel);
+    node.addEventListener('pointerleave', cancel);
+  }
+
+  /** 日程行（日程模块用）：色标 + 标题 + 时间地点 + 倒数 + 星标状态 + 周表开关 */
+  function agendaRow(ev, today0) {
+    var t = AR.Store.eventType(ev.type);
+    var d = U.parseDateKey(ev.date);
+    var days = d ? Math.round((U.startOfDay(d).getTime() - today0) / 86400000) : null;
+    var dayTxt = days == null ? '' : (days > 0 ? '还有 ' + days + ' 天' : (days === 0 ? '今天' : '已过 ' + (-days) + ' 天'));
+    var when = (d ? ((d.getMonth() + 1) + '/' + d.getDate()) : '') + (ev.start ? ' ' + ev.start : '');
+    var row = el('<div class="cm-line">'
+      + '<span class="cm-tag" style="background:' + U.escapeHtml(t.hex) + '">' + U.escapeHtml(t.mark || '事') + '</span>'
+      + '<span class="cm-name">' + U.escapeHtml(ev.title || '未命名')
+      + (ev.place ? '<span class="cm-sub">' + U.escapeHtml(ev.place) + '</span>' : '') + '</span>'
+      + '<span class="cm-num">' + U.escapeHtml(when)
+      + '<span class="cm-cd-day' + (days != null && days >= 0 && days <= 3 ? ' near' : '') + '">'
+      + U.escapeHtml(dayTxt) + '</span></span>'
+      + '<span class="cm-swipe-hint">归档</span>'
+      + '<button class="chip-btn cm-eye' + (ev.showOnTimetable ? ' on' : '')
+      + '" type="button" title="显示在周表">' + (ev.showOnTimetable ? '◧' : '▢') + '</button></div>');
+    row.addEventListener('click', function () {
+      if (row.__swiped) { return; }     // 刚划过：不当作点击
+      AR.Bridge.haptic('light', row);
+      openEventForm(ev);
+    });
+    row.querySelector('.cm-eye').addEventListener('click', function (e2) {
+      e2.stopPropagation();
+      patchEvent(ev, { showOnTimetable: !ev.showOnTimetable });
+      AR.Bridge.haptic('light', row);
+      afterEventChange();
+      toast(ev.showOnTimetable ? '已从周表隐藏' : '已显示在周表');
+    });
+    bindAgendaLongPress(row, ev);
+    /**
+     * 普通日程：左右滑动 = 归档。
+     * 阻尼比作业那边明显大（跟手 0.78、橡皮筋 0.18、阈值 92px），
+     * 而且划到位先滑回原位、再弹确认 —— 不会一划就归档。
+     */
+    bindSwipeRow(row, {
+      max: 150, follow: 0.78, rubber: 0.18, threshold: 92,
+      onCommit: function () {
+        confirmDanger({
+          title: '归档这条日程？', sub: ev.title || '',
+          text: '归档后会从日程和周表里隐藏，随时能在「已归档」里找回。',
+          okLabel: '确认归档',
+          onOk: function () {
+            patchEvent(ev, { archived: true });
+            AR.Bridge.haptic('medium', $('modalCard'));
+            afterEventChange();
+            toast('已归档：' + (ev.title || ''));
+          }
+        });
+      }
+    });
+    return row;
+  }
+
+  /**
+   * 日程（v0.4.0 合并版）：星标日程 + 时间线 + 已归档，全在这一张卡里。
+   *   · 星标段置顶（日期+时间+倒数大字）—— 不绑滑动手势，归档/删除走编辑页或长按菜单
+   *   · 时间线段只放**非星标**条目（同一事实不在两段里重复），左右滑动 = 归档（带确认）
+   *   · 已归档段折叠在底部，可找回 / 删除
+   *   · 筛选 chips 按用户实际用到的类型生成，作用于整卡
+   */
+  function modEvents() {
+    var now = new Date();
+    var todayK = U.dateKey(now);
+    var today0 = U.startOfDay(now).getTime();
+    var all = AR.Store.eventsBetween
+      ? AR.Store.eventsBetween(U.dateKey(U.addDays(now, -30)), U.dateKey(U.addDays(now, 365))) : [];
+    var archivedAll = AR.Store.archivedEvents ? AR.Store.archivedEvents() : [];
+    // 筛选 chips 按「用到的类型」自动生成（归档里的也算，找得回来）
+    var usedTypes = {}, typed = false;
+    var forChips = all.concat(archivedAll);
+    for (var u = 0; u < forChips.length; u++) {
+      if (forChips[u].type && forChips[u].type !== 'other') { usedTypes[forChips[u].type] = true; typed = true; }
+    }
+    if (agendaFilter !== 'all' && !usedTypes[agendaFilter]) { agendaFilter = 'all'; }
+    var match = function (e) { return agendaFilter === 'all' || e.type === agendaFilter; };
+    var list = [], starred = [], plains = [];
+    for (var f = 0; f < all.length; f++) {
+      if (!match(all[f])) { continue; }
+      list.push(all[f]);
+      if (all[f].star) { starred.push(all[f]); } else { plains.push(all[f]); }
+    }
+    var archList = [];
+    for (var ar = 0; ar < archivedAll.length; ar++) {
+      if (match(archivedAll[ar])) { archList.push(archivedAll[ar]); }
+    }
+    // 时间线分组：今天 / 本周 / 下周 / 本月 / N 月 / 已过
+    var weekThis = U.dateKey(U.addDays(U.mondayOf(now), 6));
+    var weekNext = U.dateKey(U.addDays(U.mondayOf(now), 13));
+    var monthEnd = U.dateKey(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+    var gToday = [], gWeek = [], gNext = [], gMonth = [], gPast = [];
+    var gFar = {};
+    for (var i = 0; i < plains.length; i++) {
+      var ev = plains[i];
+      if (ev.date < todayK) { gPast.push(ev); continue; }
+      if (ev.date === todayK) { gToday.push(ev); continue; }
+      if (ev.date <= weekThis) { gWeek.push(ev); continue; }
+      if (ev.date <= weekNext) { gNext.push(ev); continue; }
+      if (ev.date <= monthEnd) { gMonth.push(ev); continue; }
+      var dd = U.parseDateKey(ev.date);
+      var gk = dd ? (dd.getFullYear() + '-' + dd.getMonth()) : 'far';
+      if (!gFar[gk]) {
+        gFar[gk] = {
+          t: dd ? ((dd.getFullYear() !== now.getFullYear() ? dd.getFullYear() + ' 年 ' : '') + (dd.getMonth() + 1) + ' 月') : '更远',
+          items: []
+        };
+      }
+      gFar[gk].items.push(ev);
+    }
+    var groups = [];
+    if (gToday.length) { groups.push({ t: '今天', items: gToday, open: true }); }
+    if (gWeek.length) { groups.push({ t: '本周', items: gWeek, open: true }); }
+    if (gNext.length) { groups.push({ t: '下周', items: gNext, open: false }); }
+    if (gMonth.length) { groups.push({ t: '本月', items: gMonth, open: false }); }
+    var farKeys = Object.keys(gFar).sort();
+    for (var fk = 0; fk < farKeys.length; fk++) {
+      gFar[farKeys[fk]].open = false;
+      groups.push(gFar[farKeys[fk]]);
+    }
+    if (gPast.length) { groups.push({ t: '已过', items: gPast, open: false }); }
+
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-events');
+    card.__rebuild = modEvents;
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">📅</span>'
+      + '<span class="hw-t">日程</span>'
+      + '<span class="hw-n">本周 ' + (gToday.length + gWeek.length + starred.length)
+      + ' · 共 ' + list.length + (starred.length ? ' · ★' + starred.length : '') + '</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+
+    var addBtn = el('<button class="chip-btn" type="button" style="margin:2px 2px 8px">＋ 添加日程</button>');
+    addBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('light', addBtn);
+      openEventForm({ date: todayK, star: false, showOn: false });
+    });
+    bodyEl.appendChild(addBtn);
+
+    if (typed) {
+      var chips = el('<div class="cm-filters"></div>');
+      var mkChip = function (key, label) {
+        var on = agendaFilter === key;
+        var b = el('<button class="chip-btn' + (on ? ' active' : '') + '" type="button">' + U.escapeHtml(label) + '</button>');
+        b.addEventListener('click', function () {
+          agendaFilter = key;
+          AR.Bridge.haptic('light', b);
+          refreshHomework();
+        });
+        chips.appendChild(b);
+      };
+      mkChip('all', '全部');
+      var tList = AR.Store.typeList ? AR.Store.typeList() : [];
+      for (var ti = 0; ti < tList.length; ti++) {
+        if (usedTypes[tList[ti].key]) { mkChip(tList[ti].key, tList[ti].label); }
+      }
+      bodyEl.appendChild(chips);
+    }
+
+    var groupHead = function (title, n, key, dfltOpen) {
+      var isOpen = agendaOpen[key] != null ? agendaOpen[key] : dfltOpen;
+      var head = el('<button class="cm-group-head" type="button"><span class="cm-group-arrow">'
+        + (isOpen ? '▾' : '▸') + '</span>' + U.escapeHtml(title)
+        + '<span class="muted"> · ' + n + ' 项</span></button>');
+      head.addEventListener('click', function () {
+        agendaOpen[key] = !isOpen;
+        AR.Bridge.haptic('light', head);
+        refreshHomework();
+      });
+      return { head: head, wrap: el('<div class="cm-group"' + (isOpen ? '' : ' hidden') + '></div>') };
+    };
+
+    if (!list.length && !archList.length) {
+      bodyEl.appendChild(el('<div class="muted" style="padding:2px 4px 6px">'
+        + (agendaFilter === 'all'
+          ? '还没有日程。点上面「＋ 添加日程」记一个考试或小目标。'
+          : '这个筛选下没有日程。') + '</div>'));
+    }
+
+    // ① 星标段置顶
+    if (starred.length) {
+      var sg = groupHead('★ 星标日程', starred.length, '★star', true);
+      for (var si = 0; si < starred.length; si++) { sg.wrap.appendChild(starRow(starred[si], today0)); }
+      bodyEl.appendChild(sg.head);
+      bodyEl.appendChild(sg.wrap);
+    }
+
+    // ② 时间线段（非星标）
+    for (var g = 0; g < groups.length; g++) {
+      (function (grp) {
+        var gg = groupHead(grp.t, grp.items.length, grp.t, grp.open);
+        for (var r = 0; r < grp.items.length; r++) { gg.wrap.appendChild(agendaRow(grp.items[r], today0)); }
+        bodyEl.appendChild(gg.head);
+        bodyEl.appendChild(gg.wrap);
+      })(groups[g]);
+    }
+
+    // ③ 已归档（默认收起）
+    if (archList.length) {
+      var ag = groupHead('已归档', archList.length, 'archived', false);
+      for (var ai = 0; ai < archList.length; ai++) { ag.wrap.appendChild(archivedRow(archList[ai])); }
+      bodyEl.appendChild(ag.head);
+      bodyEl.appendChild(ag.wrap);
+    }
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  /** 已归档行：标题 + 日期 + 找回 / 删除（都带确认；星标删除要长按） */
+  function archivedRow(ev) {
+    var d = U.parseDateKey(ev.date);
+    var dt = (d ? ((d.getMonth() + 1) + '/' + d.getDate()) : ev.date) + (ev.start ? ' ' + ev.start : '');
+    var row = el('<div class="cm-line">'
+      + '<span class="cm-name">' + U.escapeHtml(ev.title || '未命名')
+      + '<span class="cm-sub">' + U.escapeHtml(dt) + (ev.star ? ' · ★' : '') + '</span></span>'
+      + '<button class="chip-btn cm-arch-back" type="button">找回</button>'
+      + '<button class="lt-del" type="button" title="删除">✕</button></div>');
+    row.querySelector('.cm-arch-back').addEventListener('click', function () {
+      patchEvent(ev, { archived: false });
+      AR.Bridge.haptic('medium', row);
+      afterEventChange();
+      toast('已找回：' + (ev.title || ''));
+    });
+    row.querySelector('.lt-del').addEventListener('click', function () {
+      confirmDanger({
+        title: '删除这条日程？', sub: ev.title || '',
+        text: '删了就找不回来了' + (ev.star ? '。这条是星标日程，需要按住确认。' : '。'),
+        okLabel: '确认删除',
+        hold: ev.star ? 2000 : 0,
+        onOk: function () {
+          AR.Store.removeEvent(ev.id);
+          AR.Bridge.haptic('warn', $('modalCard'));
+          afterEventChange();
+          toast('已删除');
+        }
+      });
+    });
+    return row;
+  }
+
+  /** 星标行：标题 + 日期时间 + 倒数大字（3 天内红、今天金）；不绑滑动手势 */
+  function starRow(ev, today0) {
+    var d = U.parseDateKey(ev.date);
+    var days = d ? Math.round((U.startOfDay(d).getTime() - today0) / 86400000) : null;
+    var dayTxt = days == null ? '' : (days > 0 ? '还有 ' + days + ' 天' : (days === 0 ? '就是今天' : '已过 ' + (-days) + ' 天'));
+    var dt = (d ? ((d.getMonth() + 1) + '/' + d.getDate()) : ev.date) + (ev.start ? ' ' + ev.start : '');
+    var cls = (days != null && days >= 0 && days <= 3) ? ' near' : (days === 0 ? ' today' : (days != null && days < 0 ? ' past' : ''));
+    var row = el('<div class="cm-line">'
+      + '<span class="cm-name">' + U.escapeHtml(ev.title || '未命名')
+      + '<span class="cm-sub">' + U.escapeHtml(dt) + (ev.place ? ' · ' + U.escapeHtml(ev.place) : '') + '</span></span>'
+      + '<span class="cm-star-day' + cls + '">' + U.escapeHtml(dayTxt) + '</span></div>');
+    row.addEventListener('click', function () {
+      AR.Bridge.haptic('light', row);
+      openEventForm(ev);
+    });
+    bindAgendaLongPress(row, ev);
+    return row;
+  }
+
+  function modSemester() {
+    var sem = AR.Store.currentSemester();
+    var total = (sem && sem.weekCount) || 20;
+    var weekNo = AR.Schedule.weekNumber(new Date());
+    var rate = Math.max(0, Math.min(1, weekNo / total));
+    // 本周节数：一周 7 天各查一次（以前把学期对象当 weekday 传给 weekItems，
+    // 算出来的永远是 0 —— 「学期进度显示不对」就是这个）。
+    var weekN = 0;
+    var safeWeek = Math.max(1, Math.min(weekNo, total));
+    for (var w = 1; w <= 7; w++) {
+      try { weekN += (AR.Schedule.weekItems(safeWeek, w) || []).length; } catch (e) { }
+    }
+    var mid = weekNo < 1 ? '还没开学' : (weekNo > total ? '学期已结束' : '本周 ' + weekN + ' 节课');
+    var big = weekNo < 1 ? 0 : (weekNo > total ? total : weekNo);
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-semester');
+    card.__rebuild = modSemester;
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">◔</span>'
+      + '<span class="hw-t">学期进度</span>'
+      + '<span class="hw-n">' + U.escapeHtml((sem && sem.name) || '') + '</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    bodyEl.appendChild(el('<div class="cm-semester">'
+      + '<div class="cm-semester-val"><b>' + big + '</b>'
+      + '<span class="muted"> / ' + total + ' 周 · ' + U.escapeHtml(mid) + '</span></div>'
+      + '<div class="lt-bar big"><i style="width:' + Math.round(rate * 100) + '%"></i></div>'
+      + '</div>'));
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  /* ── v0.3.8b 新增模块：本周课表 / 日历 / 空闲 / 倒计时 / 待办速记 ── */
+
+  /** 本周课表：周一到周日 7 列迷你格子，点小块进课程编辑器 */
+  function modWeekgrid() {
+    var weekNo = AR.Schedule.weekNumber(new Date());
+    var todayWd = U.weekdayOf(new Date());
+    var colData = [], total = 0;
+    for (var w = 1; w <= 7; w++) {
+      var items = [];
+      try { items = AR.Schedule.weekItems(weekNo, w) || []; } catch (e) { }
+      colData.push(items);
+      total += items.length;
+    }
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-weekgrid');
+    card.__rebuild = modWeekgrid;
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">▤</span>'
+      + '<span class="hw-t">本周课表</span>'
+      + '<span class="hw-n">第 ' + weekNo + ' 周 · ' + total + ' 节</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    if (!total) {
+      bodyEl.appendChild(el('<div class="muted" style="padding:2px 4px 6px">这周没有课。</div>'));
+      card.appendChild(bodyEl);
+      return card;
+    }
+    var grid = el('<div class="cm-week"></div>');
+    var monday = U.mondayOf(new Date());
+    for (var w2 = 1; w2 <= 7; w2++) {
+      (function (wd, items) {
+        var dd = U.addDays(monday, wd - 1);
+        var col = el('<div class="cm-wcol' + (wd === todayWd ? ' today' : '') + '">'
+          + '<div class="cm-wday">' + U.WEEKDAY_NAMES[wd] + ' ' + dd.getDate() + '</div></div>');
+        if (!items.length) {
+          col.appendChild(el('<div class="cm-wfree">没课</div>'));
+        } else {
+          for (var i = 0; i < items.length; i++) {
+            (function (it) {
+              var chip = el('<button class="cm-wchip" type="button" title="'
+                + U.escapeHtml((it.course && it.course.name || '') + ' ' + fmtRange(it)) + '">'
+                + '<b>' + U.escapeHtml(it.course && it.course.name || '') + '</b>'
+                + '<span>' + U.escapeHtml(it.start || fmtRange(it)) + '</span></button>');
+              chip.addEventListener('click', function () {
+                AR.Bridge.haptic('light', chip);
+                openCourseModal(it);
+              });
+              col.appendChild(chip);
+            })(items[i]);
+          }
+        }
+        grid.appendChild(col);
+      })(w2, colData[w2 - 1]);
+    }
+    bodyEl.appendChild(grid);
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  /** 日历模块（v0.3.9 增强）：可翻月、「今天」快捷跳回；
+   *  点一天看那天的课（可点进编辑器）和事件，事件按类型着色点。 */
+  var calView = { y: 0, m: 0, sel: '' };
+  function modCalendar() {
+    var now = new Date();
+    if (!calView.y) { calView.y = now.getFullYear(); calView.m = now.getMonth(); calView.sel = U.dateKey(now); }
+    var year = calView.y, month = calView.m;
+    var todayK = U.dateKey(now);
+    var daysInMonth = new Date(year, month + 1, 0).getDate();
+    var lead = (new Date(year, month, 1).getDay() + 6) % 7;   // 周一开头
+    var evs = AR.Store.eventsBetween
+      ? AR.Store.eventsBetween(U.dateKey(new Date(year, month, 1)), U.dateKey(new Date(year, month, daysInMonth))) : [];
+    var evByDay = {};
+    for (var i = 0; i < evs.length; i++) {
+      var dk = evs[i].date;
+      if (!evByDay[dk]) { evByDay[dk] = []; }
+      evByDay[dk].push(evs[i]);
+    }
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-calendar');
+    card.__rebuild = modCalendar;
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">▦</span>'
+      + '<span class="hw-t">日历</span>'
+      + '<span class="hw-n">' + year + ' 年 ' + (month + 1) + ' 月 · ' + evs.length + ' 个事件</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+
+    // —— 翻月 + 回今天 ——
+    var nav = el('<div class="cm-cal-nav"></div>');
+    var prevB = el('<button class="chip-btn" type="button" title="上个月">‹</button>');
+    var nextB = el('<button class="chip-btn" type="button" title="下个月">›</button>');
+    var todayB = el('<button class="chip-btn" type="button">回到今天</button>');
+    prevB.addEventListener('click', function () {
+      calView.m--;
+      if (calView.m < 0) { calView.m = 11; calView.y--; }
+      calView.sel = U.dateKey(new Date(calView.y, calView.m, 1));
+      AR.Bridge.haptic('light', prevB);
+      refreshHomework();
+    });
+    nextB.addEventListener('click', function () {
+      calView.m++;
+      if (calView.m > 11) { calView.m = 0; calView.y++; }
+      calView.sel = U.dateKey(new Date(calView.y, calView.m, 1));
+      AR.Bridge.haptic('light', nextB);
+      refreshHomework();
+    });
+    todayB.addEventListener('click', function () {
+      calView.y = now.getFullYear();
+      calView.m = now.getMonth();
+      calView.sel = todayK;
+      AR.Bridge.haptic('light', todayB);
+      refreshHomework();
+    });
+    nav.appendChild(prevB);
+    nav.appendChild(el('<span class="cm-cal-label">' + year + ' 年 ' + (month + 1) + ' 月</span>'));
+    nav.appendChild(nextB);
+    nav.appendChild(todayB);
+    bodyEl.appendChild(nav);
+
+    // —— 月历格子 ——
+    var grid = el('<div class="cm-cal"></div>');
+    var names = ['一', '二', '三', '四', '五', '六', '日'];
+    for (var n = 0; n < 7; n++) { grid.appendChild(el('<div class="cm-cal-wd">' + names[n] + '</div>')); }
+    for (var L = 0; L < lead; L++) { grid.appendChild(el('<div class="cm-cal-cell empty"></div>')); }
+    for (var d = 1; d <= daysInMonth; d++) {
+      (function (day) {
+        var key = year + '-' + U.pad2(month + 1) + '-' + U.pad2(day);
+        var dayEvs = evByDay[key] || [];
+        var dots = '';
+        for (var e2 = 0; e2 < Math.min(dayEvs.length, 3); e2++) {
+          var t2 = AR.Store.eventType(dayEvs[e2].type);
+          dots += '<i style="background:' + U.escapeHtml(t2.hex) + '"></i>';
+        }
+        var cell = el('<button class="cm-cal-cell' + (key === todayK ? ' today' : '')
+          + (key === calView.sel ? ' sel' : '') + '" type="button">'
+          + '<span>' + day + '</span><span class="cm-cal-dots">' + dots + '</span></button>');
+        cell.addEventListener('click', function () {
+          AR.Bridge.haptic('light', cell);
+          calView.sel = key;
+          refreshHomework();
+        });
+        grid.appendChild(cell);
+      })(d);
+    }
+    bodyEl.appendChild(grid);
+
+    // —— 选中那天：课（可点进编辑器）+ 事件 ——
+    var selD = U.parseDateKey(calView.sel) || now;
+    var items = AR.Schedule.dayItems(selD, AR.Store.currentSemester()) || [];
+    var selEvs = evByDay[calView.sel] || [];
+    var detail = el('<div class="cm-cal-detail"></div>');
+    detail.appendChild(el('<div class="cm-cal-daytitle"><b>'
+      + (selD.getMonth() + 1) + ' 月 ' + selD.getDate() + ' 日 · ' + U.WEEKDAY_NAMES[U.weekdayOf(selD)]
+      + '</b><span class="muted"> · ' + (items.length ? items.length + ' 节课' : '没课')
+      + (selEvs.length ? ' · ' + selEvs.length + ' 个事件' : '') + '</span></div>'));
+    if (!items.length && !selEvs.length) {
+      detail.appendChild(el('<div class="muted" style="padding:2px 4px 4px">这天没有安排。</div>'));
+    }
+    for (var ci = 0; ci < items.length; ci++) {
+      (function (it) {
+        var room = (it.location && it.location.raw) ? it.location.raw : '';
+        var row = el('<button class="cm-line" type="button">'
+          + '<span class="cm-name">' + U.escapeHtml(it.course && it.course.name || '')
+          + (room ? '<span class="cm-sub">' + U.escapeHtml(room) + '</span>' : '') + '</span>'
+          + '<span class="cm-num">' + U.escapeHtml(fmtRange(it)) + '</span></button>');
+        row.addEventListener('click', function () {
+          AR.Bridge.haptic('light', row);
+          openCourseModal(it);
+        });
+        detail.appendChild(row);
+      })(items[ci]);
+    }
+    for (var ei = 0; ei < selEvs.length; ei++) {
+      (function (ev) {
+        var t = AR.Store.eventType(ev.type);
+        var when = (ev.start ? ev.start + (ev.end ? '–' + ev.end : '') : '');
+        detail.appendChild(el('<div class="cm-line">'
+          + '<span class="cm-tag" style="background:' + U.escapeHtml(t.hex) + '">' + U.escapeHtml(t.label) + '</span>'
+          + '<span class="cm-name">' + U.escapeHtml(ev.title || '未命名')
+          + (ev.place ? '<span class="cm-sub">' + U.escapeHtml(ev.place) + '</span>' : '') + '</span>'
+          + '<span class="cm-num">' + U.escapeHtml(when) + '</span></div>'));
+      })(selEvs[ei]);
+    }
+    bodyEl.appendChild(detail);
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  /** 今天没课时段：课与课之间的空档（≥10 分钟才列），方便插自习 */
+  function modFreetime() {
+    var items = AR.Schedule.dayItems(new Date(), AR.Store.currentSemester()) || [];
+    var timed = [];
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].startMin != null && items[i].endMin != null) { timed.push(items[i]); }
+    }
+    timed.sort(function (a, b) { return a.startMin - b.startMin; });
+    var gaps = [];
+    for (var g = 1; g < timed.length; g++) {
+      var from = timed[g - 1].endMin, to = timed[g].startMin;
+      if (to - from >= 10) { gaps.push({ from: from, to: to, mins: to - from }); }
+    }
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-freetime');
+    card.__rebuild = modFreetime;
+    var totalMin = 0;
+    for (var m = 0; m < gaps.length; m++) { totalMin += gaps[m].mins; }
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">◷</span>'
+      + '<span class="hw-t">没课时段</span>'
+      + '<span class="hw-n">' + (gaps.length
+        ? gaps.length + ' 段 · 共 ' + (Math.round(totalMin / 6) / 10) + ' 小时'
+        : (timed.length ? '课间没有像样的空档' : '今天整天没课')) + '</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    if (!timed.length) {
+      bodyEl.appendChild(el('<div class="muted" style="padding:2px 4px 6px">今天一节课都没有，整天都是你的。</div>'));
+    } else if (!gaps.length) {
+      bodyEl.appendChild(el('<div class="muted" style="padding:2px 4px 6px">课排得比较满，课间不足 10 分钟就不列了。</div>'));
+    } else {
+      var hhmm = function (min) { return U.pad2(Math.floor(min / 60)) + ':' + U.pad2(min % 60); };
+      for (var gi = 0; gi < gaps.length; gi++) {
+        var gp = gaps[gi];
+        bodyEl.appendChild(el('<div class="cm-line"><span class="cm-name">' + hhmm(gp.from) + ' – ' + hhmm(gp.to)
+          + '<span class="cm-sub">空闲 ' + (gp.mins >= 60
+            ? (Math.floor(gp.mins / 60) + ' 小时' + (gp.mins % 60 ? ' ' + (gp.mins % 60) + ' 分' : ''))
+            : gp.mins + ' 分钟') + '</span></span></div>'));
+      }
+    }
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  /** 待办速记：state.quickTodos = [{ id, text, done, at }] */
+  function todoList() {
+    var st = AR.Store.get();
+    return st.quickTodos || (st.quickTodos = []);
+  }
+
+  function modTodo() {
+    var list = todoList();
+    var openN = 0;
+    for (var c = 0; c < list.length; c++) { if (!list[c].done) { openN++; } }
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'mod-todo');
+    card.__rebuild = modTodo;
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">☑</span>'
+      + '<span class="hw-t">待办速记</span>'
+      + '<span class="hw-n">' + (list.length ? openN + ' 条没做 / 共 ' + list.length : '空的') + '</span></div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    var inputRow = el('<div class="cm-todo-add">'
+      + '<input class="input" id="qtText" placeholder="随手记一条…">'
+      + '<button class="chip-btn" id="qtAdd" type="button">＋</button></div>');
+    bodyEl.appendChild(inputRow);
+    var doAdd = function () {
+      var input = inputRow.querySelector('#qtText');
+      var txt = (input.value || '').trim();
+      if (!txt) { toast('先写点什么'); return; }
+      todoList().push({ id: U.uid(), text: txt, done: false, at: new Date().toISOString() });
+      AR.Store.save(true);
+      AR.Bridge.haptic('light', inputRow);
+      toast('已记下：' + txt);
+      refreshHomework();
+    };
+    inputRow.querySelector('#qtAdd').addEventListener('click', doAdd);
+    inputRow.querySelector('#qtText').addEventListener('keydown', function (ev) {
+      if (ev.key === 'Enter') { ev.preventDefault(); doAdd(); }
+    });
+    for (var i = 0; i < list.length; i++) {
+      (function (t) {
+        var row = el('<div class="cm-todo-row' + (t.done ? ' done' : '') + '">'
+          + '<button class="cm-todo-check" type="button" aria-label="切换完成">✓</button>'
+          + '<span class="cm-todo-text">' + U.escapeHtml(t.text) + '</span>'
+          + '<button class="lt-del" type="button" title="删掉">✕</button></div>');
+        row.querySelector('.cm-todo-check').addEventListener('click', function () {
+          t.done = !t.done;
+          AR.Store.save(true);
+          AR.Bridge.haptic('light', row);
+          refreshHomework();
+        });
+        row.querySelector('.lt-del').addEventListener('click', function () {
+          // v0.4.0：删速记也要二次确认
+          confirmDanger({
+            title: '删除这条速记？', sub: t.text || '',
+            text: '删了就找不回来了。',
+            okLabel: '确认删除',
+            onOk: function () {
+              var arr = todoList();
+              for (var k = 0; k < arr.length; k++) {
+                if (arr[k].id === t.id) { arr.splice(k, 1); break; }
+              }
+              AR.Store.save(true);
+              AR.Bridge.haptic('warn', $('modalCard'));
+              refreshHomework();
+            }
+          });
+        });
+        bodyEl.appendChild(row);
+      })(list[i]);
+    }
+    if (!list.length) {
+      bodyEl.appendChild(el('<div class="muted" style="padding:2px 4px 6px">随手记点小事，点左边圆圈勾掉。</div>'));
+    }
+    var hasDone = false;
+    for (var h = 0; h < list.length; h++) { if (list[h].done) { hasDone = true; break; } }
+    if (hasDone) {
+      var clearBtn = el('<button class="btn" type="button" style="margin-top:8px">清掉已完成</button>');
+      clearBtn.addEventListener('click', function () {
+        var arr = todoList();
+        for (var k = arr.length - 1; k >= 0; k--) { if (arr[k].done) { arr.splice(k, 1); } }
+        AR.Store.save(true);
+        AR.Bridge.haptic('light', clearBtn);
+        toast('已清掉做完的');
+        refreshHomework();
+      });
+      bodyEl.appendChild(clearBtn);
+    }
+    card.appendChild(bodyEl);
+    return card;
+  }
+
+  var CUSTOM_MODULE_BUILDERS = {
+    homework: modHomework,
+    longterm: modLongterm,
+    hwstats: modHwstats,
+    todaycourses: modTodaycourses,
+    nextclass: modNextClass,
+    events: modEvents,
+    semester: modSemester,
+    weekgrid: modWeekgrid,
+    calendar: modCalendar,
+    freetime: modFreetime,
+    todo: modTodo
+  };
 
   /* ── 今日页 ───────────────────────────────────────────────── */
 
@@ -1124,15 +2111,12 @@ var AR = window.AR || (window.AR = {});
     }
 
     /**
-     * 今日日程最下面这一条：作业汇总（点开就地展开成条目列表）。
-     * 内容来自「本次备注」里识别出来的条目：今天课上的 + 之前没划掉的，
-     * 今天划掉的进「已完成」，更早划掉的自动隐藏（仍可找回）。
-     */
-    /**
-     * 作业卡片出现的条件：作业功能开着，**或者**有长期任务要显示。
-     * （长期任务是独立的一张表，不该因为关掉"作业识别"就连它一起消失。）
+     * 今日日程最下面：作业卡片 + 长期任务卡片（v0.3.8b 起各是各的卡片，
+     * 长期任务不再折进作业卡里）。作业内容来自「本次备注」里识别出来的条目：
+     * 今天课上的 + 之前没划掉的，今天划掉的进「已完成」，更早划掉的自动隐藏（仍可找回）。
      */
     if (hwZoneVisible()) { body.appendChild(homeworkNode('today')); }
+    if (ltZoneVisible()) { body.appendChild(longTaskCard(true)); }
 
     /* 左侧：本周概览 */
     renderWeekRail(weekNo, sem, ex === 'week', weekCompact);
@@ -1369,42 +2353,9 @@ var AR = window.AR || (window.AR = {});
     return node;
   }
 
-  /** 事件详情：可以加入系统日历 / 删除 */
+  /** v0.4.0：点日程（今日页 / 周表 / 模块）统一进编辑表单 */
   function openEventModal(ev) {
-    var t = AR.Store.eventType(ev.type);
-    var body = '<div class="detail-grid">'
-      + '<div class="detail-key">类型</div><div class="detail-val">' + t.label + '</div>'
-      + '<div class="detail-key">日期</div><div class="detail-val">' + U.escapeHtml(ev.date) + '</div>'
-      + (ev.start ? '<div class="detail-key">时间</div><div class="detail-val">' + U.escapeHtml(ev.start)
-          + (ev.end ? ' – ' + U.escapeHtml(ev.end) : '') + '</div>' : '')
-      + (ev.place ? '<div class="detail-key">地点</div><div class="detail-val">' + U.escapeHtml(ev.place) + '</div>' : '')
-      + (ev.note ? '<div class="detail-key">备注</div><div class="detail-val">' + U.escapeHtml(ev.note) + '</div>' : '')
-      + '</div>';
-    openModal({
-      title: ev.title, sub: '特殊事件 · ' + t.label, body: body,
-      actions: [
-        {
-          label: '加入系统日历',
-          onClick: function () {
-            var day = U.parseDateKey(ev.date) || new Date();
-            var startMs = toMs(day, ev.start) || (day.getTime() + 9 * 3600000);
-            var endMs = toMs(day, ev.end) || (startMs + 90 * 60000);
-            AR.Bridge.addCalendarEvent(ev.title, ev.place || '', t.label + (ev.note ? ' · ' + ev.note : ''), startMs, endMs);
-          }
-        },
-        {
-          label: '删除事件', kind: 'danger',
-          onClick: function (close) {
-            AR.Store.removeEvent(ev.id);
-            close();
-            renderToday();
-            if (currentView === 'week') { renderWeek(); }
-            toast('已删除事件');
-          }
-        },
-        { label: '关闭', kind: 'primary', onClick: function (close) { close(); } }
-      ]
-    });
+    openEventForm(ev);
   }
 
   /** 展开的「本周概览」里，把这一周的考试/讲座列出来（可点开详情） */
@@ -1813,8 +2764,9 @@ var AR = window.AR || (window.AR = {});
         return;
       }
       body.appendChild(el('<div class="empty"><div class="big">🌤</div><div class="t">最近没有安排</div><div class="muted">未来两周都没有课</div></div>'));
-      // 没有下一节课时，作业条目照样要出现在这张卡片里
+      // 没有下一节课时，作业 / 长期任务照样要出现在这张卡片里
       if (hwZoneVisible()) { body.appendChild(homeworkNode('next')); }
+      if (ltZoneVisible()) { body.appendChild(longTaskCard(true)); }
       return;
     }
     var item = target.item;
@@ -1933,6 +2885,9 @@ var AR = window.AR || (window.AR = {});
      */
     if (hwZoneVisible() && hwVisibleInNext()) {
       body.appendChild(homeworkNode('next'));
+    }
+    if (ltZoneVisible() && hwVisibleInNext()) {
+      body.appendChild(longTaskCard(true));
     }
   }
 
@@ -2522,6 +3477,21 @@ var AR = window.AR || (window.AR = {});
       }
     }
     if (!maxUsed) { maxUsed = Math.min(periods.length || 8, mini ? 5 : 8); }
+    // v0.4.0：「显示在周表」的日程块也占行 —— 第 12 节的晚考试要能画在表上
+    var evScan = AR.Store.eventsInWeek ? AR.Store.eventsInWeek(weekNo, sem) : [];
+    for (var me = 0; me < evScan.length; me++) {
+      if (!evScan[me].showOnTimetable || !evScan[me].start) { continue; }
+      var meS = U.hmToMinutes(evScan[me].start);
+      var meE = U.hmToMinutes(evScan[me].end || evScan[me].start);
+      if (!isFinite(meS)) { continue; }
+      if (!isFinite(meE) || meE <= meS) { meE = meS + 1; }
+      for (var mi2 = 1; mi2 <= (periods.length || 0); mi2++) {
+        var per3 = byIndex[mi2];
+        if (!per3 || !per3.start || !per3.end) { continue; }
+        var s3m = U.hmToMinutes(per3.start), e3m = U.hmToMinutes(per3.end);
+        if (isFinite(s3m) && isFinite(e3m) && meE > s3m && meS < e3m && mi2 > maxUsed) { maxUsed = mi2; }
+      }
+    }
     /**
      * 行数 = 这一周实际用到的最大节次，**不封顶**。
      * 以前缩略图写死最多 6 行，第 7 节以后的课（晚课）在缩略图里根本看不见；
@@ -2531,8 +3501,62 @@ var AR = window.AR || (window.AR = {});
     var rows = Math.max(maxUsed, 1);
 
     // 特殊事件（考试 / 讲座 / 活动）：在日期下面单独占一行，用专属颜色显示
+    // v0.4.0：只画「显示在周表」的日程。有时间的画进课表格子（落在对应时间），
+    // 没时间的没法落格子，留在顶部事件条兜底；开关在日程表单 / 行内都能改。
     var weekEvents = AR.Store.eventsInWeek ? AR.Store.eventsInWeek(weekNo, sem) : [];
-    var evRow = weekEvents.length ? 1 : 0;
+    var showEv = [];
+    for (var wi = 0; wi < weekEvents.length; wi++) {
+      if (weekEvents[wi].showOnTimetable) { showEv.push(weekEvents[wi]); }
+    }
+    weekEvents = showEv;
+    /**
+     * 日程块预排（v0.4.0）：有时间的落「对应时间」格子；课程优先占位，
+     * 日程找时段内第一段空闲行；整段被课程占满 / 时间不落节次的，
+     * 退回顶部事件条兜底 —— 「显示在周表」的条目永远不会凭空消失。
+     */
+    var taken = {};
+    for (var pd = 0; pd < dayNums.length; pd++) {
+      var dday = dayNums[pd];
+      var dlist = dayItems[dday - 1] || [];
+      for (var pk = 0; pk < dlist.length; pk++) {
+        var ps0 = itemStartPeriod(dlist[pk]), pe0 = itemEndPeriod(dlist[pk]);
+        for (var pr0 = ps0; pr0 <= pe0; pr0++) { taken[(pr0 - 1) + '_' + dday] = true; }
+      }
+    }
+    var evPlacements = [], stripOnly = [];
+    for (var wj = 0; wj < weekEvents.length; wj++) {
+      (function (evb) {
+        if (!evb.start) { stripOnly.push(evb); return; }
+        var wd2 = U.weekdayOf(U.parseDateKey(evb.date));
+        if (dayNums.indexOf(wd2) < 0) { return; }
+        var evS = U.hmToMinutes(evb.start);
+        var evE = U.hmToMinutes(evb.end || evb.start);
+        if (!isFinite(evS)) { stripOnly.push(evb); return; }
+        if (!isFinite(evE) || evE <= evS) { evE = evS + 1; }
+        var p1 = null, p2 = null;
+        for (var pi2 = 1; pi2 <= rows; pi2++) {
+          var per2 = byIndex[pi2];
+          if (!per2 || !per2.start || !per2.end) { continue; }
+          var sMin = U.hmToMinutes(per2.start), eMin = U.hmToMinutes(per2.end);
+          if (!isFinite(sMin) || !isFinite(eMin)) { continue; }
+          if (evE > sMin && evS < eMin) {
+            if (p1 == null) { p1 = pi2; }
+            p2 = pi2;
+          }
+        }
+        if (p1 == null) { stripOnly.push(evb); return; }
+        var rs = null, span2 = 0;
+        for (var rr = p1 - 1; rr <= p2 - 1; rr++) {
+          if (!taken[rr + '_' + wd2]) {
+            if (rs == null) { rs = rr; }
+            span2++;
+          } else if (rs != null) { break; }
+        }
+        if (rs == null) { stripOnly.push(evb); return; }   // 被课程占满 → 事件条兜底
+        evPlacements.push({ ev: evb, wd: wd2, row: rs, span: span2 });
+      })(weekEvents[wj]);
+    }
+    var evRow = (mini ? weekEvents.length : stripOnly.length) ? 1 : 0;
 
     var table = el('<div class="week-table' + (mini ? ' mini-table' : '') + '"></div>');
     /**
@@ -2640,10 +3664,11 @@ var AR = window.AR || (window.AR = {});
         var ed = dayNums[ei];
         var cellBox = el('<div class="' + (mini ? 'mg-evcell' : 'wt-evcell')
           + '" style="grid-row:2;grid-column:' + (ei + 2) + '"></div>');
+        var stripSrc = mini ? weekEvents : stripOnly;   // 周表页：只有没时间的才进事件条
         var mine = [];
-        for (var we = 0; we < weekEvents.length; we++) {
-          var wd = window.AR && U.weekdayOf(U.parseDateKey(weekEvents[we].date));
-          if (wd === ed) { mine.push(weekEvents[we]); }
+        for (var we = 0; we < stripSrc.length; we++) {
+          var wd = window.AR && U.weekdayOf(U.parseDateKey(stripSrc[we].date));
+          if (wd === ed) { mine.push(stripSrc[we]); }
         }
         for (var mi = 0; mi < Math.min(mine.length, 2); mi++) {
           (function (ev) {
@@ -2735,6 +3760,28 @@ var AR = window.AR || (window.AR = {});
           });
         })(hit);
         table.appendChild(block);
+      }
+    }
+
+    // v0.4.0：有时间的日程块 —— 按预排结果画在「对应的时间」格子上。
+    // 星标金描边；点击进统一编辑表单。缩略图不画（格子太小，事件条兜着）。
+    if (!mini) {
+      for (var ebi = 0; ebi < evPlacements.length; ebi++) {
+        (function (pl) {
+          var evb = pl.ev;
+          var t2 = AR.Store.eventType(evb.type);
+          var block2 = el('<div class="wt-block wt-evblock ' + contrastClass(t2.hex)
+            + (evb.star ? ' star' : '') + '" style="grid-row:' + (pl.row + 2 + evRow) + ' / span ' + pl.span
+            + ';grid-column:' + (dayNums.indexOf(pl.wd) + 2) + ';background-color:' + t2.hex + '">'
+            + '<span class="n">' + (evb.star ? '★ ' : '') + U.escapeHtml(evb.title || '未命名') + '</span>'
+            + (evb.place ? '<span class="l">' + U.escapeHtml(evb.place) + '</span>' : '')
+            + '</div>');
+          block2.addEventListener('click', function (ev3) {
+            ev3.stopPropagation();
+            openEventForm(evb);
+          });
+          table.appendChild(block2);
+        })(evPlacements[ebi]);
       }
     }
     table.__total = weekTotal;
@@ -2963,6 +4010,301 @@ var AR = window.AR || (window.AR = {});
     cell.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
   }
 
+  /* ── v0.4.0 统一「添加日程」表单 ────────────────────────────
+     周表长按、日程[＋]、星标[＋]、行编辑全走它，差别只在预填。
+     星标增删只能走这里（保存）或长按菜单 —— 任何地方都没有一键星标。 */
+
+  /** 日程变化后的统一刷新：周表块 / 今日页 / 我的页模块 */
+  function afterEventChange() {
+    renderWeek();
+    renderToday();
+    refreshHomework();
+  }
+
+  /** 新建 / 编辑日程类型（名称 + 颜色） */
+  function openTypeDialog(rec, onDone) {
+    var isEdit = !!(rec && rec.key);
+    var picked = (rec && rec.hex) || U.PALETTE[1].hex;
+    var body = el('<div class="lt-edit">'
+      + '<div class="field"><label class="field-label">类型名称</label>'
+      + '<input class="input" id="tyName" maxlength="12" placeholder="例如 社团 / DDL / 面试" value="'
+      + U.escapeHtml(rec ? rec.label : '') + '"></div>'
+      + '<div class="field"><label class="field-label">颜色</label><div class="swatches" id="tyColors"></div></div></div>');
+    var cb = body.querySelector('#tyColors');
+    for (var i = 0; i < U.PALETTE.length; i++) {
+      (function (p) {
+        var sw = el('<button type="button" class="swatch' + (p.hex === picked ? ' active' : '')
+          + '" title="' + U.escapeHtml(p.name) + '" style="background:' + p.hex + '"></button>');
+        sw.addEventListener('click', function () {
+          picked = p.hex;
+          var all = cb.querySelectorAll('.swatch');
+          for (var k = 0; k < all.length; k++) { all[k].classList.toggle('active', all[k] === sw); }
+          AR.Bridge.haptic('light', sw);
+        });
+        cb.appendChild(sw);
+      })(U.PALETTE[i]);
+    }
+    openModal({
+      title: isEdit ? '编辑类型' : '新建类型', body: body,
+      actions: [
+        {
+          label: '保存', kind: 'primary', onClick: function (close) {
+            var name = (body.querySelector('#tyName').value || '').trim();
+            if (!name) { toast('先起个名字'); return; }
+            var saved = AR.Store.typeUpsert({ key: isEdit ? rec.key : undefined, label: name, hex: picked });
+            AR.Bridge.haptic('medium', $('modalCard'));
+            close();
+            if (onDone) { onDone(saved); }
+          }
+        },
+        { label: '取消', onClick: function (close) { close(); if (onDone) { onDone(null); } } }
+      ]
+    });
+    setTimeout(blurSoftInputs, 0);
+  }
+
+  /** 类型管理：重命名 / 改色 / 删除（内置类型只读） */
+  function openTypeManage(backTo) {
+    var types = AR.Store.typeList ? AR.Store.typeList() : [];
+    var body = el('<div class="lt-edit"></div>');
+    for (var i = 0; i < types.length; i++) {
+      (function (t) {
+        var row = el('<div class="cm-line">'
+          + '<span class="cm-tag" style="background:' + U.escapeHtml(t.hex) + '">' + U.escapeHtml(t.mark || '事') + '</span>'
+          + '<span class="cm-name">' + U.escapeHtml(t.label)
+          + (t.builtIn ? '<span class="cm-sub">内置</span>' : '') + '</span></div>');
+        if (!t.builtIn) {
+          var editB = el('<button class="chip-btn" type="button">改</button>');
+          editB.addEventListener('click', function () {
+            openTypeDialog(t, function () { openTypeManage(backTo); });
+          });
+          var delB = el('<button class="chip-btn" type="button">删</button>');
+          delB.addEventListener('click', function () {
+            AR.Store.typeRemove(t.key);
+            AR.Bridge.haptic('warn', delB);
+            toast('已删除类型：' + t.label + '（相关日程变成「其他」）');
+            openTypeManage(backTo);
+          });
+          row.appendChild(editB);
+          row.appendChild(delB);
+        }
+        body.appendChild(row);
+      })(types[i]);
+    }
+    var add = el('<button class="btn" type="button" style="margin-top:8px">＋ 新建类型</button>');
+    add.addEventListener('click', function () {
+      openTypeDialog(null, function () { openTypeManage(backTo); });
+    });
+    body.appendChild(add);
+    openModal({
+      title: '管理类型', body: body,
+      actions: [{
+        label: backTo ? '返回日程' : '完成', kind: 'primary',
+        onClick: function (close) { close(); if (backTo) { openEventForm(backTo); } }
+      }]
+    });
+  }
+
+  /** 统一日程表单。arg 用内部形态：{ id?, title, date, start, end, place, note, type, star, showOn } */
+  function openEventForm(arg) {
+    arg = arg || {};
+    var cur = arg.id ? arg : null;
+    var v = {
+      id: cur ? cur.id : '',
+      title: cur ? (cur.title || '') : (arg.title || ''),
+      date: cur ? (cur.date || '') : (arg.date || U.dateKey(new Date())),
+      start: cur ? (cur.start || '') : (arg.start || ''),
+      end: cur ? (cur.end || '') : (arg.end || ''),
+      place: cur ? (cur.place || '') : (arg.place || ''),
+      note: cur ? (cur.note || '') : (arg.note || ''),
+      type: cur ? (cur.type || 'other') : (arg.type || 'other'),
+      star: cur ? !!cur.star : !!arg.star,
+      showOn: cur ? !!cur.showOnTimetable : !!arg.showOn
+    };
+    var body = el('<div class="lt-edit">'
+      + '<div class="field"><label class="field-label">标题</label>'
+      + '<input class="input" id="evTitle" placeholder="例如 四六级考试" value="' + U.escapeHtml(v.title) + '"></div>'
+      + '<div class="field"><label class="field-label">日期</label>'
+      + '<input class="input" id="evDate" type="date" value="' + U.escapeHtml(v.date) + '"></div>'
+      + '<div class="field"><label class="field-label">时间（可空；填了才能上周表）</label>'
+      + '<div class="row"><input class="input" id="evStart" type="time" style="flex:1 1 0" value="' + U.escapeHtml(v.start) + '">'
+      + '<span class="muted edit-sep">到</span>'
+      + '<input class="input" id="evEnd" type="time" style="flex:1 1 0" value="' + U.escapeHtml(v.end) + '"></div></div>'
+      + '<div class="field"><label class="field-label">地点（可空）</label>'
+      + '<input class="input" id="evPlace" value="' + U.escapeHtml(v.place) + '"></div>'
+      + '<div class="field"><label class="field-label">类型</label><div class="row gap" id="evTypes" style="flex-wrap:wrap"></div></div>'
+      + '<label class="lt-check"><input type="checkbox" id="evStar"' + (v.star ? ' checked' : '') + '>'
+      + '<span>星标日程（重要：进「星标日程」，显倒数）</span></label>'
+      + '<label class="lt-check"><input type="checkbox" id="evShow"' + (v.showOn ? ' checked' : '') + '>'
+      + '<span>显示在周表（按时间画到对应格子）</span></label>'
+      + '<div class="field"><label class="field-label">备注（可空）</label>'
+      + '<input class="input" id="evNote" value="' + U.escapeHtml(v.note) + '"></div>'
+      + '</div>');
+
+    var syncV = function () {
+      v.title = (body.querySelector('#evTitle').value || '').trim();
+      v.date = (body.querySelector('#evDate').value || '').trim();
+      v.start = (body.querySelector('#evStart').value || '').trim();
+      v.end = (body.querySelector('#evEnd').value || '').trim();
+      v.place = (body.querySelector('#evPlace').value || '').trim();
+      v.note = (body.querySelector('#evNote').value || '').trim();
+      v.star = !!body.querySelector('#evStar').checked;
+      v.showOn = !!body.querySelector('#evShow').checked;
+    };
+
+    var tbox = body.querySelector('#evTypes');
+    var paintTypes = function () {
+      tbox.innerHTML = '';
+      var list = AR.Store.typeList ? AR.Store.typeList() : [];
+      for (var i = 0; i < list.length; i++) {
+        (function (t) {
+          var on = v.type === t.key;
+          var b = el('<button class="chip-btn' + (on ? ' active' : '') + '" type="button"'
+            + (on ? ' style="border-color:' + U.escapeHtml(t.hex) + ';color:' + U.escapeHtml(t.hex) + '"' : '')
+            + '>' + U.escapeHtml(t.label) + '</button>');
+          b.addEventListener('click', function () {
+            syncV(); v.type = t.key; paintTypes();
+            AR.Bridge.haptic('light', b);
+          });
+          tbox.appendChild(b);
+        })(list[i]);
+      }
+      var addT = el('<button class="chip-btn" type="button">＋ 新类型</button>');
+      addT.addEventListener('click', function () {
+        syncV();
+        openTypeDialog(null, function (saved) {
+          if (saved) { v.type = saved.key; }
+          openEventForm(v);
+        });
+      });
+      tbox.appendChild(addT);
+      var mg = el('<button class="chip-btn" type="button">管理</button>');
+      mg.addEventListener('click', function () { syncV(); openTypeManage(v); });
+      tbox.appendChild(mg);
+    };
+    paintTypes();
+
+    var doSave = function (close) {
+      AR.Store.saveEvent({
+        id: cur ? cur.id : undefined, title: v.title, type: v.type, date: v.date,
+        start: v.start, end: v.end, place: v.place, note: v.note,
+        star: v.star, showOnTimetable: v.showOn
+      });
+      AR.Bridge.haptic('medium', $('modalCard'));
+      close();
+      afterEventChange();
+      toast(cur ? '已保存：' + v.title : '已添加：' + v.title);
+    };
+
+    var actions = [];
+    if (cur) {
+      actions.push({
+        label: '加入日历', onClick: function () {
+          syncV();
+          var day = U.parseDateKey(v.date) || new Date();
+          var t = AR.Store.eventType(v.type);
+          var startMs = toMs(day, v.start) || (day.getTime() + 9 * 3600000);
+          var endMs = toMs(day, v.end) || (startMs + 90 * 60000);
+          AR.Bridge.addCalendarEvent(v.title, v.place || '', t.label + (v.note ? ' · ' + v.note : ''), startMs, endMs);
+        }
+      });
+      actions.push({
+        label: cur.archived ? '取消归档' : '归档', onClick: function (close) {
+          syncV();
+          close();
+          if (cur.archived) {
+            confirmDanger({
+              title: '取消归档？', sub: v.title,
+              text: '取消后它会回到日程列表。',
+              okLabel: '找回这条日程',
+              onOk: function () { patchEvent(cur, { archived: false }); afterEventChange(); toast('已找回：' + v.title); }
+            });
+            return;
+          }
+          confirmDanger({
+            title: '归档这条日程？', sub: v.title,
+            text: '归档后会从日程和周表里隐藏，随时能在「已归档」里找回。',
+            okLabel: '确认归档',
+            onOk: function () {
+              patchEvent(cur, { archived: true });
+              AR.Bridge.haptic('medium', $('modalCard'));
+              afterEventChange();
+              toast('已归档：' + v.title);
+            }
+          });
+        }
+      });
+      actions.push({
+        label: '删除', kind: 'danger', onClick: function (close) {
+          syncV();
+          close();
+          // 星标日程删除：按住确认（比点一下更难误触）
+          confirmDanger({
+            title: '删除这条日程？', sub: v.title,
+            text: '删了就找不回来了' + (cur.star ? '。这条是星标日程，需要按住确认。' : '。'),
+            okLabel: '确认删除',
+            hold: cur.star ? 2000 : 0,
+            onOk: function () {
+              AR.Store.removeEvent(cur.id);
+              AR.Bridge.haptic('warn', $('modalCard'));
+              afterEventChange();
+              toast('已删除：' + (cur.title || ''));
+            }
+          });
+        }
+      });
+    }
+    actions.push({
+      label: '保存', kind: 'primary', onClick: function (close) {
+        syncV();
+        if (!v.title) { toast('先填标题'); return; }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(v.date)) { toast('选一个日期'); return; }
+        if (v.showOn && !v.start) { toast('要显示在周表就得填时间；或关掉「显示在周表」'); return; }
+        // 同日同名：提示合并（单表也挡不住手滑重复录）
+        if (!cur) {
+          var evsAll = AR.Store.eventsBetween(v.date, v.date) || [];
+          var dup = null;
+          for (var di = 0; di < evsAll.length; di++) {
+            if (String(evsAll[di].title || '').trim() === v.title) { dup = evsAll[di]; break; }
+          }
+          if (dup) {
+            openModal({
+              title: '该日已有同名日程', sub: v.title + ' · ' + v.date,
+              body: '<p class="muted">合成一条，还是再加一条新的？</p>',
+              actions: [
+                { label: '返回修改', onClick: function (c2) { c2(); openEventForm(v); } },
+                {
+                  label: '合并为一条', kind: 'primary', onClick: function (c2) {
+                    AR.Store.saveEvent({
+                      id: dup.id, title: v.title, type: v.type, date: v.date,
+                      start: v.start, end: v.end, place: v.place, note: v.note,
+                      star: v.star, showOnTimetable: v.showOn
+                    });
+                    AR.Bridge.haptic('medium', $('modalCard'));
+                    c2();
+                    afterEventChange();
+                    toast('已合并为一条');
+                  }
+                },
+                { label: '仍然添加', onClick: function (c2) { c2(); doSave(function () { }); } }
+              ]
+            });
+            return;
+          }
+        }
+        doSave(close);
+      }
+    });
+    actions.push({ label: '取消', onClick: function (close) { close(); } });
+    openModal({
+      title: cur ? '编辑日程' : '添加日程',
+      sub: cur ? v.title : '考试 / 讲座 / 活动 / 小目标，一张表全收',
+      body: body,
+      actions: actions
+    });
+    setTimeout(blurSoftInputs, 0);
+  }
+
   /** 快速新增面板：课程 / 特殊事件，都预填好刚长按的星期与节次 */
   function openQuickAdd(weekday, periodIdx, date) {
     var sem = AR.Store.currentSemester();
@@ -2970,7 +4312,7 @@ var AR = window.AR || (window.AR = {});
     var wrap = el('<div class="qa"></div>');
     var modeRow = el('<div class="segmented qa-mode"></div>');
     var mode = 'course';
-    var modes = [{ k: 'course', t: '新增课程' }, { k: 'event', t: '考试 / 讲座' }];
+    var modes = [{ k: 'course', t: '新增课程' }, { k: 'event', t: '添加日程' }];
     var panes = {};
 
     // —— 课程 ——
@@ -2990,29 +4332,27 @@ var AR = window.AR || (window.AR = {});
     coursePane.appendChild(el('<div class="field"><label class="field-label">颜色</label><div class="swatches" id="qaColors"></div></div>'));
     panes.course = coursePane;
 
-    // —— 特殊事件 ——
-    var evPane = el('<div class="qa-pane" hidden></div>');
-    evPane.appendChild(el('<div class="field"><label class="field-label">标题</label>'
-      + '<input class="input" id="qaEvTitle" placeholder="例如 高等数学 期中考试"></div>'));
-    evPane.appendChild(el('<div class="field"><label class="field-label">类型</label>'
-      + '<div class="segmented" id="qaEvType"></div></div>'));
-    evPane.appendChild(el('<div class="field"><label class="field-label">时间（可空）</label>'
-      + '<div class="row"><input class="input" type="time" id="qaEvStart" style="flex:1 1 0">'
-      + '<span class="muted edit-sep">到</span>'
-      + '<input class="input" type="time" id="qaEvEnd" style="flex:1 1 0"></div></div>'));
-    evPane.appendChild(el('<div class="field"><label class="field-label">地点 / 备注（可空）</label>'
-      + '<input class="input" id="qaEvPlace"></div>'));
-    panes.event = evPane;
-
     for (var m = 0; m < modes.length; m++) {
       (function (mo) {
         var b = el('<button class="seg' + (mo.k === mode ? ' active' : '') + '" type="button">' + mo.t + '</button>');
         b.addEventListener('click', function () {
+          // 「添加日程」直接进统一表单：带上周表格子的日期+时间，默认显示在周表
+          if (mo.k === 'event') {
+            AR.Bridge.haptic('light', b);
+            var per = null, plist = AR.Store.periodsOf ? (AR.Store.periodsOf(sem) || []) : [];
+            for (var pi = 0; pi < plist.length; pi++) {
+              if (plist[pi].index === periodIdx) { per = plist[pi]; break; }
+            }
+            openEventForm({
+              date: U.dateKey(date), start: per ? (per.start || '') : '', end: per ? (per.end || '') : '',
+              type: 'exam', star: false, showOn: true
+            });
+            return;
+          }
           mode = mo.k;
           var btns = modeRow.querySelectorAll('.seg');
           for (var i = 0; i < btns.length; i++) { btns[i].classList.toggle('active', btns[i] === b); }
           panes.course.hidden = (mode !== 'course');
-          panes.event.hidden = (mode !== 'event');
           AR.Bridge.haptic('light', b);
         });
         modeRow.appendChild(b);
@@ -3022,7 +4362,6 @@ var AR = window.AR || (window.AR = {});
       + (sem ? ' · ' + U.escapeHtml(sem.name) : '') + '</p>'));
     wrap.appendChild(modeRow);
     wrap.appendChild(coursePane);
-    wrap.appendChild(evPane);
 
     var picked = U.PALETTE[0].hex;
     var colorBox = coursePane.querySelector('#qaColors');
@@ -3044,22 +4383,6 @@ var AR = window.AR || (window.AR = {});
       openColorPicker(picked, function (hex) { picked = hex; AR.UI.toast('已选 ' + hex); });
     });
     colorBox.appendChild(more);
-
-    // 事件类型
-    var typeBox = evPane.querySelector('#qaEvType');
-    var evType = 'exam';
-    var types = AR.Store.EVENT_TYPES || [];
-    for (var ti = 0; ti < types.length; ti++) {
-      (function (t, idx) {
-        var b = el('<button class="seg' + (idx === 0 ? ' active' : '') + '" type="button">' + t.label + '</button>');
-        b.addEventListener('click', function () {
-          evType = t.key;
-          var all = typeBox.querySelectorAll('.seg');
-          for (var i = 0; i < all.length; i++) { all[i].classList.toggle('active', all[i] === b); }
-        });
-        typeBox.appendChild(b);
-      })(types[ti], ti);
-    }
 
     openModal({
       title: '快速新增', sub: dateText + ' · 第 ' + periodIdx + ' 节',
@@ -3083,16 +4406,6 @@ var AR = window.AR || (window.AR = {});
               if (!res.ok) { toast(res.message || '保存失败'); return; }
               if (res.periodsAdded) { toast('已自动补 ' + res.periodsAdded + ' 个节次'); }
               else { toast('已添加：' + name); }
-            } else {
-              var title = (wrap.querySelector('#qaEvTitle').value || '').trim();
-              if (!title) { toast('请先填标题'); return; }
-              var r2 = AR.Panels.quickAddEvent({
-                title: title, type: evType, date: U.dateKey(date),
-                start: wrap.querySelector('#qaEvStart').value, end: wrap.querySelector('#qaEvEnd').value,
-                place: wrap.querySelector('#qaEvPlace').value
-              });
-              if (!r2.ok) { toast(r2.message || '保存失败'); return; }
-              toast('已添加：' + title);
             }
             AR.Bridge.haptic('medium', wrap);
             close();
@@ -3392,6 +4705,96 @@ var AR = window.AR || (window.AR = {});
       if (!modalStack.length) { root.hidden = true; }
     }, modalDur('out') + 24);
     return true;
+  }
+
+  /**
+   * v0.4.0：统一的危险操作二次确认。
+   *   confirmDanger({ title, sub, text, okLabel, hold, onOk })
+   * hold 传毫秒数时，确认按钮变成「按住 N 秒」（进度条）——
+   * 用于不可逆 / 敏感对象（星标日程删除等）。onOk 只在真正确认后调用。
+   */
+  function confirmDanger(opts) {
+    opts = opts || {};
+    var holdMs = Number(opts.hold) || 0;
+    var body;
+    if (holdMs > 0) {
+      body = el('<div>'
+        + '<p class="muted">' + U.escapeHtml(opts.text || '这个操作不可撤销。') + '</p>'
+        + '<button class="hold-btn" type="button" id="dangerHold">'
+        + '<span class="hold-fill"></span><span class="hold-label">按住 '
+        + Math.round(holdMs / 1000) + ' 秒确认</span></button>'
+        + '<p class="muted" id="dangerHoldTip">按住不放，进度条走满才会执行；中途松手自动取消。</p></div>');
+    } else {
+      body = el('<p class="muted">' + U.escapeHtml(opts.text || '这个操作不可撤销。') + '</p>');
+    }
+    var actions = [{
+      label: '取消', onClick: function (c) {
+        c();
+        if (opts.onCancel) { opts.onCancel(); }
+      }
+    }];
+    if (holdMs <= 0) {
+      actions.push({
+        label: opts.okLabel || '确认删除', kind: 'danger', onClick: function (c) {
+          c();
+          AR.Bridge.haptic('warn', $('modalCard'));
+          if (opts.onOk) { opts.onOk(); }
+        }
+      });
+    }
+    openModal({ title: opts.title || '确认操作', sub: opts.sub || '', body: body, actions: actions });
+    if (holdMs <= 0) { return; }
+    var btn = body.querySelector('#dangerHold');
+    var label = btn.querySelector('.hold-label');
+    var tip = body.querySelector('#dangerHoldTip');
+    var raf = null, startAt = 0, fired = false;
+    var secs = Math.round(holdMs / 1000);
+    var paint = function (p) {
+      btn.style.setProperty('--hold', (p * 100).toFixed(1) + '%');
+      var left = Math.max(0, Math.ceil((holdMs * (1 - p)) / 1000));
+      label.textContent = p >= 1 ? '正在执行…' : ('按住 ' + secs + ' 秒确认' + (p > 0 ? '（' + left + '）' : ''));
+    };
+    var tick = function () {
+      var p = Math.min(1, (Date.now() - startAt) / holdMs);
+      paint(p);
+      if (p >= 1) {
+        if (!fired) {
+          fired = true;
+          closeModal();
+          AR.Bridge.haptic('warn', btn);
+          if (opts.onOk) { opts.onOk(); }
+        }
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    };
+    var start = function (ev) {
+      if (fired) { return; }
+      if (ev && ev.preventDefault) { ev.preventDefault(); }
+      startAt = Date.now();
+      btn.classList.add('holding');
+      if (tip) { tip.textContent = '松开就会取消，坚持按住…'; }
+      if (raf) { cancelAnimationFrame(raf); }
+      raf = requestAnimationFrame(tick);
+      AR.Bridge.haptic('light', btn);
+    };
+    var stop = function () {
+      if (fired) { return; }
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      btn.classList.remove('holding');
+      paint(0);
+      if (tip) { tip.textContent = '已取消，什么都没发生。'; }
+    };
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+    if (!window.PointerEvent) {
+      btn.addEventListener('touchstart', start);
+      btn.addEventListener('touchend', stop);
+      btn.addEventListener('mousedown', start);
+      btn.addEventListener('mouseup', stop);
+    }
   }
 
   /* ══════════════════════════════════════════════════════════════
@@ -3936,13 +5339,23 @@ var AR = window.AR || (window.AR = {});
         {
           label: '删除这个时段', kind: 'danger',
           onClick: function (close) {
-            if (realBlock) { AR.Store.removeBlock(block.id); }
-            else if (item.override) { AR.Store.removeOverride(item.override.id); }
+            // v0.4.0：删课要二次确认（不可撤销）
+            confirmDanger({
+              title: '删除这个时段？',
+              sub: course.name + ' · ' + U.WEEKDAY_NAMES[U.weekdayOf(day)] + ' ' + U.escapeHtml(item.periodLabel || ''),
+              text: '删掉后这门课的这个时段就不在课表里了，排课/时间/地点设置也会一起没。',
+              okLabel: '确认删除',
+              onOk: function () {
+                if (realBlock) { AR.Store.removeBlock(block.id); }
+                else if (item.override) { AR.Store.removeOverride(item.override.id); }
+                AR.Bridge.haptic('warn', $('modalCard'));
+                renderToday();
+                if (currentView === 'week') { renderWeek(); }
+                refreshHomework();
+                toast('已删除这个时段');
+              }
+            });
             close();
-            AR.Bridge.haptic('warn', $('modalCard'));
-            renderToday();
-            if (currentView === 'week') { renderWeek(); }
-            toast('已删除这个时段');
           }
         },
         {
@@ -4532,14 +5945,46 @@ var AR = window.AR || (window.AR = {});
       + dateTag
       + '<span class="hw-text">' + U.escapeHtml(task.text) + '</span>'
       + '<span class="hw-swipe-hint">划掉</span></div>');
-    // 横向手势归自己，纵向留给卡片滚动
+    bindSwipeRow(node, {
+      flyOut: true,
+      onCommit: function () {
+        AR.Store.setTaskDone(task.id, true);
+        AR.Bridge.haptic('medium', node);
+        toast('已完成 · 可在「已完成」里找回');
+        collapseDoneGroups();          // 划掉之后「已完成」区不自动弹开
+        refreshHomework();
+      }
+    });
+    return node;
+  }
+
+  /**
+   * v0.4.0 通用「横向滑动」手势 —— 作业的"划掉"和日程的"归档"共用一套。
+   * cfg：
+   *   max       最多跟手多远（默认 140）
+   *   follow    跟手系数，<1 = 更"重"、阻尼更大（默认 1）
+   *   rubber    超出上限后的橡皮筋系数（默认 0.25）
+   *   threshold 触发阈值 px（默认 64）
+   *   flyOut    true = 划到位就飞出去（作业的观感）；false = 先滑回原位再处置（日程要二次确认）
+   *   onCommit  划到位后调用（由调用方决定归档 / 弹确认）
+   */
+  function bindSwipeRow(node, cfg) {
+    cfg = cfg || {};
+    var MAX = cfg.max || 140;
+    var FOLLOW = cfg.follow == null ? 1 : cfg.follow;
+    var RUBBER = cfg.rubber == null ? 0.25 : cfg.rubber;
+    var HIT = cfg.threshold || 64;
     node.style.touchAction = 'pan-y';
     var x0 = 0, y0 = 0, dx = 0, armed = false, horizontal = false, raf = 0;
-    var MAX = 140;                      // 最多拖这么远，再拉就有"橡皮筋"的感觉
+    function shown() {
+      var d = dx * FOLLOW;
+      if (Math.abs(d) > MAX) { d = (d > 0 ? 1 : -1) * (MAX + (Math.abs(d) - MAX) * RUBBER); }
+      return d;
+    }
     function paint() {
       raf = 0;
-      node.style.transform = 'translate3d(' + dx + 'px,0,0)';
-      node.classList.toggle('swipe-ok', Math.abs(dx) >= 64);
+      node.style.transform = 'translate3d(' + shown() + 'px,0,0)';
+      node.classList.toggle('swipe-ok', Math.abs(shown()) >= HIT);
     }
     function reset() {
       armed = false; horizontal = false; dx = 0;
@@ -4547,9 +5992,11 @@ var AR = window.AR || (window.AR = {});
       node.classList.remove('swiping', 'swipe-ok');
       node.style.transform = '';
     }
+    node.__swipeReset = reset;
     node.addEventListener('pointerdown', function (ev) {
       if (ev.button) { return; }
       armed = true; horizontal = false; dx = 0;
+      node.__swiped = false;          // 新一次触摸：清掉"刚划过"标记
       x0 = ev.clientX; y0 = ev.clientY;
       node.classList.add('swiping');
       if (node.setPointerCapture) { try { node.setPointerCapture(ev.pointerId); } catch (e) { } }
@@ -4563,40 +6010,44 @@ var AR = window.AR || (window.AR = {});
         // 纵向占优就交还给卡片滚动；横向要明显占优才算划卡片
         if (Math.abs(dy) > Math.abs(dx) * 1.2) { reset(); return; }
         horizontal = true;
+        node.__swiped = true;         // 划过就别再触发"点开编辑"
       }
-      // 跟手：每帧只写一次 transform，超出上限就慢慢"拉紧"
-      if (Math.abs(dx) > MAX) { dx = (dx > 0 ? 1 : -1) * (MAX + (Math.abs(dx) - MAX) * 0.25); }
       if (!raf) { raf = requestAnimationFrame(paint); }
     });
     function finish() {
       if (!armed && !horizontal) { return; }
-      var hit = horizontal && Math.abs(dx) >= 64;
-      if (!hit) {
-        // 没划够：滑回原位（同样走统一曲线）
-        if (node.style.transform) {
-          node.animate(
-            [{ transform: 'translate3d(' + dx + 'px,0,0)' }, { transform: 'none' }],
-            { duration: 180, easing: AR.Motion ? AR.Motion.ease('soft') : 'cubic-bezier(.4,0,.2,1)', fill: 'none' }
-          );
-        }
-        reset();
+      var d = shown();
+      var hit = horizontal && Math.abs(d) >= HIT;
+      var dir = d > 0 ? 1 : -1;
+      if (!hit) { slideBackRow(node, d); reset(); return; }
+      if (cfg.flyOut) {
+        armed = false;
+        if (raf) { cancelAnimationFrame(raf); raf = 0; }
+        flyOutTask(node, dir, d, function () { if (cfg.onCommit) { cfg.onCommit(); } });
         return;
       }
-      var dir = dx > 0 ? 1 : -1;
-      var from = dx;                    // 从手指松开的位置接着飞，不回弹
-      armed = false;
-      if (raf) { cancelAnimationFrame(raf); raf = 0; }
-      flyOutTask(node, dir, from, function () {
-        AR.Store.setTaskDone(task.id, true);
-        AR.Bridge.haptic('medium', node);
-        toast('已完成 · 可在「已完成」里找回');
-        collapseDoneGroups();          // 划掉之后「已完成」区不自动弹开
-        refreshHomework();
-      });
+      // 需要二次确认的（日程归档）：先滑回原位，避免"取消了卡片还在屏幕外"
+      slideBackRow(node, d);
+      reset();
+      if (cfg.onCommit) { cfg.onCommit(); }
     }
     node.addEventListener('pointerup', finish);
     node.addEventListener('pointercancel', reset);
-    return node;
+  }
+
+  /** 没划到位 / 需要二次确认：滑回原位（统一曲线） */
+  function slideBackRow(node, fromX) {
+    if (!node) { return; }
+    if (!node.animate) { node.style.transform = ''; node.classList.remove('swipe-ok'); return; }
+    node.style.transform = 'translate3d(' + (fromX || 0) + 'px,0,0)';
+    var a = node.animate(
+      [{ transform: 'translate3d(' + (fromX || 0) + 'px,0,0)' }, { transform: 'none' }],
+      { duration: 200, easing: AR.Motion ? AR.Motion.ease('soft') : 'cubic-bezier(.4,0,.2,1)', fill: 'none' }
+    );
+    a.onfinish = function () {
+      node.style.transform = '';
+      node.classList.remove('swiping', 'swipe-ok');
+    };
   }
 
   /**
@@ -4882,9 +6333,13 @@ var AR = window.AR || (window.AR = {});
     return b.open.length;
   }
 
-  /** 作业卡片要不要出现：作业功能开着，或者有"要在今日页显示"的长期任务 */
+  /** 作业卡片要不要出现：只看作业功能开关（长期任务有自己独立的卡片，不再寄生在这里） */
   function hwZoneVisible() {
-    if (AR.Store.homeworkSettings && AR.Store.homeworkSettings().on) { return true; }
+    return !!(AR.Store.homeworkSettings && AR.Store.homeworkSettings().on);
+  }
+
+  /** 长期任务卡片要不要出现：有任何一条"要在今日页显示"的 */
+  function ltZoneVisible() {
     return !!(AR.Store.longTaskTodayList && AR.Store.longTaskTodayList().length);
   }
 
@@ -4895,25 +6350,37 @@ var AR = window.AR || (window.AR = {});
   }
 
   /* ── 长期任务（v0.3.7）──────────────────────────────────────
-     志愿时长、阅读量这种"攒进度"的目标：和作业同屏显示，
-     但**单独一节、单独统计**，作业的条数 / 完成率里不会混进它们。 */
+     志愿时长、阅读量这种"攒进度"的目标：**独立一张卡片**（不折在作业卡里），
+     单独统计，作业的条数 / 完成率里不会混进它们。 */
 
   function ltNum(n) {
     var v = Math.round((Number(n) || 0) * 100) / 100;
     return String(v);
   }
 
-  /** 今日页里的「长期任务」小节（没有任何要显示的项时返回 null） */
-  function longTaskNode() {
+  /**
+   * 「长期任务」独立卡片（v0.3.8b：从作业卡片里拆出来，不再折叠在一起）。
+   * hideEmpty=true → 一条都没有时返回 null（今日页 / 最近的课里不占位）；
+   * hideEmpty=false → 永远返回卡片，空的时候给一句提示（自定义模块页用）。
+   */
+  function longTaskCard(hideEmpty) {
     var list = AR.Store.longTaskTodayList ? AR.Store.longTaskTodayList() : [];
-    if (!list.length) { return null; }
-    var box = el('<div class="lt-block"></div>');
-    box.appendChild(el('<div class="lt-head"><span class="lt-ico">◔</span>'
-      + '<span class="lt-t">长期任务</span>'
-      + '<span class="lt-n">' + list.length + ' 项</span></div>'));
-    var todayK = U.dateKey(new Date());
-    for (var i = 0; i < list.length; i++) { box.appendChild(longTaskRow(list[i], todayK)); }
-    return box;
+    if (hideEmpty && !list.length) { return null; }
+    var card = el('<div class="hw-card"></div>');
+    card.setAttribute('data-hwnode', 'lt');
+    card.__rebuild = function () { return longTaskCard(hideEmpty); };
+    card.appendChild(el('<div class="hw-head"><span class="lt-ico">◔</span>'
+      + '<span class="hw-t">长期任务</span>'
+      + (list.length ? '<span class="hw-n">' + list.length + ' 项</span>' : '') + '</div>'));
+    var bodyEl = el('<div class="hw-body"></div>');
+    if (!list.length) {
+      bodyEl.appendChild(el('<div class="muted" style="padding:2px 4px 6px">还没有长期任务。比如「志愿时长 · 目标 20 小时」，在设置里新建。</div>'));
+    } else {
+      var todayK = U.dateKey(new Date());
+      for (var i = 0; i < list.length; i++) { bodyEl.appendChild(longTaskRow(list[i], todayK)); }
+    }
+    card.appendChild(bodyEl);
+    return card;
   }
 
   /** 一条长期任务：色点 + 名称 + 进度条 + 累计/目标（今日有进度就补一句） */
@@ -4939,77 +6406,33 @@ var AR = window.AR || (window.AR = {});
   }
 
   /**
-   * 长期任务 · 记一笔。
-   * 上面是进度（累计 / 今日 / 近 7 天 / 完成率），中间是常用数量的快捷按钮，
-   * 下面填数量 + 备注；最近几笔列出来，点 ✕ 可以撤销记错的那一笔。
-   * 快捷按钮点完直接重新打开这个窗口 —— 进度立刻刷新，不用关掉再点一次。
+   * 长期任务 · 记一笔 —— 「快速添加」和「手动记一笔」两套逻辑分开（v0.3.8c）：
+   *   快速添加：+1 / +2 / +5 / −1 点了立刻入账，旁边就是「↶ 撤销上一笔」；
+   *     它只原地刷新「进度」和「最近记录」两块，碰都不碰下面的输入框。
+   *   手动记一笔：数量 + 备注 + 保存，输入的内容只有保存说了算 ——
+   *     快速添加 / 撤销怎么折腾都不会清掉输入。以前每次操作都整张弹窗重画，
+   *     输入到一半的数字被抹掉，再点保存就变成空保存 —— 「时长根本没变」就是这么来的。
+   * 删记录走 removeEntryRobust：老数据没有 id 也能删，真删掉才提示成功。
+   * 数量框默认留空：什么都不干点保存会提示先填数量，不会白记一笔。
+   * 打开弹窗 / 点快捷键都不自动聚焦输入框，避免输入法自己弹出来。
    */
   function openLongTaskEntry(t) {
     var cur = (AR.Store.longTaskById && AR.Store.longTaskById(t.id)) || t;
-    var todayK = U.dateKey(new Date());
-    var s = AR.Store.longTaskStats(cur, todayK);
-    var unit = cur.unit || '';
-    var color = U.colorHex(cur.colorKey || '#5B8DEF');
     var body = el('<div class="lt-sheet">'
-      + '<div class="lt-top">'
-      + '<div class="lt-top-name">' + U.escapeHtml(cur.name || '未命名') + '</div>'
-      + '<div class="lt-top-val"><b>' + ltNum(s.total) + '</b>'
-      + '<span class="muted"> / ' + ltNum(s.target) + ' ' + U.escapeHtml(unit) + '</span></div>'
-      + '<div class="lt-bar big"><i style="width:' + Math.round(s.rate * 100) + '%;background:'
-      + U.escapeHtml(color) + '"></i></div>'
-      + '<div class="lt-top-sub">今日 +' + ltNum(s.today) + ' · 近 7 天 +' + ltNum(s.week)
-      + ' · 完成率 ' + s.percent + '%</div>'
-      + '</div>'
+      + '<div id="ltTop"></div>'
       + '<div class="lt-quick" id="ltQuick"></div>'
-      + '<div class="field"><label class="field-label">数量（' + U.escapeHtml(unit) + '）</label>'
-      + '<input class="input" id="ltAmount" type="number" inputmode="decimal" step="0.5" value="1"></div>'
+      + '<div class="field"><label class="field-label">数量（' + U.escapeHtml(cur.unit || '') + '）</label>'
+      + '<input class="input" id="ltAmount" type="number" inputmode="decimal" step="0.5" placeholder="留空直接保存会提示先填数量"></div>'
       + '<div class="field"><label class="field-label">备注（可不填）</label>'
       + '<input class="input" id="ltNote" placeholder="例如：社区志愿服务中心"></div>'
       + '<div class="lt-recent" id="ltRecent"></div></div>');
-
-    var quick = body.querySelector('#ltQuick');
-    var quicks = [1, 2, 5, -1];
-    for (var q = 0; q < quicks.length; q++) {
-      (function (amt) {
-        var b = el('<button class="chip-btn" type="button">' + (amt > 0 ? '+' : '') + ltNum(amt) + '</button>');
-        b.addEventListener('click', function () {
-          if (!AR.Store.longTaskAddEntry(cur.id, amt, '')) { toast('记不了这一笔'); return; }
-          AR.Bridge.haptic('light', b);
-          toast((amt > 0 ? '已记 +' : '已记 ') + ltNum(amt) + (unit ? ' ' + unit : ''));
-          openLongTaskEntry(cur);
-        });
-        quick.appendChild(b);
-      })(quicks[q]);
-    }
-
-    var recents = AR.Store.longTaskRecentEntries(cur, 6);
-    var rbox = body.querySelector('#ltRecent');
-    if (recents.length) {
-      rbox.appendChild(el('<div class="lt-recent-title">最近记录 · 点 ✕ 可撤销</div>'));
-      for (var r = 0; r < recents.length; r++) {
-        (function (e) {
-          var day = AR.Store.longTaskEntryDay(e);
-          var d = day ? U.parseDateKey(day) : null;
-          var label = d ? ((d.getMonth() + 1) + '/' + d.getDate()) : '';
-          var row = el('<div class="lt-recent-row">'
-            + '<span class="lt-recent-amt">' + ltNum(e.amount) + '</span>'
-            + '<span class="lt-recent-day">' + label + '</span>'
-            + '<span class="lt-recent-note">' + U.escapeHtml(e.note || '') + '</span>'
-            + '<button class="lt-del" type="button" title="删掉这一笔">✕</button></div>');
-          row.querySelector('.lt-del').addEventListener('click', function () {
-            AR.Store.longTaskRemoveEntry(cur.id, e.id);
-            AR.Bridge.haptic('warn', row);
-            toast('已撤销这一笔');
-            openLongTaskEntry(cur);
-          });
-          rbox.appendChild(row);
-        })(recents[r]);
-      }
-    }
+    fillEntryTop(body.querySelector('#ltTop'), cur);
+    fillEntryQuick(body.querySelector('#ltQuick'), cur);
+    fillEntryRecent(body.querySelector('#ltRecent'), cur);
 
     openModal({
       title: '记一笔',
-      sub: (cur.name || '') + ' · ' + ltNum(s.total) + ' / ' + ltNum(s.target) + (unit ? ' ' + unit : ''),
+      sub: (cur.name || '未命名') + ' · ' + (cur.unit || ''),
       body: body,
       actions: [
         {
@@ -5017,21 +6440,144 @@ var AR = window.AR || (window.AR = {});
         },
         {
           label: '保存', kind: 'primary', onClick: function (close) {
-            var amt = Number((body.querySelector('#ltAmount') || {}).value);
-            if (!isFinite(amt) || !amt) { toast('请填一个不为 0 的数量'); return; }
-            var note = (body.querySelector('#ltNote') || {}).value || '';
+            // 读「活的」输入框：快速添加 / 撤销永远不重建它，手输的值一直在。
+            var card = $('modalCard');
+            var raw = ((card.querySelector('#ltAmount') || {}).value || '').trim();
+            var amt = Number(raw);
+            if (!raw || !isFinite(amt) || !amt) {
+              toast('先填数量，或用上面的快速添加（点一下记一笔）');
+              return;
+            }
+            var note = (card.querySelector('#ltNote') || {}).value || '';
             AR.Store.longTaskAddEntry(cur.id, amt, note);
             AR.Bridge.haptic('medium', $('modalCard'));
             close();
             refreshHomework();
-            toast('已记 ' + (amt > 0 ? '+' : '') + ltNum(amt) + (unit ? ' ' + unit : ''));
+            toast('已记 ' + (amt > 0 ? '+' : '') + ltNum(amt) + (cur.unit ? ' ' + cur.unit : ''));
           }
         },
         { label: '取消', onClick: function (close) { close(); } }
       ]
     });
-    var amtEl = body.querySelector('#ltAmount');
-    if (amtEl) { setTimeout(function () { try { amtEl.focus(); amtEl.select(); } catch (e) { } }, 60); }
+    // 不弹输入法：打开后把焦点从输入框上挪开（以前这里会自动聚焦数量框，
+    // 输入法跟着弹出来；部分 WebView 还会自己聚焦第一个输入框，一并挡掉）。
+    setTimeout(blurSoftInputs, 0);
+  }
+
+  /**
+   * 删一笔记录。老数据的 entry 可能没有 id：按对象引用 / 时间+数量兜底。
+   * 真删掉才返回 true —— 不再出现"提示已撤销、记录还在"的假撤销。
+   */
+  function removeEntryRobust(taskId, e) {
+    if (!e) { return false; }
+    if (e.id && AR.Store.longTaskRemoveEntry(taskId, e.id)) { return true; }
+    var t = AR.Store.longTaskById ? AR.Store.longTaskById(taskId) : null;
+    var arr = (t && t.entries) || [];
+    for (var i = arr.length - 1; i >= 0; i--) {
+      if (arr[i] === e || (arr[i].at === e.at && arr[i].amount === e.amount)) {
+        arr.splice(i, 1);
+        t.updatedAt = new Date().toISOString();
+        AR.Store.save(true);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 弹窗里动态的三块原地刷新：进度 / 快速添加 / 最近记录。
+   *  输入框（数量 / 备注）永远不动 —— 这是「快速添加独立逻辑」的核心。 */
+  function refreshEntryBody(cur) {
+    var card = $('modalCard');
+    if (!card) { return; }
+    var top = card.querySelector('#ltTop');
+    var quick = card.querySelector('#ltQuick');
+    var recent = card.querySelector('#ltRecent');
+    if (top) { fillEntryTop(top, cur); }
+    if (quick) { fillEntryQuick(quick, cur); }
+    if (recent) { fillEntryRecent(recent, cur); }
+    refreshHomework();
+  }
+
+  function fillEntryTop(node, cur) {
+    if (!node) { return; }
+    var todayK = U.dateKey(new Date());
+    var s = AR.Store.longTaskStats(cur, todayK);
+    var unit = cur.unit || '';
+    var color = U.colorHex(cur.colorKey || '#5B8DEF');
+    node.innerHTML = '<div class="lt-top">'
+      + '<div class="lt-top-name">' + U.escapeHtml(cur.name || '未命名') + '</div>'
+      + '<div class="lt-top-val"><b>' + ltNum(s.total) + '</b>'
+      + '<span class="muted"> / ' + ltNum(s.target) + ' ' + U.escapeHtml(unit) + '</span></div>'
+      + '<div class="lt-bar big"><i style="width:' + Math.round(s.rate * 100) + '%;background:'
+      + U.escapeHtml(color) + '"></i></div>'
+      + '<div class="lt-top-sub">今日 +' + ltNum(s.today) + ' · 近 7 天 +' + ltNum(s.week)
+      + ' · 完成率 ' + s.percent + '%</div>'
+      + '</div>';
+  }
+
+  /** 快速添加区：点了立刻入账，「↶ 撤销上一笔」就在旁边 —— 自成一套。 */
+  function fillEntryQuick(node, cur) {
+    if (!node) { return; }
+    node.innerHTML = '';
+    var quicks = [1, 2, 5, -1];
+    for (var q = 0; q < quicks.length; q++) {
+      (function (amt) {
+        var b = el('<button class="chip-btn" type="button">' + (amt > 0 ? '+' : '') + ltNum(amt) + '</button>');
+        b.addEventListener('click', function () {
+          var note = ((($('modalCard') || {}).querySelector('#ltNote') || {}).value) || '';
+          var e = AR.Store.longTaskAddEntry(cur.id, amt, note);
+          if (!e) { toast('记不上，换个数量试试'); return; }
+          AR.Bridge.haptic('medium', b);
+          toast('已记 ' + (amt > 0 ? '+' : '') + ltNum(amt) + (cur.unit ? ' ' + cur.unit : ''));
+          refreshEntryBody(cur);   // 只刷进度 / 最近记录，输入框一个字不动
+        });
+        node.appendChild(b);
+      })(quicks[q]);
+    }
+    if (AR.Store.longTaskRecentEntries(cur, 1).length) {
+      var undo = el('<button class="chip-btn lt-undo" type="button">↶ 撤销上一笔</button>');
+      undo.addEventListener('click', function () {
+        var last = AR.Store.longTaskRecentEntries(cur, 1)[0];
+        if (!removeEntryRobust(cur.id, last)) { toast('没有可撤销的记录'); return; }
+        AR.Bridge.haptic('warn', undo);
+        toast('已撤销上一笔');
+        refreshEntryBody(cur);
+      });
+      node.appendChild(undo);
+    }
+  }
+
+  function fillEntryRecent(node, cur) {
+    if (!node) { return; }
+    node.innerHTML = '';
+    var recents = AR.Store.longTaskRecentEntries(cur, 6);
+    if (!recents.length) { return; }
+    node.appendChild(el('<div class="lt-recent-title">最近记录 · 点 ✕ 删掉记错的一笔</div>'));
+    for (var r = 0; r < recents.length; r++) {
+      (function (e) {
+        var day = AR.Store.longTaskEntryDay(e);
+        var d = day ? U.parseDateKey(day) : null;
+        var label = d ? ((d.getMonth() + 1) + '/' + d.getDate()) : '';
+        var row = el('<div class="lt-recent-row">'
+          + '<span class="lt-recent-amt">' + ltNum(e.amount) + '</span>'
+          + '<span class="lt-recent-day">' + label + '</span>'
+          + '<span class="lt-recent-note">' + U.escapeHtml(e.note || '') + '</span>'
+          + '<button class="lt-del" type="button" title="删掉这一笔">✕</button></div>');
+        row.querySelector('.lt-del').addEventListener('click', function () {
+          if (!removeEntryRobust(cur.id, e)) { toast('没删掉，再试一次'); return; }
+          AR.Bridge.haptic('warn', row);
+          toast('已删掉这一笔');
+          refreshEntryBody(cur);
+        });
+        node.appendChild(row);
+      })(recents[r]);
+    }
+  }
+
+  /** 让软键盘不自己弹出来：只要焦点落在输入框上就挪开（用户主动点输入框不受影响） */
+  function blurSoftInputs() {
+    var ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA') && ae.blur) { ae.blur(); }
   }
 
   /** 长期任务 · 新建 / 编辑（设置页里点「＋ 新建」或点某一条） */
@@ -5059,7 +6605,7 @@ var AR = window.AR || (window.AR = {});
       + '<div class="swatches" id="ltColors">' + swatchHtml + '</div></div>'
       + '<label class="lt-check"><input type="checkbox" id="ltShow"'
       + (cur.showInToday !== false ? ' checked' : '') + '>'
-      + '<span>在今日页显示（放在作业卡片的「长期任务」小节里，和作业分开统计）</span></label>'
+      + '<span>在今日页显示（独立的「长期任务」卡片，和作业分开统计）</span></label>'
       + '</div>');
     var units = ['小时', '次', '篇', '公里', '页'];
     var ubox = el('<div class="lt-units"></div>');
@@ -5138,34 +6684,34 @@ var AR = window.AR || (window.AR = {});
       body: body,
       actions: actions
     });
+    // 不弹输入法：编辑弹窗打开后把焦点挪出输入框，想填的时候再手动点
+    setTimeout(blurSoftInputs, 0);
   }
 
   /**
    * 作业面板。
    *   mode = 'today' → 一条汇总（点开就地展开，默认收起）
    *   mode = 'next'  → 直接铺开条目（当天课都上完之后）
+   * 长期任务不再折在这里（v0.3.8b），它有自己独立的一张卡片（longTaskCard）。
    */
   function homeworkNode(mode) {
     var board = AR.Store.taskBoard ? AR.Store.taskBoard(U.dateKey(new Date())) : { open: [], done: [], doneWeek: [] };
     var openN = board.open.length, doneN = board.done.length;
     var weekN = (board.doneWeek || []).length;
-    var ltList = AR.Store.longTaskTodayList ? AR.Store.longTaskTodayList() : [];
-    var ltN = ltList.length;
     if (mode === 'today') {
       var wrap = el('<div class="hw-card" id="hwToday"></div>');
-      if (!openN && !doneN && !weekN && !ltN) { wrap.hidden = true; return wrap; }
+      wrap.setAttribute('data-hwnode', 'hw');
+      wrap.__rebuild = function () { return homeworkNode('today'); };
+      if (!openN && !doneN && !weekN) { wrap.hidden = true; return wrap; }
       var sum = el('<button class="hw-sum" type="button">'
         + '<span class="hw-ico">✎</span>'
         + '<span class="hw-t">作业</span>'
         + '<span class="hw-n">' + (openN ? openN + ' 条未完成' : '已全部完成')
-        + (doneN ? ' · 已完成 ' + doneN : '')
-        + (ltN ? ' · 长期任务 ' + ltN : '') + '</span>'
+        + (doneN ? ' · 已完成 ' + doneN : '') + '</span>'
         + '<span class="hw-chev">▸</span></button>');
       var body = el('<div class="hw-body"></div>');
       body.hidden = !hwOpen;
       body.appendChild(hwListBox(board));
-      var lt = longTaskNode();
-      if (lt) { body.appendChild(lt); }
       sum.addEventListener('click', function () {
         AR.Bridge.haptic('light', sum);
         hwOpen = !hwOpen;
@@ -5177,22 +6723,28 @@ var AR = window.AR || (window.AR = {});
       return wrap;
     }
     var box = el('<div class="hw-card" id="hwNext"></div>');
-    if (!openN && !doneN && !weekN && !ltN) { box.hidden = true; return box; }
+    box.setAttribute('data-hwnode', 'hw');
+    box.__rebuild = function () { return homeworkNode('next'); };
+    if (!openN && !doneN && !weekN) { box.hidden = true; return box; }
     box.appendChild(el('<div class="hw-head"><span class="hw-ico">✎</span><span class="hw-t">今日作业</span>'
       + '<span class="hw-n">' + (openN ? openN + ' 条未完成' : '已全部完成')
-      + (ltN ? ' · 长期任务 ' + ltN : '') + '</span></div>'));
+      + (doneN ? ' · 已完成 ' + doneN : '') + '</span></div>'));
     box.appendChild(hwListBox(board));
-    var ltNext = longTaskNode();
-    if (ltNext) { box.appendChild(ltNext); }
     return box;
   }
 
-  /** 只重画作业面板（不整页重画，展开状态和滚动位置都不受影响） */
+  /**
+   * 只重画作业 / 长期任务相关的卡片（不整页重画，展开状态和滚动位置都不受影响）。
+   * 凡是带 data-hwnode + __rebuild 的节点都会就地重建 —— 今日页、最近的课、
+   * 自定义模块页里的实例一起刷新，不会只更新第一份。
+   */
   function refreshHomework() {
-    var a = $('hwToday');
-    if (a && a.parentNode) { a.parentNode.replaceChild(homeworkNode('today'), a); }
-    var b = $('hwNext');
-    if (b && b.parentNode) { b.parentNode.replaceChild(homeworkNode('next'), b); }
+    var nodes = document.querySelectorAll('[data-hwnode]');
+    for (var i = 0; i < nodes.length; i++) {
+      var n = nodes[i];
+      if (!n.__rebuild || !n.parentNode) { continue; }
+      try { n.parentNode.replaceChild(n.__rebuild(), n); } catch (e) { }
+    }
   }
 
   /**
@@ -5290,10 +6842,17 @@ var AR = window.AR || (window.AR = {});
         }
         row.querySelector('.tl-del').addEventListener('click', function (ev) {
           ev.stopPropagation();
-          AR.Store.removeTask(t.id);
-          AR.Bridge.haptic('warn', row);
-          refreshHomework();
-          row.parentNode.removeChild(row);
+          // v0.4.0：删作业记录要二次确认（做完的记录会一起没）
+          confirmDanger({
+            title: '删除这条作业记录？', sub: t.text || '',
+            text: '删了就找不回来了；如果它已经完成，完成记录也会一起没。',
+            okLabel: '确认删除',
+            onOk: function () {
+              AR.Store.removeTask(t.id);
+              AR.Bridge.haptic('warn', $('modalCard'));
+              refreshHomework();
+            }
+          });
         });
         box.appendChild(row);
       })(list[i]);
@@ -5624,8 +7183,11 @@ var AR = window.AR || (window.AR = {});
   /**
    * 注意：周表页的「周视图 / 月视图」在 .week-bar 里，而 .week-strip（周次快切）
    * 是 .week-bar 的**子元素** —— 名单里只留 .week-bar，否则父子各播一遍会双重淡入。
+   * v0.4.0：设置改成「分类列表 + 二级页」之后，分类行（.set-cat）、返回条、
+   * 页内标签也要一起走统一入场 —— 不然首页整块是"啪"地出现，看着就是动画没了。
    */
-  var RISE_SEL = '.view-head, .week-bar, .zone, .glass.panel, .settings-nav, .set-section';
+  var RISE_SEL = '.view-head, .week-bar, .zone, .glass.panel, .set-section, .custom-modules > *,'
+    + ' .set-home > .set-cat, .set-back, .set-tabs';
 
   function riseNodes(root) {
     return (root && root.querySelectorAll) ? root.querySelectorAll(RISE_SEL) : [];
@@ -6123,6 +7685,14 @@ var AR = window.AR || (window.AR = {});
     for (var i = 0; i < btns.length; i++) {
       btns[i].addEventListener('click', function (ev) {
         show(ev.currentTarget.getAttribute('data-nav'));
+      });
+    }
+    // 实验性「模块」页：标签形态切换 + 页里回导入页的入口
+    syncCustomTabNav();
+    if ($('btnCustomToImport')) {
+      $('btnCustomToImport').addEventListener('click', function () {
+        AR.Bridge.haptic('light', $('btnCustomToImport'));
+        show('import');
       });
     }
     /**
@@ -7240,8 +8810,18 @@ var AR = window.AR || (window.AR = {});
     openLongTaskEdit: openLongTaskEdit,
     refreshHomeworkPanels: refreshHomeworkPanels,
     refreshHomework: refreshHomework,
+    CUSTOM_MODULES: CUSTOM_MODULES,
+    customTabCfg: customTabCfg,
+    customTabActive: customTabActive,
+    syncCustomTabNav: syncCustomTabNav,
+    renderCustom: renderCustom,
     openDayShift: openDayShift,
     openQuickAdd: openQuickAdd,
+    openEventForm: openEventForm,
+    openEventModal: openEventModal,
+    openAgendaActions: openAgendaActions,
+    openTypeManage: openTypeManage,
+    confirmDanger: confirmDanger,
     devApply: devApply,
     devFlags: devFlags,
     devDiagnostics: devDiagnostics,
