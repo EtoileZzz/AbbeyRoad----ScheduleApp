@@ -5038,6 +5038,15 @@ var AR = window.AR || (window.AR = {});
       }
       var saveBtn = document.querySelector('#modalCard .modal-actions .btn.primary');
       if (saveBtn) { saveBtn.textContent = scope === 'once' ? '保存这一次' : '保存到所有时段'; }
+      /* v0.4.1：删除按钮的文案跟着作用域走（仅这次=取消这一天 / 所有时段=删整个每周时段） */
+      var acts = document.querySelectorAll('.modal-actions .btn');
+      for (var ai = 0; ai < acts.length; ai++) {
+        var at = acts[ai].textContent;
+        if (at === '取消这一天的课' || at === '删除这个每周时段' || at === '删除这一次课') {
+          acts[ai].textContent = !realBlock ? '删除这一次课'
+            : (scope === 'once' ? '取消这一天的课' : '删除这个每周时段');
+        }
+      }
     }
     for (var si = 0; si < scopeBtns.length; si++) {
       (function (btn) {
@@ -5370,24 +5379,46 @@ var AR = window.AR || (window.AR = {});
       wide: true,
       actions: [
         {
-          label: '删除这个时段', kind: 'danger',
+          /**
+           * v0.4.1 方案 A：删除**尊重上面的作用域**
+           *   · 仅这次   → 只取消当天这一节（写一条 cancel 记录，其它周照常，模板保留）
+           *   · 所有时段 → 删掉这个每周时段的所有周（其它星期/节次不动）
+           *   · 单次课（补课/加课/调休过来的）→ 直接删这条记录
+           */
+          label: (scope === 'once' && !realBlock) ? '删除这一次课'
+            : (scope === 'once' ? '取消这一天的课' : '删除这个每周时段'),
+          kind: 'danger',
           onClick: function (close) {
-            /**
-             * v0.4.0 修复：必须先关掉编辑器、再弹确认 ——
-             * openModal 是"原地替换"（栈只留最后一个），先弹确认再 close() 会把
-             * 刚弹出的确认框关掉，用户看到一闪、什么都没删。
-             */
-            close();
+            close();   // 先关编辑器，再弹确认（openModal 是原地替换）
+            var onceOnly = scope === 'once';
+            var isSingle = onceOnly && !realBlock;
+            var dateKeyNow = U.dateKey(day);
             confirmDanger({
-              title: '删除这个时段？',
-              sub: course.name + ' · ' + U.WEEKDAY_NAMES[U.weekdayOf(day)] + ' ' + U.escapeHtml(item.periodLabel || ''),
-              text: '删掉后这门课的这个时段就不在课表里了，排课/时间/地点设置也会一起没。',
-              okLabel: '确认删除',
+              title: isSingle ? '删除这一次课？' : (onceOnly ? '取消这一天的课？' : '删除这个每周时段？'),
+              sub: course.name + ' · ' + U.WEEKDAY_NAMES[U.weekdayOf(day)] + ' ' + dayShort
+                + (onceOnly ? '' : ' · 所有周'),
+              text: onceOnly
+                ? ('只取消 ' + dayShort + ' 这一天的这一节，其它周照常上课。'
+                  + '5 秒内可撤销，之后也能在「设置 → 数据与同步 → 回收站」里找回。')
+                : '这个每周时段的所有周都会删掉（其它星期/节次的时段不动）。'
+                  + '5 秒内可撤销，之后也能在回收站恢复。',
+              okLabel: isSingle ? '确认删除' : (onceOnly ? '取消这一天' : '确认删除'),
               onOk: function () {
-                var ent = realBlock ? 'blocks' : 'overrides';
-                var delId = realBlock ? block.id : (item.override ? item.override.id : null);
-                if (realBlock) { AR.Store.removeBlock(block.id); }
-                else if (item.override) { AR.Store.removeOverride(item.override.id); }
+                var undoEntity = null, undoId = null, undoParent = null;
+                if (isSingle) {
+                  if (item.override) { AR.Store.removeOverride(item.override.id); undoEntity = 'overrides'; undoId = item.override.id; }
+                } else if (onceOnly) {
+                  var cancelOv = AR.Store.upsertOverride(realBlock.id, course.id, dateKeyNow,
+                    { type: 'cancel', newDate: null });
+                  // 撤销 = 把刚写的这条取消记录删掉
+                  undoEntity = 'cancelOverride'; undoId = cancelOv ? cancelOv.id : null;
+                } else if (realBlock) {
+                  AR.Store.removeBlock(realBlock.id);
+                  undoEntity = 'blocks'; undoId = realBlock.id;
+                } else if (item.override) {
+                  AR.Store.removeOverride(item.override.id);
+                  undoEntity = 'overrides'; undoId = item.override.id;
+                }
                 AR.Bridge.haptic('warn', $('modalCard'));
                 if (AR.Panels && AR.Panels.refreshAll) { AR.Panels.refreshAll(); }
                 else {
@@ -5395,8 +5426,9 @@ var AR = window.AR || (window.AR = {});
                   if (currentView === 'week') { renderWeek(); }
                   refreshHomework();
                 }
-                toastUndo('已删除这个时段', '撤销', function () {
-                  if (delId) { AR.Store.restore(ent, delId); }
+                var undoLabel = isSingle ? '已删除这一次课' : (onceOnly ? '已取消这一天的课' : '已删除这个每周时段');
+                toastUndo(undoLabel, '撤销', function () {
+                  if (undoId) { AR.Store.restore(undoEntity === 'cancelOverride' ? 'overrides' : undoEntity, undoId, undoParent); }
                   if (AR.Panels && AR.Panels.refreshAll) { AR.Panels.refreshAll(); }
                 });
               }

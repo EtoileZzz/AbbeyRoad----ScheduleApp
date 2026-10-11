@@ -264,6 +264,86 @@ async function main() {
   ok('R5c 清空回收站：记录真的从文件里拿掉',
     emptyTrash.before >= 1 && emptyTrash.after === 0 && emptyTrash.raw === 0, JSON.stringify(emptyTrash));
 
+  // ── R7 方案 A：删除尊重作用域 ───────────────────────────
+  const scope1 = await J(`(function(){
+    AR.UI.show('week');
+    var blocks = document.querySelectorAll('#weekGridWrap .wt-block');
+    var target = null;
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].className.indexOf('wt-evblock') < 0) { target = blocks[i]; break; }
+    }
+    if (!target) { return { err: '没有课程块' }; }
+    target.click();
+    var onceBtn = document.querySelector('#ebScope .scope-btn[data-scope="once"]');
+    if (!onceBtn) { return { err: '没有「仅这次」作用域按钮' }; }
+    onceBtn.click();
+    var labels = [];
+    var acts = document.querySelectorAll('.modal-actions .btn');
+    for (var a = 0; a < acts.length; a++) { labels.push(acts[a].textContent); }
+    return { labels: labels.join(','), blocksBefore: AR.Store.liveOnly(AR.Store.get().blocks).length };
+  })()`);
+  const scope2 = await J(`(function(){
+    var acts = document.querySelectorAll('.modal-actions .btn');
+    var del = null;
+    for (var i = 0; i < acts.length; i++) { if (acts[i].textContent === '取消这一天的课') { del = acts[i]; } }
+    if (!del) { return { err: '删除按钮文案没跟着作用域走' }; }
+    del.click();
+    return 'ok';
+  })()`);
+  await sleep(220);
+  const scope3 = await J(`(function(){
+    var acts = document.querySelectorAll('.modal-actions .btn');
+    var okBtn = null, labels = [];
+    for (var i = 0; i < acts.length; i++) {
+      labels.push(acts[i].textContent);
+      if (acts[i].textContent === '取消这一天') { okBtn = acts[i]; }
+    }
+    if (!okBtn) { return { labels: labels.join(','), err: '没看到「取消这一天」确认' }; }
+    okBtn.click();
+    var S = AR.Store.get();
+    var live = AR.Store.liveOnly(S.blocks).length;
+    var cancels = 0;
+    for (var k = 0; k < S.overrides.length; k++) {
+      if (S.overrides[k].type === 'cancel' && !S.overrides[k].deletedAt) { cancels++; }
+    }
+    return { live: live, cancels: cancels, labels: labels.join(',') };
+  })()`);
+  const scope4 = await J(`(function(){
+    // 反过来测「所有时段」：应该软删除这个每周时段
+    AR.UI.show('week');
+    var blocks = document.querySelectorAll('#weekGridWrap .wt-block');
+    var target = null;
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].className.indexOf('wt-evblock') < 0) { target = blocks[i]; break; }
+    }
+    if (!target) { return { err: '没有课程块' }; }
+    var before = AR.Store.liveOnly(AR.Store.get().blocks).length;
+    target.click();
+    var allBtn = document.querySelector('#ebScope .scope-btn[data-scope="all"]');
+    if (allBtn) { allBtn.click(); }
+    var acts = document.querySelectorAll('.modal-actions .btn');
+    var del = null;
+    for (var i = 0; i < acts.length; i++) { if (acts[i].textContent === '删除这个每周时段') { del = acts[i]; } }
+    if (!del) { return { err: '「所有时段」下删除按钮文案不对' }; }
+    del.click();
+    return { before: before };
+  })()`);
+  await sleep(220);
+  const scope5 = await J(`(function(){
+    var acts = document.querySelectorAll('.modal-actions .btn');
+    var okBtn = null;
+    for (var i = 0; i < acts.length; i++) { if (acts[i].textContent === '确认删除') { okBtn = acts[i]; } }
+    if (okBtn) { okBtn.click(); }
+    return { after: AR.Store.liveOnly(AR.Store.get().blocks).length,
+             trash: AR.Store.trashList().filter(function (t) { return t.entity === 'blocks'; }).length,
+             toast: !!document.querySelector('#toastHost .toast-undo') };
+  })()`);
+  ok('R7 方案 A：仅这次=只取消这一天（时段还在、多一条取消记录）；所有时段=删掉整个每周时段进回收站',
+    scope1.labels.indexOf('取消这一天的课') >= 0
+    && scope3.live === scope1.blocksBefore && scope3.cancels >= 1
+    && scope5.after === scope4.before - 1 && scope5.trash >= 1 && scope5.toast === true,
+    JSON.stringify({ s1: scope1, s3: scope3, s4: scope4, s5: scope5 }));
+
   // ── 清理 ────────────────────────────────────────────────
   await J(`(function(){
     var S = AR.Store.get();

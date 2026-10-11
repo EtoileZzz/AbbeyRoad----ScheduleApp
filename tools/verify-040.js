@@ -493,7 +493,11 @@ async function main() {
     target.click();
     var btns = document.querySelectorAll('.modal-actions .btn');
     var del = null;
-    for (var b = 0; b < btns.length; b++) { if (btns[b].textContent === '删除这个时段') { del = btns[b]; } }
+    for (var b = 0; b < btns.length; b++) {
+      var tx = btns[b].textContent;
+      // v0.4.1：删除按钮文案跟着作用域走（默认「所有时段」）
+      if (tx === '删除这个每周时段' || tx === '删除这个时段' || tx === '取消这一天的课' || tx === '删除这一次课') { del = btns[b]; }
+    }
     if (!del) { return { err: 'no delete action' }; }
     del.click();
     var labels = [];
