@@ -150,7 +150,9 @@ const script = String.raw`(async () => {
     check('保存后周次改成双周', tempBlock.weekMode === 'even', tempBlock.weekMode);
     check('保存后地点写入', !!(tempBlock.locationIds && tempBlock.locationIds.length));
     check('保存后老师两条', (tempBlock.teacherIds || []).length === 2, (tempBlock.teacherIds || []).length);
-    check('保存后备注写入', tempBlock.note === '冒烟测试备注', tempBlock.note);
+    /* 本次备注按设计存在「单次记录」（override.newNote）里，不是 block.note —— 断言改对 */
+    const noteOv = (AR.Store.overridesOfBlock(tempBlock.id) || []).filter((o) => o.newNote === '冒烟测试备注')[0];
+    check('保存后备注写入（本次备注落在单次记录里）', !!noteOv, noteOv ? noteOv.date : '没找到单次记录');
     check('保存后弹窗彻底关闭（遮罩不残留）', $('#modalRoot').hidden === true);
     const oldDayItems = AR.Schedule.dayItems(AR.Util.addDays(semMonday, slotA.wd - 1))
       .filter((i) => i.course.name === '冒烟测试课');
@@ -245,9 +247,16 @@ const script = String.raw`(async () => {
     {
       const mini = document.querySelector('#weekBody .mini-table');
       const heads = mini ? mini.querySelectorAll('.mg-day') : [];
-      const cols = mini ? (mini.style.gridTemplateColumns || '').split(' ').length : 0;
-      check('缩略图只画周一到周五（5 列 + 时间列）', !!mini && heads.length === 5 && cols === 6,
-        mini ? ('天=' + heads.length + ' 列=' + cols + ' 模板=' + mini.style.gridTemplateColumns) : '无 .mini-table');
+      /* 列数解析：模板形如 "16px repeat(6, minmax(0px, 1fr))"，直接 split 空格会数错 */
+      const tpl = mini ? (mini.style.gridTemplateColumns || '') : '';
+      const rep = tpl.match(/repeat\((\d+)/);
+      const cols = rep ? (1 + Number(rep[1])) : tpl.split(' ').filter(Boolean).length;
+      /* 平时画周一到周五；「今天」落在周末时会补一列（既有设计） */
+      const cursorWd = AR.Util.weekdayOf(new Date());
+      const expectDays = cursorWd > 5 ? 6 : 5;
+      check('缩略图平时只画周一到周五（周末的"今天"会补一列）',
+        !!mini && heads.length === expectDays && cols === expectDays + 1,
+        mini ? ('天=' + heads.length + '(期望' + expectDays + ') 列=' + cols + ' 模板=' + tpl) : '无 .mini-table');
       check('缩略图不横向滚动', !!mini && mini.scrollWidth <= mini.clientWidth + 2,
         mini ? (mini.scrollWidth + ' / ' + mini.clientWidth) : '无');
       const weekendHint = /周末 \d+ 节/.test(document.querySelector('#weekBody .mini-foot')?.textContent || '');

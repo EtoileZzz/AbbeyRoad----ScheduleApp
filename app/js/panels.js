@@ -1045,7 +1045,7 @@ var AR = window.AR || (window.AR = {});
     grid.appendChild(bar);
     // 「数据与同步」面板多：页内标签切换，不滚动
     if (cat.key === 'syncdata') {
-      var tabs = [['sync', '导入与同步'], ['integration', '系统集成'], ['data', '数据与备份']];
+      var tabs = [['sync', '导入与同步'], ['integration', '系统集成'], ['data', '数据与备份'], ['trash', '回收站']];
       var tabRow = el('<div class="segmented set-tabs"></div>');
       for (var t = 0; t < tabs.length; t++) {
         (function (tk, tl) {
@@ -1060,7 +1060,9 @@ var AR = window.AR || (window.AR = {});
         })(tabs[t][0], tabs[t][1]);
       }
       grid.appendChild(tabRow);
-      var one = syncTab === 'sync' ? panelSync() : (syncTab === 'integration' ? panelIntegration() : panelData());
+      var one = syncTab === 'sync' ? panelSync()
+        : (syncTab === 'integration' ? panelIntegration()
+          : (syncTab === 'trash' ? panelTrash() : panelData()));
       var host0 = el('<div class="set-detail" id="set-' + cat.key + '"></div>');
       host0.appendChild(one);
       grid.appendChild(host0);
@@ -2428,12 +2430,69 @@ var AR = window.AR || (window.AR = {});
   }
 
   /* 7 · 数据与备份 */
+  /**
+   * 回收站（v0.4.1）：所有软删除的东西都在这里，任何一项都能恢复原样。
+   * 「清空回收站」才是真删（墓碑保留，所以旧存档导入回来也不会复活）。
+   */
+  function panelTrash() {
+    var box = el('<div></div>');
+    var list = AR.Store.trashList ? AR.Store.trashList() : [];
+    box.appendChild(el('<p class="muted">删掉的课程、时段、日程、作业、长期任务、速记、类型都在这儿，'
+      + '每一项都能恢复原样。只有点了「清空回收站」才真的没了。</p>'));
+    if (!list.length) {
+      box.appendChild(el('<p class="muted" style="margin-top:8px">回收站是空的。</p>'));
+      return panel('回收站', box, 'trash');
+    }
+    var host = el('<div class="trash-list"></div>');
+    for (var i = 0; i < list.length; i++) {
+      (function (it) {
+        var when = String(it.deletedAt || '').slice(5, 16).replace('T', ' ');
+        var row = el('<div class="cm-line">'
+          + '<span class="cm-tag trash-tag">' + esc(it.label) + '</span>'
+          + '<span class="cm-name">' + esc(it.title || '')
+          + '<span class="cm-sub">' + esc(it.sub || '') + (when ? (it.sub ? ' · ' : '') + '删于 ' + when : '') + '</span></span>'
+          + '<button class="chip-btn trash-back" type="button">恢复</button></div>');
+        row.querySelector('.trash-back').addEventListener('click', function () {
+          AR.Store.restore(it.entity, it.id, it.parentId);
+          AR.Bridge.haptic('medium', row);
+          AR.UI.toast('已恢复：' + (it.title || ''));
+          refreshAll();
+          renderSettings();
+        });
+        host.appendChild(row);
+      })(list[i]);
+    }
+    box.appendChild(host);
+    var clear = el('<button class="btn danger" type="button" style="margin-top:10px">清空回收站</button>');
+    clear.addEventListener('click', function () {
+      AR.UI.confirmDanger({
+        title: '清空回收站？',
+        text: '里面的记录会被彻底删除，之后无法恢复（墓碑留着，也不会被旧存档导入回来）。',
+        okLabel: '确认清空',
+        onOk: function () {
+          AR.Store.emptyTrash();
+          refreshAll();
+          renderSettings();
+          AR.UI.toast('回收站已清空');
+        }
+      });
+    });
+    box.appendChild(clear);
+    return panel('回收站', box, 'trash');
+  }
+
   function panelData() {
     var box = el('<div></div>');
     var size = 0;
     try { size = (JSON.stringify(S).length / 1024).toFixed(1); } catch (e) { }
-    box.appendChild(el('<p class="muted">课程 ' + S.courses.length + ' 门 · 时段 ' + S.blocks.length
-      + ' 条 · 变动 ' + S.overrides.length + ' 条 · 数据量约 ' + size + ' KB（只存在本机）</p>'));
+    /* v0.4.1：这里的数字只算"还活着的"，回收站里的不算 */
+    var liveCourses = AR.Store.courseList ? AR.Store.courseList().length : S.courses.length;
+    var liveBlocks = (AR.Store.liveOnly ? AR.Store.liveOnly(S.blocks) : S.blocks).length;
+    var liveOv = (AR.Store.liveOnly ? AR.Store.liveOnly(S.overrides) : S.overrides).length;
+    var trashN = (AR.Store.trashList ? AR.Store.trashList() : []).length;
+    box.appendChild(el('<p class="muted">课程 ' + liveCourses + ' 门 · 时段 ' + liveBlocks
+      + ' 条 · 变动 ' + liveOv + ' 条 · 数据量约 ' + size + ' KB（只存在本机）'
+      + (trashN ? ' · 回收站里还有 ' + trashN + ' 项' : '') + '</p>'));
     var row = el('<div class="row gap">'
       + '<button class="btn" type="button" id="stDemo">载入演示课表</button>'
       + '<button class="btn" type="button" id="stBackup">导出备份</button>'

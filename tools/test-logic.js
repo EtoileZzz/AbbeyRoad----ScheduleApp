@@ -485,11 +485,13 @@ const l1 = AR.Store.ensureLocationByRaw('X楼305');
 const l2 = AR.Store.ensureLocationByRaw('X楼305');
 eq('地点：同名复用同一条', l1.id, l2.id);
 
-// 删除单个时段：排课与它的单次变动一起清掉
-const beforeBlocks = AR.Store.get().blocks.length;
+// 删除单个时段：排课与它的单次变动一起清掉（v0.4.1：软删除 —— 界面看到的少一条，回收站里留着）
+const liveBefore = AR.Store.liveOnly(AR.Store.get().blocks).length;
 AR.Store.removeBlock(edBlock.id);
-eq('删除时段：排课少一条', AR.Store.get().blocks.length, beforeBlocks - 1);
+eq('删除时段：界面上的排课少一条', AR.Store.liveOnly(AR.Store.get().blocks).length, liveBefore - 1);
+eq('删除时段：软删除标记 + 进回收站', !!AR.Store.isDeleted(AR.Store.get().blocks.filter((b) => b.id === edBlock.id)[0]), true);
 eq('删除时段：连带单次变动一起清掉', AR.Store.overridesOfBlock(edBlock.id).length, 0);
+eq('删除时段：能恢复回来', !!(AR.Store.restore('blocks', edBlock.id) && AR.Store.blockById(edBlock.id)), true);
 
 /* ── 输出 ────────────────────────────────────────────────── */
 

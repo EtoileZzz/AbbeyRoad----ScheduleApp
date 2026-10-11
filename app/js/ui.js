@@ -1146,7 +1146,7 @@ var AR = window.AR || (window.AR = {});
             + '<span class="cm-num">' + U.escapeHtml(fmtRange(it)) + '</span></button>');
           row.addEventListener('click', function () {
             AR.Bridge.haptic('light', row);
-            openCourseModal(it);
+            openCourseModal(it, { readOnly: true });   // v0.4.1：「我的」页只看不改
           });
           bodyEl.appendChild(row);
         })(items[i]);
@@ -1187,7 +1187,7 @@ var AR = window.AR || (window.AR = {});
       + ' · ' + U.escapeHtml(relativeText(it, now, target.day) || '') + '</span></button>');
     block.addEventListener('click', function () {
       AR.Bridge.haptic('light', block);
-      openCourseModal(it);
+      openCourseModal(it, { readOnly: true });   // v0.4.1：「我的」页只看不改
     });
     bodyEl.appendChild(block);
     card.appendChild(bodyEl);
@@ -1285,7 +1285,11 @@ var AR = window.AR || (window.AR = {});
             AR.Store.removeEvent(ev.id);
             AR.Bridge.haptic('warn', $('modalCard'));
             afterEventChange();
-            toast('已删除');
+            // v0.4.1：5 秒内可撤销；过期后到「设置 → 数据与同步 → 回收站」找回
+            toastUndo('已删除日程：' + (ev.title || ''), '撤销', function () {
+              AR.Store.restore('events', ev.id);
+              afterEventChange();
+            });
           }
         });
       }
@@ -1553,7 +1557,10 @@ var AR = window.AR || (window.AR = {});
           AR.Store.removeEvent(ev.id);
           AR.Bridge.haptic('warn', $('modalCard'));
           afterEventChange();
-          toast('已删除');
+          toastUndo('已删除日程：' + (ev.title || ''), '撤销', function () {
+            AR.Store.restore('events', ev.id);
+            afterEventChange();
+          });
         }
       });
     });
@@ -1841,8 +1848,16 @@ var AR = window.AR || (window.AR = {});
     return st.quickTodos || (st.quickTodos = []);
   }
 
+  /** v0.4.1：列表只显示没删的（删掉的进回收站） */
+  function todoLiveList() {
+    if (AR.Store.quickTodoList) { return AR.Store.quickTodoList(); }
+    var all = todoList(), out = [];
+    for (var i = 0; i < all.length; i++) { if (!all[i].deletedAt) { out.push(all[i]); } }
+    return out;
+  }
+
   function modTodo() {
-    var list = todoList();
+    var list = todoLiveList();
     var openN = 0;
     for (var c = 0; c < list.length; c++) { if (!list[c].done) { openN++; } }
     var card = el('<div class="hw-card"></div>');
@@ -1883,19 +1898,24 @@ var AR = window.AR || (window.AR = {});
           refreshHomework();
         });
         row.querySelector('.lt-del').addEventListener('click', function () {
-          // v0.4.0：删速记也要二次确认
+          // v0.4.0 二次确认；v0.4.1 删除改为软删除（可撤销 / 回收站找回）
           confirmDanger({
             title: '删除这条速记？', sub: t.text || '',
-            text: '删了就找不回来了。',
+            text: '删了会进回收站，5 秒内可以撤销，之后去「设置 → 数据与同步 → 回收站」也能找回。',
             okLabel: '确认删除',
             onOk: function () {
-              var arr = todoList();
-              for (var k = 0; k < arr.length; k++) {
-                if (arr[k].id === t.id) { arr.splice(k, 1); break; }
+              if (AR.Store.quickTodoRemove) { AR.Store.quickTodoRemove(t.id); }
+              else {
+                var arr = todoList();
+                for (var k = 0; k < arr.length; k++) { if (arr[k].id === t.id) { arr.splice(k, 1); break; } }
+                AR.Store.save(true);
               }
-              AR.Store.save(true);
               AR.Bridge.haptic('warn', $('modalCard'));
               refreshHomework();
+              toastUndo('已删除速记：' + (t.text || ''), '撤销', function () {
+                AR.Store.restore('quickTodos', t.id);
+                refreshHomework();
+              });
             }
           });
         });
@@ -4080,10 +4100,20 @@ var AR = window.AR || (window.AR = {});
           });
           var delB = el('<button class="chip-btn" type="button">删</button>');
           delB.addEventListener('click', function () {
-            AR.Store.typeRemove(t.key);
-            AR.Bridge.haptic('warn', delB);
-            toast('已删除类型：' + t.label + '（相关日程变成「其他」）');
-            openTypeManage(backTo);
+            // v0.4.0：删类型会让相关日程变成「其他」，也走二次确认
+            confirmDanger({
+              title: '删除这个类型？', sub: t.label,
+              text: '删掉后，用这个类型的日程会变成「其他」，日程本身不会丢。',
+              okLabel: '确认删除',
+              onOk: function () {
+                AR.Store.typeRemove(t.key);
+                AR.Bridge.haptic('warn', $('modalCard'));
+                openTypeManage(backTo);
+                toastUndo('已删除类型：' + t.label, '撤销', function () {
+                  AR.Store.restore('types', t.key);
+                });
+              }
+            });
           });
           row.appendChild(editB);
           row.appendChild(delB);
@@ -4248,7 +4278,10 @@ var AR = window.AR || (window.AR = {});
               AR.Store.removeEvent(cur.id);
               AR.Bridge.haptic('warn', $('modalCard'));
               afterEventChange();
-              toast('已删除：' + (cur.title || ''));
+              toastUndo('已删除日程：' + (cur.title || ''), '撤销', function () {
+                AR.Store.restore('events', cur.id);
+                afterEventChange();
+              });
             }
           });
         }
@@ -5339,23 +5372,35 @@ var AR = window.AR || (window.AR = {});
         {
           label: '删除这个时段', kind: 'danger',
           onClick: function (close) {
-            // v0.4.0：删课要二次确认（不可撤销）
+            /**
+             * v0.4.0 修复：必须先关掉编辑器、再弹确认 ——
+             * openModal 是"原地替换"（栈只留最后一个），先弹确认再 close() 会把
+             * 刚弹出的确认框关掉，用户看到一闪、什么都没删。
+             */
+            close();
             confirmDanger({
               title: '删除这个时段？',
               sub: course.name + ' · ' + U.WEEKDAY_NAMES[U.weekdayOf(day)] + ' ' + U.escapeHtml(item.periodLabel || ''),
               text: '删掉后这门课的这个时段就不在课表里了，排课/时间/地点设置也会一起没。',
               okLabel: '确认删除',
               onOk: function () {
+                var ent = realBlock ? 'blocks' : 'overrides';
+                var delId = realBlock ? block.id : (item.override ? item.override.id : null);
                 if (realBlock) { AR.Store.removeBlock(block.id); }
                 else if (item.override) { AR.Store.removeOverride(item.override.id); }
                 AR.Bridge.haptic('warn', $('modalCard'));
-                renderToday();
-                if (currentView === 'week') { renderWeek(); }
-                refreshHomework();
-                toast('已删除这个时段');
+                if (AR.Panels && AR.Panels.refreshAll) { AR.Panels.refreshAll(); }
+                else {
+                  renderToday();
+                  if (currentView === 'week') { renderWeek(); }
+                  refreshHomework();
+                }
+                toastUndo('已删除这个时段', '撤销', function () {
+                  if (delId) { AR.Store.restore(ent, delId); }
+                  if (AR.Panels && AR.Panels.refreshAll) { AR.Panels.refreshAll(); }
+                });
               }
             });
-            close();
           }
         },
         {
@@ -5400,6 +5445,8 @@ var AR = window.AR || (window.AR = {});
       + '</div>';
     var actions = [];
     if (opts.readOnly) {
+      // v0.4.1：只读视图不给任何编辑入口，但明确告诉用户去哪儿改
+      body += '<div class="muted" style="margin-top:14px">只读查看 · 要改这节课，到「今日」或「周表」里点它。</div>';
       actions.push({ label: '关闭', kind: 'primary', onClick: function (close) { close(); } });
     } else {
       body += '<div class="muted" style="margin-top:14px">课程名、星期、节次、时间、单双周、老师、地点、颜色，都能在「编辑课程」里改。</div>';
@@ -5408,7 +5455,7 @@ var AR = window.AR || (window.AR = {});
         { label: '设置颜色', onClick: function () { openColorModal(item); } },
         { label: '编辑备注', onClick: function () { openNoteModal(item, 'once'); } },
         { label: '本课备注', onClick: function () { openNoteModal(item, 'course'); } },
-        { label: '删除这门课', kind: 'danger', onClick: function (close) { deleteCourse(item.course.id, close); } },
+        { label: '删除这门课', kind: 'danger', onClick: function (close) { close(); deleteCourse(item.course.id); } },
         { label: '关闭', onClick: function (close) { close(); } }
       );
     }
@@ -5480,18 +5527,28 @@ var AR = window.AR || (window.AR = {});
     }
   }
 
-  function deleteCourse(courseId, close) {
-    var blocks = AR.Store.blocksOfCourse(courseId);
-    for (var i = 0; i < blocks.length; i++) { AR.Store.markDeleted('blocks', blocks[i].id); }
-    var list = S.blocks;
-    S.blocks = list.filter(function (b) { return b.courseId !== courseId; });
-    S.courses = S.courses.filter(function (c) { return c.id !== courseId; });
-    AR.Store.save(true);
-    close();
-    AR.Bridge.haptic('warn', $('zoneNext'));
-    renderToday();
-    renderWeek();
-    toast('已删除该课程');
+  /**
+   * 删掉整门课：先二次确认，再走 AR.Store.removeCourse（课程 + 时段 + 单次调整 + 墓碑）。
+   * v0.4.0 修复：以前这里直接删、没有确认，课程也没进 tombstones（导入时会被旧存档复活）。
+   */
+  function deleteCourse(courseId) {
+    var c = null;
+    for (var i = 0; i < S.courses.length; i++) { if (S.courses[i].id === courseId) { c = S.courses[i]; } }
+    confirmDanger({
+      title: '删除这门课？', sub: c ? c.name : '',
+      text: '这门课的所有时段和单次调整会一起删掉，删了就找不回来了。',
+      okLabel: '确认删除',
+      onOk: function () {
+        if (AR.Store.removeCourse) { AR.Store.removeCourse(courseId); }
+        AR.Bridge.haptic('warn', $('zoneNext'));
+        if (AR.Panels && AR.Panels.refreshAll) { AR.Panels.refreshAll(); }
+        else { renderToday(); renderWeek(); refreshHomework(); }
+        toastUndo('已删除课程' + (c ? '：' + c.name : ''), '撤销', function () {
+          AR.Store.restore('courses', courseId);
+          if (AR.Panels && AR.Panels.refreshAll) { AR.Panels.refreshAll(); }
+        });
+      }
+    });
   }
 
   /* 位置模块 */
@@ -6470,13 +6527,20 @@ var AR = window.AR || (window.AR = {});
    */
   function removeEntryRobust(taskId, e) {
     if (!e) { return false; }
-    if (e.id && AR.Store.longTaskRemoveEntry(taskId, e.id)) { return true; }
+    if (e.id && AR.Store.longTaskRemoveEntry(taskId, e.id)) {
+      // v0.4.1：这一笔也进回收站，5 秒内可撤销
+      toastUndo('已删掉这一笔', '撤销', function () {
+        AR.Store.restore('longTaskEntries', e.id, taskId);
+        refreshEntryBody(AR.Store.longTaskById(taskId));
+      });
+      return true;
+    }
     var t = AR.Store.longTaskById ? AR.Store.longTaskById(taskId) : null;
     var arr = (t && t.entries) || [];
     for (var i = arr.length - 1; i >= 0; i--) {
       if (arr[i] === e || (arr[i].at === e.at && arr[i].amount === e.amount)) {
-        arr.splice(i, 1);
-        t.updatedAt = new Date().toISOString();
+        arr[i].deletedAt = new Date().toISOString();   // 老数据没有 id：软删除兜底
+        t.updatedAt = arr[i].deletedAt;
         AR.Store.save(true);
         return true;
       }
@@ -6649,7 +6713,12 @@ var AR = window.AR || (window.AR = {});
                   c2();
                   AR.UI.refreshHomeworkPanels();
                   refreshHomework();
-                  toast('已删除：' + (cur.name || ''));
+                  // v0.4.1：软删除 + 5 秒撤销
+                  toastUndo('已删除长期任务：' + (cur.name || ''), '撤销', function () {
+                    AR.Store.restore('longTasks', cur.id);
+                    AR.UI.refreshHomeworkPanels();
+                    refreshHomework();
+                  });
                 }
               }
             ]
@@ -6851,6 +6920,10 @@ var AR = window.AR || (window.AR = {});
               AR.Store.removeTask(t.id);
               AR.Bridge.haptic('warn', $('modalCard'));
               refreshHomework();
+              toastUndo('已删除作业记录：' + (t.text || ''), '撤销', function () {
+                AR.Store.restore('tasks', t.id);
+                refreshHomework();
+              });
             }
           });
         });
@@ -6870,6 +6943,33 @@ var AR = window.AR || (window.AR = {});
       node.classList.add('out');
       setTimeout(function () { if (node.parentNode) { node.parentNode.removeChild(node); } }, 220);
     }, 1800);
+  }
+
+  /**
+   * v0.4.1：带「撤销」的提示（默认 5 秒）。
+   * 删除后先给一次反悔机会；没过期就只能去「设置 → 数据与同步 → 回收站」找回。
+   */
+  function toastUndo(msg, undoLabel, onUndo, ms) {
+    var host = $('toastHost');
+    if (!host) { return; }
+    var node = el('<div class="toast toast-undo"><span class="t-msg">' + U.escapeHtml(msg) + '</span>'
+      + '<button class="t-act" type="button">' + U.escapeHtml(undoLabel || '撤销') + '</button></div>');
+    var done = false;
+    var kill = function () {
+      if (!node.parentNode) { return; }
+      node.classList.add('out');
+      setTimeout(function () { if (node.parentNode) { node.parentNode.removeChild(node); } }, 220);
+    };
+    node.querySelector('.t-act').addEventListener('click', function () {
+      if (done) { return; }
+      done = true;
+      AR.Bridge.haptic('medium', node);
+      try { if (onUndo) { onUndo(); } } catch (e) { }
+      toast('已撤销');
+      kill();
+    });
+    host.appendChild(node);
+    setTimeout(kill, ms || 5000);
   }
 
   /* ── 拆分隔条 ─────────────────────────────────────────────── */
@@ -8820,8 +8920,10 @@ var AR = window.AR || (window.AR = {});
     openEventForm: openEventForm,
     openEventModal: openEventModal,
     openAgendaActions: openAgendaActions,
+    deleteCourse: deleteCourse,
     openTypeManage: openTypeManage,
     confirmDanger: confirmDanger,
+    toastUndo: toastUndo,
     devApply: devApply,
     devFlags: devFlags,
     devDiagnostics: devDiagnostics,

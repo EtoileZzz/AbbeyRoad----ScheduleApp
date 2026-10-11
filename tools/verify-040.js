@@ -360,7 +360,7 @@ async function main() {
     return { opened: !!detail, back: !!back, tabs: tabs };
   })()`);
   ok('T10 搜索出「分类 · 项目」命中清单，点一条直接进二级页（数据类有页内标签）',
-    g2.n >= 1 && g3.opened === true && g3.back === true && g3.tabs === 3,
+    g2.n >= 1 && g3.opened === true && g3.back === true && g3.tabs === 4,
     JSON.stringify({ hits: g2, open: g3 }));
 
   const g4 = await J(`(function(){
@@ -409,6 +409,11 @@ async function main() {
 
   // ── 设置：返回一层 / 图标统一 / 二级页入场动画 ──────────
   const nav = await J(`(function(){
+    // 关掉可能的引导层 / 残留弹窗，保证返回键行为可测（真实用户这时不会停在引导层）
+    var ob = document.getElementById('onboarding');
+    if (ob) { ob.hidden = true; }
+    AR.UI.closeModal();
+    AR.UI.closeModal();
     AR.UI.show('settings');
     var icon = document.querySelector('#settingsGrid .set-cat[data-key="widgets"] .set-cat-ico');
     var row = document.querySelector('#settingsGrid .set-cat[data-key="prefs"] .set-cat-head');
@@ -441,6 +446,148 @@ async function main() {
     nav.icon === '📱' && nav.icon !== '▦', 'icon=' + nav.icon);
   ok('T17 从设置首页进二级页有统一入场动画（viewIn）',
     nav.animN > 0, 'animations=' + nav.animN);
+
+  // ── 删除与确认（v0.4.0 修复回归） ────────────────────────
+  const delCourse = await J(`(function(){
+    var S = AR.Store.get();
+    var cid = 'vt-course-1';
+    S.courses.push({ id: cid, name: '冒烟删除课', colorKey: 'blue', track: 'common', updatedAt: new Date().toISOString() });
+    S.blocks.push({ id: 'vt-block-1', courseId: cid, courseName: '冒烟删除课', weekday: 1,
+      periodStart: 1, periodEnd: 2, weekMode: 'all', weeks: '', start: '08:00', end: '09:35',
+      locationIds: [], teacherIds: [], note: '', updatedAt: new Date().toISOString() });
+    S.overrides.push({ id: 'vt-ov-1', courseId: cid, blockId: 'vt-block-1',
+      date: AR.Util.dateKey(new Date()), type: 'edit', patch: {}, updatedAt: new Date().toISOString() });
+    AR.Store.save(true);
+    var r = AR.Store.removeCourse(cid);
+    var tomb = AR.Store.get().tombstones || [];
+    var hasCourseTomb = false, hasBlockTomb = false, hasOvTomb = false;
+    for (var i = 0; i < tomb.length; i++) {
+      if (tomb[i].entity === 'courses' && tomb[i].id === cid) { hasCourseTomb = true; }
+      if (tomb[i].entity === 'blocks' && tomb[i].id === 'vt-block-1') { hasBlockTomb = true; }
+      if (tomb[i].entity === 'overrides' && tomb[i].id === 'vt-ov-1') { hasOvTomb = true; }
+    }
+    var S2 = AR.Store.get();
+    return {
+      ok: !!(r && r.ok),
+      courseGone: AR.Store.liveOnly(S2.courses).filter(function (c) { return c.id === cid; }).length === 0,
+      blockGone: AR.Store.liveOnly(S2.blocks).filter(function (b) { return b.id === 'vt-block-1'; }).length === 0,
+      ovGone: AR.Store.liveOnly(S2.overrides).filter(function (o) { return o.id === 'vt-ov-1'; }).length === 0,
+      hasCourseTomb: hasCourseTomb, hasBlockTomb: hasBlockTomb, hasOvTomb: hasOvTomb
+    };
+  })()`);
+  ok('T18 删整门课：课程/时段/单次调整一起删（软删除 + 墓碑，回收站可恢复）',
+    delCourse.ok === true && delCourse.courseGone === true && delCourse.blockGone === true
+    && delCourse.ovGone === true && delCourse.hasCourseTomb === true && delCourse.hasBlockTomb === true
+    && delCourse.hasOvTomb === true, JSON.stringify(delCourse));
+
+  // 周表点课程块 → 「删除这个时段」必须停在确认框上（不能先弹确认再被 close 掉）
+  const blockDel = await J(`(function(){
+    AR.UI.show('week');
+    var blocks = document.querySelectorAll('#weekGridWrap .wt-block');
+    var target = null;
+    for (var i = 0; i < blocks.length; i++) {
+      if (blocks[i].className.indexOf('wt-evblock') < 0) { target = blocks[i]; break; }
+    }
+    if (!target) { return { err: 'no course block' }; }
+    var before = AR.Store.get().blocks.length;
+    target.click();
+    var btns = document.querySelectorAll('.modal-actions .btn');
+    var del = null;
+    for (var b = 0; b < btns.length; b++) { if (btns[b].textContent === '删除这个时段') { del = btns[b]; } }
+    if (!del) { return { err: 'no delete action' }; }
+    del.click();
+    var labels = [];
+    var after = document.querySelectorAll('.modal-actions .btn');
+    for (var a = 0; a < after.length; a++) { labels.push(after[a].textContent); }
+    return { before: before, afterCount: AR.Store.get().blocks.length, labels: labels.join(','),
+             modalShown: !document.getElementById('modalRoot').hidden };
+  })()`);
+  await sleep(200);
+  const blockDel2 = await J(`(function(){
+    var btns = document.querySelectorAll('.modal-actions .btn');
+    var cancel = null;
+    for (var i = 0; i < btns.length; i++) { if (btns[i].textContent === '取消') { cancel = btns[i]; } }
+    if (cancel) { cancel.click(); }
+    return { blocks: AR.Store.get().blocks.length };
+  })()`);
+  ok('T19 周表「删除这个时段」：确认框真的停在屏幕上、取消后什么都没删',
+    blockDel.labels && blockDel.labels.indexOf('确认删除') >= 0 && blockDel.modalShown === true
+    && blockDel.afterCount === blockDel.before && blockDel2.blocks === blockDel.before,
+    JSON.stringify({ step1: blockDel, step2: blockDel2 }));
+
+  // 「删除这门课」必须二次确认（以前是点了就删）
+  const courseDel = await J(`(function(){
+    var S = AR.Store.get();
+    var cid = 'vt-course-2';
+    S.courses.push({ id: cid, name: '删除确认测试课', colorKey: 'blue', track: 'common', updatedAt: new Date().toISOString() });
+    AR.Store.save(true);
+    var before = AR.Store.courseList().length;
+    AR.UI.deleteCourse(cid);
+    var labels = [];
+    var btns = document.querySelectorAll('.modal-actions .btn');
+    for (var i = 0; i < btns.length; i++) { labels.push(btns[i].textContent); }
+    return { before: before, afterClick: AR.Store.courseList().length, labels: labels.join(','),
+             stillThere: AR.Store.courseList().filter(function (c) { return c.id === cid; }).length === 1 };
+  })()`);
+  const courseDel2 = await J(`(function(){
+    var btns = document.querySelectorAll('.modal-actions .btn');
+    var ok = null;
+    for (var i = 0; i < btns.length; i++) { if (btns[i].textContent === '确认删除') { ok = btns[i]; } }
+    if (ok) { ok.click(); }
+    return { courses: AR.Store.courseList().length };
+  })()`);
+  ok('T20 「删除这门课」：先确认；确认后才真删',
+    courseDel.stillThere === true && courseDel.labels.indexOf('确认删除') >= 0
+    && courseDel2.courses === courseDel.before - 1,
+    JSON.stringify({ step1: courseDel, step2: courseDel2 }));
+
+  // 删除自建类型要确认 + 首页高频开关就地生效
+  const typeDel = await J(`(function(){
+    var t = AR.Store.typeUpsert({ label: '待删类型', hex: '#9B8CFF' });
+    AR.UI.openTypeManage();
+    var rows = document.querySelectorAll('.modal-body .cm-line');
+    var del = null;
+    for (var i = 0; i < rows.length; i++) {
+      if (rows[i].textContent.indexOf('待删类型') >= 0) {
+        var bs = rows[i].querySelectorAll('button');
+        for (var b = 0; b < bs.length; b++) { if (bs[b].textContent === '删') { del = bs[b]; } }
+      }
+    }
+    if (!del) { return { err: 'no del button' }; }
+    del.click();
+    var labels = [];
+    var btns = document.querySelectorAll('.modal-actions .btn');
+    for (var k = 0; k < btns.length; k++) { labels.push(btns[k].textContent); }
+    var still = false;
+    var list = AR.Store.typeList();
+    for (var m = 0; m < list.length; m++) { if (list[m].label === '待删类型') { still = true; } }
+    return { labels: labels.join(','), stillThere: still, key: t.key };
+  })()`);
+  await J(`(function(){
+    var btns = document.querySelectorAll('.modal-actions .btn');
+    for (var i = 0; i < btns.length; i++) { if (btns[i].textContent === '取消') { btns[i].click(); break; } }
+    AR.UI.closeModal();
+    var list = AR.Store.typeList();
+    for (var k = 0; k < list.length; k++) { if (list[k].label === '待删类型') { AR.Store.typeRemove(list[k].key); } }
+    return 'ok';
+  })()`);
+  const quickToggle = await J(`(function(){
+    AR.UI.closeModal();
+    AR.UI.show('settings');
+    var sw = document.querySelector('#set-work .q-row input[type=checkbox]');
+    if (!sw) { return { err: 'no quick switch' }; }
+    var before = AR.Store.get().settings.schedule.homework.on !== false;
+    sw.checked = !before;
+    sw.dispatchEvent(new Event('change', { bubbles: true }));
+    var after = AR.Store.get().settings.schedule.homework.on !== false;
+    AR.Store.get().settings.schedule.homework.on = before;
+    AR.Store.save(true);
+    return { before: before, after: after };
+  })()`);
+  ok('T21 删除自建类型要确认；首页高频开关点一下就生效',
+    typeDel.stillThere === true && typeDel.labels.indexOf('确认删除') >= 0
+    && quickToggle.after === !quickToggle.before,
+    JSON.stringify({ type: typeDel, quick: quickToggle }));
 
   // ── 清理 ─────────────────────────────────────────────────
   await J(`(function(){

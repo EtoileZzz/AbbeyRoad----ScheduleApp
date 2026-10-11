@@ -9,7 +9,7 @@ var AR = window.AR || (window.AR = {});
 (function () {
   'use strict';
 
-var APP_VERSION = '0.4.0';
+var APP_VERSION = '0.4.1';
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
@@ -119,9 +119,11 @@ var APP_VERSION = '0.4.0';
 
   function eventType(key) {
     var list = (state && Object.prototype.toString.call(state.types) === '[object Array]') ? state.types : [];
-    for (var i = 0; i < list.length; i++) { if (list[i].key === key) { return list[i]; } }
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === key && !list[i].deletedAt) { return list[i]; }
+    }
     for (var j = 0; j < EVENT_TYPES.length; j++) { if (EVENT_TYPES[j].key === key) { return EVENT_TYPES[j]; } }
-    return EVENT_TYPES[EVENT_TYPES.length - 1];   // 无类型 / 未知 → 「其他」
+    return EVENT_TYPES[EVENT_TYPES.length - 1];   // 无类型 / 未知 / 已删类型 → 「其他」
   }
 
   /**
@@ -141,7 +143,8 @@ var APP_VERSION = '0.4.0';
     }
     return state.types;
   }
-  function typeList() { return typeEnsure(); }
+  /** 还活着的类型（已删的进回收站，不参与显示；日程会自动退回「其他」） */
+  function typeList() { return liveOnly(typeEnsure()); }
 
   /** 新建 / 改名 / 改色用户类型；key 不传 = 新建 */
   function typeUpsert(patch) {
@@ -163,19 +166,20 @@ var APP_VERSION = '0.4.0';
     return rec;
   }
 
-  /** 删除用户类型：内置的删不掉；用它的日程退回「其他」 */
+  /**
+   * 删除用户类型（内置的删不掉）：软删除（进回收站）。
+   * 日程上的 type key **改成 'other' 之外一律不动** ——
+   * 这样恢复类型后，相关日程会自动回到这个类型（不用二次返工）。
+   */
   function typeRemove(key) {
     typeEnsure();
     for (var i = 0; i < EVENT_TYPES.length; i++) { if (EVENT_TYPES[i].key === key) { return false; } }
-    var kept = [];
+    var rec = null;
     for (var j = 0; j < state.types.length; j++) {
-      if (state.types[j].key !== key) { kept.push(state.types[j]); }
+      if (state.types[j].key === key && !state.types[j].deletedAt) { rec = state.types[j]; }
     }
-    state.types = kept;
-    var evs = state.events || [];
-    for (var k = 0; k < evs.length; k++) {
-      if (evs[k].type === key) { evs[k].type = 'other'; }
-    }
+    if (!rec) { return false; }
+    softDelete('types', rec);
     save(true);
     return true;
   }
@@ -417,7 +421,24 @@ var APP_VERSION = '0.4.0';
     return out;
   }
 
-  function taskList() { return (state.tasks || (state.tasks = [])); }
+  function taskList() {
+    var out = [], all = (state.tasks || (state.tasks = []));
+    for (var i = 0; i < all.length; i++) { if (!all[i].deletedAt) { out.push(all[i]); } }
+    return out;
+  }
+  /** 原始数组（内部写用；界面一律用 taskList） */
+  function taskRaw() { return (state.tasks || (state.tasks = [])); }
+
+  /* ── 待办速记（v0.4.1：删除改为软删除，可恢复）───────────── */
+  function quickTodoRaw() { return (state.quickTodos || (state.quickTodos = [])); }
+  function quickTodoList() { return liveOnly(quickTodoRaw()); }
+  function quickTodoRemove(id) {
+    var all = quickTodoRaw();
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].id === id && !all[i].deletedAt) { softDelete('quickTodos', all[i]); save(true); return true; }
+    }
+    return false;
+  }
 
   function findTask(blockId, dateK, text) {
     var key = normTaskText(text);
@@ -532,7 +553,9 @@ var APP_VERSION = '0.4.0';
 
   function removeTask(id) {
     var list = taskList();
-    for (var i = list.length - 1; i >= 0; i--) { if (list[i].id === id) { list.splice(i, 1); save(true); return true; } }
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) { softDelete('tasks', list[i]); save(true); return true; }
+    }
     return false;
   }
 
@@ -547,11 +570,13 @@ var APP_VERSION = '0.4.0';
      和「作业」是两张表，互不影响：作业的条数 / 完成率里不会混进长期任务。
      ══════════════════════════════════════════════════════════════ */
 
-  function longTaskList() { return (state.longTasks || (state.longTasks = [])); }
+  function longTaskRaw() { return (state.longTasks || (state.longTasks = [])); }
+  /** 还活着的长期任务（界面显示用） */
+  function longTaskList() { return liveOnly(longTaskRaw()); }
 
   function longTaskById(id) {
-    var list = longTaskList();
-    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { return list[i]; } }
+    var list = longTaskRaw();
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id && !list[i].deletedAt) { return list[i]; } }
     return null;
   }
 
@@ -568,6 +593,7 @@ var APP_VERSION = '0.4.0';
     var total = 0, today = 0, week = 0;
     var weekFrom = todayK ? dateKey(addDays(parseDateKey(todayK), -6)) : '';
     for (var i = 0; i < entries.length; i++) {
+      if (entries[i].deletedAt) { continue; }   // v0.4.1：删掉的那一笔不算进度
       var amt = Number(entries[i].amount) || 0;
       total += amt;
       var day = longTaskEntryDay(entries[i]);
@@ -605,7 +631,7 @@ var APP_VERSION = '0.4.0';
         id: uid(), name: '', unit: '小时', target: 0,
         colorKey: '#5B8DEF', showInToday: true, entries: [], updatedAt: nowIso
       };
-      longTaskList().push(t);
+      longTaskRaw().push(t);
     }
     var keys = ['name', 'unit', 'target', 'colorKey', 'showInToday', 'archived'];
     for (var i = 0; i < keys.length; i++) {
@@ -619,11 +645,12 @@ var APP_VERSION = '0.4.0';
   }
 
   function longTaskRemove(id) {
-    var list = longTaskList();
-    for (var i = list.length - 1; i >= 0; i--) {
-      if (list[i].id === id) { list.splice(i, 1); save(true); return true; }
-    }
-    return false;
+    var t = null, list = longTaskList();
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { t = list[i]; } }
+    if (!t) { return false; }
+    softDelete('longTasks', t);
+    save(true);
+    return true;
   }
 
   /** 记一笔（数量可正可负，方便手滑改回来） */
@@ -646,15 +673,23 @@ var APP_VERSION = '0.4.0';
   function longTaskRemoveEntry(id, entryId) {
     var t = longTaskById(id);
     if (!t || !t.entries) { return false; }
-    for (var i = t.entries.length - 1; i >= 0; i--) {
-      if (t.entries[i].id === entryId) { t.entries.splice(i, 1); t.updatedAt = new Date().toISOString(); save(true); return true; }
+    for (var i = 0; i < t.entries.length; i++) {
+      if (t.entries[i].id === entryId && !t.entries[i].deletedAt) {
+        /* v0.4.1：删掉的这一笔也进回收站（可恢复） */
+        t.entries[i].deletedAt = new Date().toISOString();
+        t.updatedAt = t.entries[i].deletedAt;
+        save(true);
+        return true;
+      }
     }
     return false;
   }
 
   /** 最近的几笔（弹窗里列出来，可删） */
   function longTaskRecentEntries(t, limit) {
-    var arr = ((t && t.entries) || []).slice();
+    var arr = [];
+    var all = ((t && t.entries) || []);
+    for (var i = 0; i < all.length; i++) { if (!all[i].deletedAt) { arr.push(all[i]); } }
     arr.sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); });
     return arr.slice(0, limit || 8);
   }
@@ -929,7 +964,9 @@ var APP_VERSION = '0.4.0';
   }
 
   function courseById(id) {
-    for (var i = 0; i < state.courses.length; i++) { if (state.courses[i].id === id) { return state.courses[i]; } }
+    for (var i = 0; i < state.courses.length; i++) {
+      if (state.courses[i].id === id && !state.courses[i].deletedAt) { return state.courses[i]; }
+    }
     return null;
   }
 
@@ -941,7 +978,7 @@ var APP_VERSION = '0.4.0';
     var out = [];
     var list = state.events || [];
     for (var i = 0; i < list.length; i++) {
-      if (list[i].date === key && !list[i].archived) { out.push(list[i]); }
+      if (list[i].date === key && !list[i].archived && !list[i].deletedAt) { out.push(list[i]); }
     }
     out.sort(function (a, b) { return String(a.start || '99:99').localeCompare(String(b.start || '99:99')); });
     return out;
@@ -953,7 +990,7 @@ var APP_VERSION = '0.4.0';
     var list = state.events || [];
     for (var i = 0; i < list.length; i++) {
       var d = list[i].date || '';
-      if (d >= fromKey && d <= toKey && !list[i].archived) { out.push(list[i]); }
+      if (d >= fromKey && d <= toKey && !list[i].archived && !list[i].deletedAt) { out.push(list[i]); }
     }
     out.sort(function (a, b) {
       var c = String(a.date).localeCompare(String(b.date));
@@ -967,7 +1004,7 @@ var APP_VERSION = '0.4.0';
     var out = [];
     var list = state.events || [];
     for (var i = 0; i < list.length; i++) {
-      if (list[i].archived) { out.push(list[i]); }
+      if (list[i].archived && !list[i].deletedAt) { out.push(list[i]); }
     }
     out.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
     return out;
@@ -1007,13 +1044,17 @@ var APP_VERSION = '0.4.0';
     return rec;
   }
 
+  /** 删除日程（v0.4.1：软删除，进回收站，可恢复） */
   function removeEvent(id) {
     state.events = state.events || [];
-    var kept = [];
-    for (var i = 0; i < state.events.length; i++) { if (state.events[i].id !== id) { kept.push(state.events[i]); } }
-    state.events = kept;
-    markDeleted('events', id);
-    save(true);
+    for (var i = 0; i < state.events.length; i++) {
+      if (state.events[i].id === id && !state.events[i].deletedAt) {
+        softDelete('events', state.events[i]);
+        save(true);
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -1029,7 +1070,7 @@ var APP_VERSION = '0.4.0';
 
     var target = null;
     for (var i = 0; i < state.courses.length; i++) {
-      if (state.courses[i].id !== courseId && state.courses[i].name === name) { target = state.courses[i]; break; }
+      if (state.courses[i].id !== courseId && state.courses[i].name === name && !state.courses[i].deletedAt) { target = state.courses[i]; break; }
     }
     var nowIso = new Date().toISOString();
     var merged = false;
@@ -1098,24 +1139,32 @@ var APP_VERSION = '0.4.0';
   }
   function blocksOfCourse(id) {
     var out = [];
-    for (var i = 0; i < state.blocks.length; i++) { if (state.blocks[i].courseId === id) { out.push(state.blocks[i]); } }
+    for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].courseId === id && !state.blocks[i].deletedAt) { out.push(state.blocks[i]); }
+    }
     return out;
   }
   function overridesOfBlock(id) {
     var out = [];
-    for (var i = 0; i < state.overrides.length; i++) { if (state.overrides[i].blockId === id) { out.push(state.overrides[i]); } }
+    for (var i = 0; i < state.overrides.length; i++) {
+      if (state.overrides[i].blockId === id && !state.overrides[i].deletedAt) { out.push(state.overrides[i]); }
+    }
     return out;
   }
 
   /* ── 编辑入口（v0.2.0：今日页条目 / 周表单节课程都能直接改）───── */
 
   function blockById(id) {
-    for (var i = 0; i < state.blocks.length; i++) { if (state.blocks[i].id === id) { return state.blocks[i]; } }
+    for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].id === id && !state.blocks[i].deletedAt) { return state.blocks[i]; }
+    }
     return null;
   }
 
   function overrideById(id) {
-    for (var i = 0; i < state.overrides.length; i++) { if (state.overrides[i].id === id) { return state.overrides[i]; } }
+    for (var i = 0; i < state.overrides.length; i++) {
+      if (state.overrides[i].id === id && !state.overrides[i].deletedAt) { return state.overrides[i]; }
+    }
     return null;
   }
 
@@ -1224,21 +1273,39 @@ var APP_VERSION = '0.4.0';
     return { ok: true, block: b };
   }
 
-  /** 删掉一个时段（只删这一次排课，不删整门课） */
+  /** 删掉一个时段（软删除，进回收站；挂着的单次调整一起） */
   function removeBlock(blockId) {
     var b = blockById(blockId);
     if (!b) { return { ok: false }; }
-    markDeleted('blocks', blockId);
-    state.blocks = state.blocks.filter(function (x) { return x.id !== blockId; });
-    // 挂在这个时段上的单次变动也一起清掉，避免留下孤儿记录
-    var keptOv = [];
+    softDelete('blocks', b);
     for (var i = 0; i < state.overrides.length; i++) {
-      if (state.overrides[i].blockId === blockId) { markDeleted('overrides', state.overrides[i].id); }
-      else { keptOv.push(state.overrides[i]); }
+      var o = state.overrides[i];
+      if (o.blockId === blockId && !o.deletedAt) { softDelete('overrides', o); }
     }
-    state.overrides = keptOv;
     save(true);
     return { ok: true };
+  }
+
+  /**
+   * 删掉整门课（v0.4.1）：课程 + 它的所有时段 + 这门课的单次调整，**全部软删除**
+   * （都进回收站，能一键恢复）。墓碑照留，导入/合并时不会被旧存档复活。
+   */
+  function removeCourse(courseId) {
+    var n = 0;
+    for (var c = 0; c < state.courses.length; c++) {
+      if (state.courses[c].id === courseId && !state.courses[c].deletedAt) {
+        softDelete('courses', state.courses[c]);
+        n++;
+      }
+    }
+    for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].courseId === courseId && !state.blocks[i].deletedAt) { softDelete('blocks', state.blocks[i]); }
+    }
+    for (var o = 0; o < state.overrides.length; o++) {
+      if (state.overrides[o].courseId === courseId && !state.overrides[o].deletedAt) { softDelete('overrides', state.overrides[o]); }
+    }
+    save(true);
+    return { ok: n > 0, blocks: n };
   }
 
   /**
@@ -1249,9 +1316,18 @@ var APP_VERSION = '0.4.0';
     var ov = null;
     for (var i = 0; i < state.overrides.length; i++) {
       var o = state.overrides[i];
-      if (o.blockId === blockId && o.date === dateKey) { ov = o; break; }
+      if (o.blockId === blockId && o.date === dateKey) {
+        ov = o;   // 已删的也复用：下面的写入会把它从回收站里"复活"
+        break;
+      }
     }
     var nowIso = new Date().toISOString();
+    if (ov && ov.deletedAt) {
+      // 这一天的记录之前被删过（在回收站里）：现在又要写它 → 从回收站复活
+      delete ov.deletedAt;
+      clearTomb('overrides', ov.id);
+      ov.updatedAt = nowIso;
+    }
     if (!ov) {
       ov = {
         id: uid(), courseId: courseId, blockId: blockId, date: dateKey, type: 'edit',
@@ -1269,11 +1345,11 @@ var APP_VERSION = '0.4.0';
     return ov;
   }
 
+  /** 删掉一条单次调整（软删除，进回收站） */
   function removeOverride(id) {
     var ov = overrideById(id);
     if (!ov) { return { ok: false }; }
-    markDeleted('overrides', id);
-    state.overrides = state.overrides.filter(function (x) { return x.id !== id; });
+    softDelete('overrides', ov);
     save(true);
     return { ok: true };
   }
@@ -1356,6 +1432,7 @@ var APP_VERSION = '0.4.0';
   function syncPeriodsToUsage(semesterId) {
     var need = 0, i;
     for (i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }   // 回收站里的不算
       var b = state.blocks[i];
       var e = b.periodEnd || b.periodStart || 0;
       if (e > need) { need = e; }
@@ -1375,6 +1452,7 @@ var APP_VERSION = '0.4.0';
     if (!semId) { return 0; }
     var n = 0;
     for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }
       var c = courseById(state.blocks[i].courseId);
       if (c && c.semesterId === semId) { n++; }
     }
@@ -1385,6 +1463,7 @@ var APP_VERSION = '0.4.0';
   function busiestSemesterId() {
     var counts = {}, best = null, bestN = 0, k;
     for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }
       var c = courseById(state.blocks[i].courseId);
       if (!c || !c.semesterId) { continue; }
       counts[c.semesterId] = (counts[c.semesterId] || 0) + 1;
@@ -1454,7 +1533,7 @@ var APP_VERSION = '0.4.0';
   function courseCountOfSemester(semId) {
     var n = 0;
     for (var i = 0; i < state.courses.length; i++) {
-      if (state.courses[i].semesterId === semId) { n++; }
+      if (state.courses[i].semesterId === semId && !state.courses[i].deletedAt) { n++; }
     }
     return n;
   }
@@ -1626,6 +1705,7 @@ var APP_VERSION = '0.4.0';
     var i, item, block, course, pr;
 
     for (i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }
       block = state.blocks[i];
       course = courseById(block.courseId);
       if (!course) { continue; }
@@ -1638,6 +1718,7 @@ var APP_VERSION = '0.4.0';
     // 补课 / 加课：直接在 overrides 上挂着的单次课
     for (i = 0; i < state.overrides.length; i++) {
       var ov = state.overrides[i];
+      if (ov.deletedAt) { continue; }
       if (ov.type !== 'makeup' && ov.type !== 'add') { continue; }
       var od = parseDateKey(ov.date);
       if (!od || !sameDay(od, date)) { continue; }
@@ -1795,6 +1876,7 @@ var APP_VERSION = '0.4.0';
     var i, j, k, block;
 
     for (i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }
       block = state.blocks[i];
       var course = courseById(block.courseId);
       if (!course) { continue; }
@@ -2155,7 +2237,8 @@ var APP_VERSION = '0.4.0';
       var tb = tombs[ti];
       var live = tb && tb.entity && Array.isArray(state[tb.entity]) ? state[tb.entity] : [];
       for (var li = 0; li < live.length; li++) {
-        if (live[li].id === tb.id) { plan.tombstones.push(tb); break; }
+        // 已经软删除（在回收站里）的不算"还会删掉本机数据"
+        if (live[li].id === tb.id && !live[li].deletedAt) { plan.tombstones.push(tb); break; }
       }
     }
     if (typeof incoming.schemaVersion === 'number' && incoming.schemaVersion > SCHEMA_VERSION) {
@@ -2325,15 +2408,162 @@ var APP_VERSION = '0.4.0';
     if (!tomb || !tomb.entity) { return; }
     var list = state[tomb.entity];
     if (!Array.isArray(list)) { return; }
-    for (var i = list.length - 1; i >= 0; i--) {
-      if (list[i].id === tomb.id) { list.splice(i, 1); }
+    /* v0.4.1：对方删掉的东西也在本机「软删除」——进回收站、可恢复，
+       而不是直接从本机抹掉（否则两台设备的回收站内容不一致）。 */
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === tomb.id && !list[i].deletedAt) {
+        list[i].deletedAt = tomb.deletedAt || new Date().toISOString();
+        list[i].updatedAt = list[i].deletedAt;
+      }
     }
   }
 
   function markDeleted(entity, id) {
     state.tombstones = state.tombstones || [];
+    for (var i = 0; i < state.tombstones.length; i++) {
+      if (state.tombstones[i].entity === entity && state.tombstones[i].id === id) { return; }
+    }
     state.tombstones.push({ id: id, entity: entity, deletedAt: new Date().toISOString() });
   }
+
+  /* ══════════════════════════════════════════════════════════════
+     v0.4.1 软删除 + 回收站
+
+     删除不再把记录从数组里拿掉，而是打一个 deletedAt 标记：
+       · 读的地方一律过滤（界面看不到）；
+       · 墓碑照旧记（导入 / 合并时不会被旧存档复活）；
+       · 「设置 → 数据与同步 → 回收站」能原样恢复，还有 5 秒撤销兜底。
+     ══════════════════════════════════════════════════════════════ */
+
+  function isDeleted(rec) { return !!(rec && rec.deletedAt); }
+
+  function liveOnly(list) {
+    var out = [];
+    if (!list || !list.length) { return out; }
+    for (var i = 0; i < list.length; i++) { if (!isDeleted(list[i])) { out.push(list[i]); } }
+    return out;
+  }
+
+  /** 记录的新鲜度：改过的时间与删除时间取较晚的那个（合并时比大小用） */
+  function stampOf(rec) {
+    if (!rec) { return ''; }
+    var a = rec.updatedAt || '', b = rec.deletedAt || '';
+    return a > b ? a : b;
+  }
+
+  /** 打删除标记（不物理移除）+ 记墓碑 */
+  function softDelete(entity, rec) {
+    if (!rec) { return null; }
+    var now = new Date().toISOString();
+    rec.deletedAt = now;
+    rec.updatedAt = now;
+    markDeleted(entity, rec.id);
+    return rec;
+  }
+
+  function clearTomb(entity, id) {
+    state.tombstones = (state.tombstones || []).filter(function (tb) {
+      return !(tb.entity === entity && tb.id === id);
+    });
+  }
+
+  /** 恢复一条：课程会连带恢复它的时段与单次调整 */
+  function restore(entity, id, parentId) {
+    var rec = null, list;
+    if (entity === 'longTaskEntries') {
+      var t = longTaskById(parentId);
+      list = (t && t.entries) || [];
+    } else {
+      list = state[entity] || [];
+    }
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { rec = list[i]; } }
+    if (!rec) { return false; }
+    var now = new Date().toISOString();
+    delete rec.deletedAt;
+    rec.updatedAt = now;
+    clearTomb(entity, id);
+    if (entity === 'courses') {
+      for (var b = 0; b < state.blocks.length; b++) {
+        var blk = state.blocks[b];
+        if (blk.courseId === id && isDeleted(blk)) {
+          delete blk.deletedAt;
+          blk.updatedAt = now;
+          clearTomb('blocks', blk.id);
+        }
+      }
+      for (var o = 0; o < state.overrides.length; o++) {
+        var ov = state.overrides[o];
+        if (ov.courseId === id && isDeleted(ov)) {
+          delete ov.deletedAt;
+          ov.updatedAt = now;
+          clearTomb('overrides', ov.id);
+        }
+      }
+    }
+    save(true);
+    return true;
+  }
+
+  /** 清空回收站：把已删记录真正从文件里拿掉（墓碑留着，避免被旧存档复活） */
+  function emptyTrash() {
+    var ents = ['events', 'courses', 'blocks', 'overrides', 'tasks', 'longTasks', 'quickTodos', 'types'];
+    for (var e = 0; e < ents.length; e++) {
+      var k = ents[e];
+      if (Array.isArray(state[k])) {
+        state[k] = state[k].filter(function (r) { return !isDeleted(r); });
+      }
+    }
+    var lt = state.longTasks || [];
+    for (var i = 0; i < lt.length; i++) {
+      if (Array.isArray(lt[i].entries)) {
+        lt[i].entries = lt[i].entries.filter(function (x) { return !isDeleted(x); });
+      }
+    }
+    save(true);
+  }
+
+  /** 回收站清单（按删除时间倒序） */
+  function trashList() {
+    var out = [];
+    var collect = function (entity, label, titleOf, subOf, list) {
+      var arr = list || state[entity] || [];
+      for (var i = 0; i < arr.length; i++) {
+        if (!isDeleted(arr[i])) { continue; }
+        out.push({
+          entity: entity, id: arr[i].id, label: label,
+          title: titleOf ? titleOf(arr[i]) : '', sub: subOf ? subOf(arr[i]) : '',
+          deletedAt: arr[i].deletedAt || '', rec: arr[i]
+        });
+      }
+    };
+    collect('events', '日程', function (r) { return r.title || '未命名日程'; }, function (r) { return r.date || ''; });
+    collect('courses', '课程', function (r) { return r.name || '未命名课程'; }, function () { return '整门课 · 含所有时段'; });
+    collect('blocks', '每周时段', function (r) { return r.courseName || '时段'; },
+      function (r) { return '周' + (WEEKDAY_NAMES[r.weekday] || '?') + ' 第 ' + (r.periodStart || '?') + '-' + (r.periodEnd || '?') + ' 节'; });
+    collect('overrides', '单次调整', function (r) { return r.type === 'cancel' ? '取消了一次课' : '单次调整'; },
+      function (r) { return r.date || ''; });
+    collect('tasks', '作业条目', function (r) { return r.text || ''; }, function (r) { return r.date || ''; });
+    collect('longTasks', '长期任务', function (r) { return r.name || ''; }, function () { return '连同全部进度记录'; });
+    collect('quickTodos', '待办速记', function (r) { return r.text || ''; }, null);
+    collect('types', '日程类型', function (r) { return r.label || ''; }, function () { return '恢复后相关日程会跟着回来'; });
+    var lt = state.longTasks || [];
+    for (var i = 0; i < lt.length; i++) {
+      var entries = lt[i].entries || [];
+      for (var j = 0; j < entries.length; j++) {
+        if (!isDeleted(entries[j])) { continue; }
+        out.push({
+          entity: 'longTaskEntries', id: entries[j].id, parentId: lt[i].id, label: '长期任务记录',
+          title: (lt[i].name || '长期任务') + ' +' + (entries[j].amount != null ? entries[j].amount : ''),
+          sub: longTaskEntryDay(entries[j]), deletedAt: entries[j].deletedAt || '', rec: entries[j]
+        });
+      }
+    }
+    out.sort(function (a, b) { return String(b.deletedAt).localeCompare(String(a.deletedAt)); });
+    return out;
+  }
+
+  /** 还活着的课程（界面显示 / 计数都用这个） */
+  function courseList() { return liveOnly(state.courses); }
 
   /* ── 输出 ─────────────────────────────────────────────────── */
 
@@ -2360,7 +2590,7 @@ var APP_VERSION = '0.4.0';
     blockById: blockById, overrideById: overrideById,
     ensureTeacherByName: ensureTeacherByName, ensureLocationByRaw: ensureLocationByRaw,
     parseWeeksText: parseWeeksText, weeksText: weeksText, compressWeeks: compressWeeks,
-    updateBlock: updateBlock, removeBlock: removeBlock,
+    updateBlock: updateBlock, removeBlock: removeBlock, removeCourse: removeCourse,
     upsertOverride: upsertOverride, removeOverride: removeOverride,
     ensurePeriodsFor: ensurePeriodsFor, syncPeriodsToUsage: syncPeriodsToUsage,
     ensureCurrentSemesterHasData: ensureCurrentSemesterHasData,
@@ -2384,6 +2614,10 @@ var APP_VERSION = '0.4.0';
     typeList: typeList, typeUpsert: typeUpsert, typeRemove: typeRemove,
     exportPayload: exportPayload, exportFileName: exportFileName,
     previewMerge: previewMerge, applyMerge: applyMerge, markDeleted: markDeleted,
+    /* v0.4.1 软删除 + 回收站 */
+    isDeleted: isDeleted, softDelete: softDelete, restore: restore, trashList: trashList,
+    emptyTrash: emptyTrash, liveOnly: liveOnly, courseList: courseList, stampOf: stampOf,
+    quickTodoList: quickTodoList, quickTodoRemove: quickTodoRemove, quickTodoRaw: quickTodoRaw,
     defaultPeriodTimes: defaultPeriodTimes, makePeriods: makePeriods
   };
 
