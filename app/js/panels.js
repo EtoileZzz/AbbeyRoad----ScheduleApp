@@ -887,10 +887,108 @@ var AR = window.AR || (window.AR = {});
   function quickAbout() {
     var row = el('<div class="q-row"></div>');
     row.appendChild(qItem('版本', el('<span class="q-ver">v' + esc(AR.Const.APP_VERSION) + '</span>')));
+    row.appendChild(qItem('检查更新', qBtn('检查', function () { checkUpdate(true); })));
     row.appendChild(qItem('引导', qBtn('重新观看', function () {
       AR.Panels.startOnboarding(true);
     })));
     return row;
+  }
+
+  /* ── 检查更新（v0.4.1）：查 GitHub Releases，比较版本号 ──────
+     默认**不自动检查**；打开后可以选每周 / 每月一次（启动时静默查）。
+     网络不通时给一句提示 + 「打开下载页」兜底。 */
+
+  var REPO_API_LATEST = 'https://api.github.com/repos/EtoileZzz/AbbeyRoad----ScheduleApp/releases/latest';
+
+  /** 版本号拆成 数字三段 + 尾字母（0.4.1a / 0.4.1beta 都认） */
+  function verParts(v) {
+    var m = String(v || '').replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)([a-z]*)$/i);
+    if (!m) { return null; }
+    return { n: [Number(m[1]), Number(m[2]), Number(m[3])], s: String(m[4] || '').toLowerCase() };
+  }
+
+  /** a 是否比 b 新 */
+  function versionNewer(a, b) {
+    var x = verParts(a), y = verParts(b);
+    if (!x || !y) { return false; }
+    for (var i = 0; i < 3; i++) { if (x.n[i] !== y.n[i]) { return x.n[i] > y.n[i]; } }
+    if (x.s === y.s) { return false; }
+    if (y.s === '' && x.s !== '') { return true; }    // 本地正式版 → 远端带字母的小修订算新
+    if (x.s === '' && y.s !== '') { return false; }   // 本地带字母 → 不比正式版新
+    return x.s > y.s;
+  }
+
+  function updateState() {
+    return (S.settings.update = S.settings.update || { auto: false, every: 'week', lastAt: '' });
+  }
+
+  function showUpdateModal(latest, url, note) {
+    AR.UI.openModal({
+      title: '发现新版本 v' + latest,
+      sub: '当前 v' + AR.Const.APP_VERSION,
+      body: '<p class="muted">' + (note ? esc(String(note).slice(0, 200)) : '到发布页可以下载新的安装包（Android APK / Windows 安装版）。') + '</p>',
+      actions: [
+        { label: '稍后', onClick: function (c) { c(); } },
+        {
+          label: '打开下载页', kind: 'primary', onClick: function (c) {
+            c();
+            AR.Bridge.openUrl(url || (REPO_URL + '/releases/latest'));
+          }
+        }
+      ]
+    });
+  }
+
+  /** manual = 用户点的（会有"正在检查 / 已是最新 / 失败"的反馈）；自动检查静默 */
+  function checkUpdate(manual) {
+    var st = updateState();
+    if (typeof fetch !== 'function') {
+      if (manual) { AR.UI.toast('当前环境不支持检查更新'); }
+      return;
+    }
+    if (manual) { AR.UI.toast('正在检查更新…'); }
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) { ctrl.abort(); } }, 9000);
+    fetch(REPO_API_LATEST, {
+      headers: { Accept: 'application/vnd.github+json' },
+      cache: 'no-store',
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (r) {
+      if (!r.ok) { throw new Error('HTTP ' + r.status); }
+      return r.json();
+    }).then(function (j) {
+      clearTimeout(timer);
+      st.lastAt = new Date().toISOString();
+      AR.Store.save();
+      var latest = String((j && j.tag_name) || '').replace(/^v/i, '');
+      if (latest && versionNewer(latest, AR.Const.APP_VERSION)) {
+        showUpdateModal(latest, (j && j.html_url) || (REPO_URL + '/releases/latest'), j && j.body);
+      } else if (manual) {
+        AR.UI.toast('已是最新版本 v' + AR.Const.APP_VERSION);
+      }
+      if (AR.UI.currentView && AR.UI.currentView() === 'settings') { renderSettings(); }
+    }).catch(function () {
+      clearTimeout(timer);
+      if (manual) {
+        AR.UI.confirmDanger({
+          title: '检查更新失败',
+          text: '网络不通（或访问不到 GitHub）。可以先到发布页看看有没有新版。',
+          okLabel: '打开下载页',
+          onOk: function () { AR.Bridge.openUrl(REPO_URL + '/releases/latest'); }
+        });
+      }
+    });
+  }
+
+  /** 启动时调用：开着自动检查、且距上次超过间隔才查，静默 */
+  function autoCheckUpdate() {
+    var st = updateState();
+    if (!st.auto) { return false; }
+    var span = st.every === 'month' ? 30 * 86400000 : 7 * 86400000;
+    var last = st.lastAt ? Date.parse(st.lastAt) : 0;
+    if (last && (Date.now() - last) < span) { return false; }
+    checkUpdate(false);
+    return true;
   }
 
   /* ── 搜索：命中清单（分类 · 项目），点一条直接进二级页并高亮 ── */
@@ -1043,28 +1141,16 @@ var AR = window.AR || (window.AR = {});
       settingsGoHome();
     });
     grid.appendChild(bar);
-    // 「数据与同步」面板多：页内标签切换，不滚动
+    /**
+     * v0.4.1：「数据与同步」不再用顶部滑块切页内标签 ——
+     * 四个面板和别处一样从上到下平铺（导入与同步 / 系统集成 / 数据与备份 / 回收站）。
+     */
     if (cat.key === 'syncdata') {
-      var tabs = [['sync', '导入与同步'], ['integration', '系统集成'], ['data', '数据与备份'], ['trash', '回收站']];
-      var tabRow = el('<div class="segmented set-tabs"></div>');
-      for (var t = 0; t < tabs.length; t++) {
-        (function (tk, tl) {
-          var b = el('<button class="seg' + (syncTab === tk ? ' active' : '') + '" type="button">' + tl + '</button>');
-          b.addEventListener('click', function () {
-            syncTab = tk;
-            AR.Bridge.haptic('light', b);
-            renderSettings();
-            playSettingsEnter();
-          });
-          tabRow.appendChild(b);
-        })(tabs[t][0], tabs[t][1]);
-      }
-      grid.appendChild(tabRow);
-      var one = syncTab === 'sync' ? panelSync()
-        : (syncTab === 'integration' ? panelIntegration()
-          : (syncTab === 'trash' ? panelTrash() : panelData()));
       var host0 = el('<div class="set-detail" id="set-' + cat.key + '"></div>');
-      host0.appendChild(one);
+      host0.appendChild(panelSync());
+      host0.appendChild(panelIntegration());
+      host0.appendChild(panelData());
+      host0.appendChild(panelTrash());
       grid.appendChild(host0);
     } else {
       var host = el('<div class="set-detail" id="set-' + cat.key + '"></div>');
@@ -2102,7 +2188,7 @@ var AR = window.AR || (window.AR = {});
       }));
     // 作业概况 + 作业记录（跟着作业走）
     (function () {
-      var all = AR.Store.get().tasks || [];
+      var all = AR.Store.taskList ? AR.Store.taskList() : (AR.Store.get().tasks || []);
       var weekAgo = U.dateKey(U.addDays(new Date(), -6));
       var openN = 0, doneN = 0, doneWeek = 0;
       for (var i = 0; i < all.length; i++) {
@@ -2127,6 +2213,22 @@ var AR = window.AR || (window.AR = {});
       if (AR.UI.openTaskLog) { AR.UI.openTaskLog(); }
     });
     box.appendChild(logBtn);
+
+    /**
+     * v0.4.1b：刷新作业（重建条目）。
+     * 按当前识别规则重扫所有「本次备注」——把漏掉的条目补回来；
+     * 已经存在的条目按 (课, 日期, 文字) 复用，划掉的状态不会重置。
+     */
+    var rebBtn = el('<button class="btn" type="button" style="margin-top:8px">刷新作业</button>');
+    rebBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('medium', rebBtn);
+      var r = AR.Store.rebuildTasks ? AR.Store.rebuildTasks() : { scanned: 0, created: 0, total: 0 };
+      refreshAll();
+      AR.UI.toast('已按现有备注刷新：扫描 ' + r.scanned + ' 条备注、补上 ' + r.created + ' 条作业');
+    });
+    box.appendChild(rebBtn);
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '把「本次备注」里识别过的作业按当前规则重扫一遍：漏掉的会补上，已经划掉的不会被重置。</p>'));
 
     /* ── 日程类型（v0.4.0）：考试 / 讲座 / 活动 / 其他 + 自建类型 ── */
     var tList = AR.Store.typeList ? AR.Store.typeList() : [];
@@ -2436,9 +2538,26 @@ var AR = window.AR || (window.AR = {});
    */
   function panelTrash() {
     var box = el('<div></div>');
+    /* 打开时按保留期限顺手清一次过期的（默认 90 天） */
+    if (AR.Store.pruneTrash) { AR.Store.pruneTrash(); }
     var list = AR.Store.trashList ? AR.Store.trashList() : [];
     box.appendChild(el('<p class="muted">删掉的课程、时段、日程、作业、长期任务、速记、类型都在这儿，'
-      + '每一项都能恢复原样。只有点了「清空回收站」才真的没了。</p>'));
+      + '每一项都能恢复原样。只有清空或过期清理之后才真的没了。</p>'));
+    /* 保留期限：默认 90 天自动清理，也可以选"不自动"（纯手动） */
+    var tr = (S.settings.trash = S.settings.trash || { keepDays: 90 });
+    box.appendChild(el('<div class="field-label" style="margin-top:12px">自动清理超过</div>'));
+    box.appendChild(segmented([
+      { label: '30 天', value: '30' }, { label: '90 天', value: '90' },
+      { label: '180 天', value: '180' }, { label: '不自动', value: '0' }
+    ], String(tr.keepDays == null ? 90 : tr.keepDays), function (v) {
+      tr.keepDays = Number(v) || 0;
+      AR.Store.save(true);
+      AR.Bridge.haptic('light', $('settingsGrid'));
+      renderSettings();
+      AR.UI.toast(tr.keepDays ? ('超过 ' + tr.keepDays + ' 天的会自动清理') : '已改为不自动清理（只能手动清）');
+    }));
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '「自动清理」会在打开这一页时顺手清掉过期的：回收站记录真删、墓碑也一起清（不影响还在用的数据）。</p>'));
     if (!list.length) {
       box.appendChild(el('<p class="muted" style="margin-top:8px">回收站是空的。</p>'));
       return panel('回收站', box, 'trash');
@@ -2648,7 +2767,39 @@ var AR = window.AR || (window.AR = {});
       AR.Bridge.openUrl(REPO_URL);
     });
 
-    box.appendChild(el('<p class="muted" style="margin-top:10px">本应用不联网、不收集数据；'
+    /* ── 更新（v0.4.1）：默认不自动检查 ───────────────────── */
+    var ust = updateState();
+    box.appendChild(el('<h3 class="set-sub">更新</h3>'));
+    box.appendChild(el('<p class="muted" style="margin:0 0 6px">当前版本 v' + esc(AR.Const.APP_VERSION)
+      + ' · 上次检查：' + (ust.lastAt ? esc(String(ust.lastAt).slice(0, 16).replace('T', ' ')) : '还没检查过') + '</p>'));
+    box.appendChild(rowSwitch('自动检查更新',
+      '默认关闭。打开后按下面的频率，在启动时静默检查一次（发现新版才提示）',
+      !!ust.auto, function (v) {
+        ust.auto = v;
+        AR.Store.save(true);
+        AR.Bridge.haptic('light', $('settingsGrid'));
+        renderSettings();
+      }));
+    if (ust.auto) {
+      box.appendChild(el('<div class="field-label" style="margin-top:10px">检查频率</div>'));
+      box.appendChild(segmented([
+        { label: '每周', value: 'week' }, { label: '每月', value: 'month' }
+      ], ust.every || 'week', function (v) {
+        ust.every = v;
+        AR.Store.save(true);
+        AR.Bridge.haptic('light', $('settingsGrid'));
+        renderSettings();
+      }));
+    }
+    var chkBtn = el('<button class="btn primary" type="button" id="stCheckUpdate" style="margin-top:10px">检查更新</button>');
+    chkBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('light', chkBtn);
+      checkUpdate(true);
+    });
+    box.appendChild(chkBtn);
+
+    box.appendChild(el('<p class="muted" style="margin-top:10px">本应用平时不联网、不收集数据；'
+      + '只有你点「检查更新」或打开上面的自动检查时，才会去查一次发布页。'
       + '所有内容保存在本机，导出的配置文件和备份由你自己保管。</p>'));
     return panel('关于与帮助', box, 'about');
   }
@@ -2903,6 +3054,9 @@ var AR = window.AR || (window.AR = {});
     resetSettingsHome: resetSettingsHome,
     settingsBackStep: settingsBackStep,
     settingsGoHome: settingsGoHome,
+    checkUpdate: checkUpdate,
+    autoCheckUpdate: autoCheckUpdate,
+    versionNewer: versionNewer,
     startOnboarding: startOnboarding,
     openSemesterSetup: openSemesterSetup,
     handleJsonText: handleJsonText,

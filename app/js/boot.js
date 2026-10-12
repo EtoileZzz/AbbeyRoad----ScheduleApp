@@ -87,6 +87,10 @@
       setTimeout(function () { AR.Panels.startOnboarding(false); }, 260);
     } else {
       AR.Panels.refreshAll();
+      // v0.4.1：开着「自动检查更新」时，启动后静默查一次（默认关闭）
+      setTimeout(function () {
+        try { if (AR.Panels.autoCheckUpdate) { AR.Panels.autoCheckUpdate(); } } catch (e) { }
+      }, 2600);
     }
   }
 

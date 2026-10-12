@@ -661,6 +661,19 @@ input[type="range"]::-moz-range-thumb {
   font: inherit; flex: 0 0 auto;
 }
 .modal-actions { display: flex; gap: var(--sp-2); flex-wrap: wrap; margin-top: var(--sp-4); justify-content: flex-end; }
+/**
+ * v0.4.1：操作条吸底 —— 弹窗内容再长，「保存 / 取消」也不会被顶到看不见的地方。
+ * .modal-card 本身就是滚动容器（overflow:auto），所以 sticky 直接生效。
+ */
+.modal-actions {
+  position: sticky; bottom: 0; z-index: 3;
+  padding: 10px 0 calc(6px + env(safe-area-inset-bottom, 0px));
+  background: var(--glass-modal);
+  -webkit-backdrop-filter: blur(var(--blur-modal)) saturate(1.4);
+  backdrop-filter: blur(var(--blur-modal)) saturate(1.4);
+  border-top: 1px solid var(--glass-stroke);
+}
+.modal-actions .btn { flex: 0 0 auto; }
 
 /* ── 引导 ──────────────────────────────────────────────────── */
 .onboarding { position: fixed; inset: 0; z-index: var(--z-onboarding); display: grid; place-items: center; }
@@ -1892,7 +1905,8 @@ body { text-size-adjust: 100%; }
   padding-bottom: var(--sp-4);
 }
 .modal-card.modal-wide .modal-head { flex: 0 0 auto; }
-.modal-card.modal-wide .modal-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding-right: 2px; }
+.modal-card.modal-wide .modal-body { flex: 1 1 auto; min-height: 0; overflow: auto;
+  padding: var(--m-pad-top, 100px) 18px var(--m-pad-bottom, 92px); }
 .modal-card.modal-wide .modal-body::-webkit-scrollbar { width: 8px; }
 .modal-card.modal-wide .modal-body::-webkit-scrollbar-thumb {
   background: var(--glass-stroke); border-radius: 8px;
@@ -3027,3 +3041,108 @@ body[data-perf="min"] .blob { display: none; }
 }
 .cm-line.swiping .cm-swipe-hint { opacity: 1; }
 .cm-line.swipe-ok .cm-swipe-hint { opacity: 1; color: var(--danger); font-weight: 650; }
+
+/* ══════════════════════════════════════════════════════════════
+   v0.4.1 弹窗统一：三段式（标题固定 / 内容滚动 / 操作条固定）
+   + 上下半透明带 + 三层渐进质感模糊（越靠近滚动内容越弱）
+   放在文件最后：用同样的选择器覆盖前面所有历史写法，保证"全软件统一"。
+   ══════════════════════════════════════════════════════════════ */
+
+.modal-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;            /* 卡片自己不再滚动 */
+  padding: 0;                  /* 内边距下放到三段 */
+  /**
+   * 只有两条绝对定位的覆盖层（标题带 / 按钮条）带模糊。
+   * 卡片本身与内容层都不加 backdrop-filter：
+   *   · 卡片一旦有，Chromium 会把它当"背景根"，覆盖层的模糊就采不到内容（变成看穿原文的"鬼影"）；
+   *   · 内容层更不该有（那会让顶/底部的行始终处于模糊区）。
+   * 卡片保持半透明即可，页面背后的模糊由遮罩层（.modal-scrim）负责。
+   */
+  background: var(--glass-modal);
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+/* 标题带 / 按钮条：覆盖层（内容从下面穿过），自身不糊内容、背景接近不透明 → 无泛光无鬼影 */
+/* 两条带 = 磨砂玻璃本体：内容从下面滚过时被它们糊掉（内容区不加任何模糊层）。
+   模糊不拉满、不加饱和度，背景留一点透 —— 看得见下面被糊的内容，又没有泛光/鬼影。 */
+.modal-head {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  z-index: 3;
+  margin-bottom: 0;
+  padding: 14px 18px 10px;
+  background: var(--glass-modal);
+  background: color-mix(in srgb, var(--glass-modal) 85%, transparent);
+  -webkit-backdrop-filter: blur(calc(var(--blur-modal) * 0.5));
+  backdrop-filter: blur(calc(var(--blur-modal) * 0.5));
+  border-bottom: 1px solid var(--glass-stroke);
+}
+.modal-actions {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  z-index: 3;
+  margin-top: 0;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 18px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: var(--glass-modal);
+  background: color-mix(in srgb, var(--glass-modal) 85%, transparent);
+  -webkit-backdrop-filter: blur(calc(var(--blur-modal) * 0.5));
+  backdrop-filter: blur(calc(var(--blur-modal) * 0.5));
+  border-top: 1px solid var(--glass-stroke);
+}
+.modal-scroll {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;              /* 唯一的滚动区 */
+  overscroll-behavior: contain;
+  /* 内容在两条带之间滚动；限位 = 带高 + 渐变带总高 + 余量（JS 量出来写进变量），
+     滚到最顶/最底时首行、末行落在渐变带之外 → 完全清晰、也点得到 */
+  padding: var(--m-pad-top, 100px) 18px var(--m-pad-bottom, 92px);
+  scrollbar-gutter: stable;
+}
+.modal-body::-webkit-scrollbar { width: 8px; }
+.modal-body::-webkit-scrollbar-thumb {
+  background: var(--glass-stroke); border-radius: 4px;
+}
+.modal-wide .modal-body { padding: 2px 18px 12px; }
+.modal-wide .modal-actions { padding: 10px 18px calc(10px + env(safe-area-inset-bottom, 0px)); }
+/* 操作条：一行优先、最多两行；按钮做窄（每行几个由 --acts-cols 决定） */
+.modal-actions .btn {
+  flex: 0 1 auto;
+  min-width: 0;
+  padding-left: 12px;
+  padding-right: 12px;
+}
+.modal-actions.actions-many .btn {
+  flex: 1 1 calc((100% - (var(--acts-cols, 2) - 1) * 8px) / var(--acts-cols, 2));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+@media (max-width: 420px) {
+  .modal-actions .btn {
+    flex: 1 1 calc((100% - (var(--acts-cols-narrow, 2) - 1) * 8px) / var(--acts-cols-narrow, 2));
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+.modal-wide .modal-body { padding: 2px 18px 12px; }
+.modal-wide .modal-actions { padding: 10px 18px calc(10px + env(safe-area-inset-bottom, 0px)); }
+
+/* v0.4.1（按用户选择 A）：模糊只由两条带自己负责 —— 它们是磨砂玻璃，
+   内容从下面滚过时被糊掉。内容区里**不放任何模糊层**（那会让顶/底的行始终处于模糊区）。
+   带子的高度 + 一点余量由 openModal 量出来写进 --m-pad-top / --m-pad-bottom。 */

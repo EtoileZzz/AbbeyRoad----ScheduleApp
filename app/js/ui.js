@@ -1079,7 +1079,8 @@ var AR = window.AR || (window.AR = {});
   }
 
   function modHwstats() {
-    var all = AR.Store.get().tasks || [];
+    var all = AR.Store.taskList ? AR.Store.taskList() : (AR.Store.get().tasks || []);
+    // v0.4.1b：回收站里的作业不算进统计
     var todayK = U.dateKey(new Date());
     var weekAgo = U.dateKey(U.addDays(new Date(), -6));
     var openN = 0, doneToday = 0, doneWeek = 0, doneN = 0;
@@ -4513,6 +4514,7 @@ var AR = window.AR || (window.AR = {});
   /* ── 弹窗 ─────────────────────────────────────────────────── */
 
   var modalStack = [];
+  var modalBarsRO = null;      // v0.4.1：量标题带 / 按钮条高度用
   var modalCloseTimer = null;
 
   /* ── 统一的弹层动效（v0.2.5）───────────────────────────────
@@ -4692,12 +4694,29 @@ var AR = window.AR || (window.AR = {});
       + '<button class="modal-close" type="button">✕</button></div>');
     head.querySelector('.modal-close').addEventListener('click', closeModal);
     card.appendChild(head);
+    /**
+     * v0.4.1：内容区外面只套一层 .modal-scroll。
+     * 模糊**只由两条带自己**负责（它们是磨砂玻璃，内容从下面滚过被糊开），
+     * 内容区里不放任何模糊层 —— 那样会让顶部/底部的行"始终"处在模糊区。
+     */
+    var scroller = el('<div class="modal-scroll"></div>');
     var bodyNode = el('<div class="modal-body"></div>');
     if (typeof opts.body === 'string') { bodyNode.innerHTML = opts.body; }
     else if (opts.body) { bodyNode.appendChild(opts.body); }
-    card.appendChild(bodyNode);
+    scroller.appendChild(bodyNode);
+    card.appendChild(scroller);
+    var actions = null;
     if (opts.actions && opts.actions.length) {
-      var actions = el('<div class="modal-actions"></div>');
+      var nActs = opts.actions.length;
+      /**
+       * v0.4.1：按钮最多两行。
+       *   ≤3 个 → 一行（自然宽度，做窄一点）
+       *   ≥4 个 → 两行，每行 ceil(n/2) 个（窄屏最少 2 列）
+       */
+      var cols = nActs <= 3 ? nActs : Math.ceil(nActs / 2);
+      var actions = el('<div class="modal-actions' + (nActs >= 4 ? ' actions-many' : '') + '"></div>');
+      actions.style.setProperty('--acts-cols', String(cols));
+      actions.style.setProperty('--acts-cols-narrow', String(nActs <= 3 ? 2 : cols));
       for (var i = 0; i < opts.actions.length; i++) {
         (function (a) {
           var b = el('<button class="btn ' + (a.kind || '') + '" type="button">' + U.escapeHtml(a.label) + '</button>');
@@ -4711,6 +4730,31 @@ var AR = window.AR || (window.AR = {});
       card.appendChild(actions);
     }
     root.hidden = false;
+    /**
+     * v0.4.1：两条带是覆盖层，内容从下面穿过 —— 所以必须**按带子的边缘自动加限位**：
+     *   限位 = 带高 + 四层渐变总高(37px) + 余量(8px)
+     * 这样滚到最顶/最底时，首行、末行落在渐变带之外：清晰、也点得到。
+     * 边量边写进 CSS 变量，按钮换行 / 安全区变化都用 ResizeObserver 跟上。
+     */
+    var FADE_H = 0, EXTRA = 10;
+    var measureBars = function () {
+      try {
+        var hh = head.offsetHeight || 0;
+        var ah = actions ? (actions.offsetHeight || 0) : 0;
+        card.style.setProperty('--m-head-h', hh + 'px');
+        card.style.setProperty('--m-acts-h', ah + 'px');
+        card.style.setProperty('--m-pad-top', (hh + FADE_H + EXTRA) + 'px');
+        card.style.setProperty('--m-pad-bottom', (ah + FADE_H + EXTRA) + 'px');
+      } catch (e) { }
+    };
+    measureBars();
+    if (typeof requestAnimationFrame === 'function') { requestAnimationFrame(measureBars); }
+    if (typeof ResizeObserver === 'function') {
+      if (modalBarsRO) { try { modalBarsRO.disconnect(); } catch (e) { } }
+      modalBarsRO = new ResizeObserver(measureBars);
+      modalBarsRO.observe(head);
+      if (actions) { modalBarsRO.observe(actions); }
+    }
     /**
      * v0.2.0 修复：弹窗内容永远是原地替换（同一张卡片），
      * 所以栈里只能留最后一个 —— 之前从「课程详情」再开「设置颜色」时，
@@ -6855,7 +6899,8 @@ var AR = window.AR || (window.AR = {});
    * 这里能看到**全部**记录（含被隐藏的），并能长按找回 / 删除 / 批量清理。
    */
   function openTaskLog() {
-    var all = (AR.Store.get().tasks || []).slice();
+    // v0.4.1b：只看还活着的条目（回收站里的不列出来）
+    var all = AR.Store.taskList ? AR.Store.taskList().slice() : (AR.Store.get().tasks || []).slice();
     var todayK = U.dateKey(new Date());
     var weekAgo = U.dateKey(U.addDays(new Date(), -6));
     var open = [], doneToday = [], doneRest = [];
@@ -6903,17 +6948,21 @@ var AR = window.AR || (window.AR = {});
           label: '清理 30 天前的已完成', onClick: function () {
             var cut = U.dateKey(U.addDays(new Date(), -30));
             var S = AR.Store.get();
-            var keep = [];
             var removed = 0;
-            for (var i2 = 0; i2 < (S.tasks || []).length; i2++) {
-              var t2 = S.tasks[i2];
+            var list = S.tasks || [];
+            for (var i2 = 0; i2 < list.length; i2++) {
+              var t2 = list[i2];
+              if (t2.deletedAt) { continue; }
               var d2 = t2.doneAt ? String(t2.doneAt) : '';
-              if (t2.done && d2 && d2.slice(0, 10) < cut) { removed++; continue; }
-              keep.push(t2);
+              // v0.4.1b：清理也走软删除（进回收站，可恢复），不再直接从文件里抹掉
+              if (t2.done && d2 && d2.slice(0, 10) < cut) {
+                if (AR.Store.softDelete) { AR.Store.softDelete('tasks', t2); }
+                else { t2.deletedAt = new Date().toISOString(); }
+                removed++;
+              }
             }
-            S.tasks = keep;
             AR.Store.save(true);
-            AR.UI.toast(removed ? ('已清理 ' + removed + ' 条') : '没有被清理的记录');
+            AR.UI.toast(removed ? ('已清理 ' + removed + ' 条（可在回收站恢复）') : '没有被清理的记录');
             refreshHomework();
           }
         },

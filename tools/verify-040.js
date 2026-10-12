@@ -359,8 +359,8 @@ async function main() {
     var tabs = document.querySelectorAll('#settingsGrid .set-tabs .seg').length;
     return { opened: !!detail, back: !!back, tabs: tabs };
   })()`);
-  ok('T10 搜索出「分类 · 项目」命中清单，点一条直接进二级页（数据类有页内标签）',
-    g2.n >= 1 && g3.opened === true && g3.back === true && g3.tabs === 4,
+  ok('T10 搜索出「分类 · 项目」命中清单，点一条直接进二级页（数据类平铺 4 个面板）',
+    g2.n >= 1 && g3.opened === true && g3.back === true && g3.tabs === 0,
     JSON.stringify({ hits: g2, open: g3 }));
 
   const g4 = await J(`(function(){
@@ -487,6 +487,21 @@ async function main() {
     var target = null;
     for (var i = 0; i < blocks.length; i++) {
       if (blocks[i].className.indexOf('wt-evblock') < 0) { target = blocks[i]; break; }
+    }
+    if (!target) {
+      // 当前周没有课程块（前面用例可能把当天那节取消了）：临时造一个再渲染
+      var S = AR.Store.get();
+      S.courses.push({ id: 'vt-t19-course', name: 'T19 临时课', colorKey: 'blue', track: 'common',
+        semesterId: S.semesters[0].id, updatedAt: new Date().toISOString() });
+      S.blocks.push({ id: 'vt-t19-block', courseId: 'vt-t19-course', courseName: 'T19 临时课',
+        weekday: AR.Util.weekdayOf(new Date()), periodStart: 9, periodEnd: 10, weekMode: 'all', weeks: '',
+        start: '', end: '', locationIds: [], teacherIds: [], note: '', updatedAt: new Date().toISOString() });
+      AR.Store.save(true);
+      AR.UI.show('week');
+      blocks = document.querySelectorAll('#weekGridWrap .wt-block');
+      for (var k = 0; k < blocks.length; k++) {
+        if (blocks[k].className.indexOf('wt-evblock') < 0) { target = blocks[k]; break; }
+      }
     }
     if (!target) { return { err: 'no course block' }; }
     var before = AR.Store.get().blocks.length;

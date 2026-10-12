@@ -412,9 +412,11 @@ const srcCourse = liveState.courses.filter((c) => c.name === '高数A班重修')
 const beforeCount = liveState.courses.length;
 const rr = AR.Store.renameCourse(srcCourse.id, '高数A班');
 check('改名：合并成功', rr.ok && rr.merged);
-eq('改名：两门课合并成一门', AR.Store.get().courses.length, beforeCount - 1);
-eq('改名：同名课程只剩 1 条', AR.Store.get().courses.filter((c) => c.name === '高数A班').length, 1);
-const mergedId = AR.Store.get().courses.filter((c) => c.name === '高数A班')[0].id;
+// v0.4.1b：被合并掉的那门课走软删除（进回收站），所以数"活着的"课程
+eq('改名：两门课合并成一门', AR.Store.courseList().length, beforeCount - 1);
+eq('改名：被合并的课进了回收站', AR.Store.trashList().filter((t) => t.entity === 'courses').length >= 1, true);
+eq('改名：同名课程只剩 1 条', AR.Store.courseList().filter((c) => c.name === '高数A班').length, 1);
+const mergedId = AR.Store.courseList().filter((c) => c.name === '高数A班')[0].id;
 eq('改名：两个时段都挂到这门课上', AR.Store.get().blocks.filter((b) => b.courseId === mergedId).length, 2);
 
 /* ── 12. 时段编辑（v0.2.0：今日页条目 / 周表单节课程都能改）── */

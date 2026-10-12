@@ -9,7 +9,7 @@ var AR = window.AR || (window.AR = {});
 (function () {
   'use strict';
 
-var APP_VERSION = '0.4.1a';
+var APP_VERSION = '0.4.1';
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
@@ -455,7 +455,13 @@ var APP_VERSION = '0.4.1a';
    */
   function syncTasksFor(blockId, courseId, dateK, text) {
     var hw = homeworkSettings(state);
-    var list = taskList();
+    /**
+     * v0.4.1b 修复：这里必须写**原始数组**。
+     * v0.4.1 把 taskList() 改成"过滤掉已删除"的新数组之后，
+     * 这个函数往 list.push() 的结果就写进了副本 —— 备注里写的作业永远进不了 tasks，
+     * 「作业记录」「完成率」全是 0（用户报的"备注写作业不显示"就是这个）。
+     */
+    var raw = taskRaw();
     if (!hw.on) { return []; }
     var parsed = parseNoteTasks(text, hw.mode);
     var keep = {};
@@ -472,19 +478,42 @@ var APP_VERSION = '0.4.1a';
           text: p.text, done: !!p.done, doneAt: p.done ? new Date().toISOString() : '',
           updatedAt: new Date().toISOString()
         };
-        list.push(rec);
+        raw.push(rec);
       } else if (p.done && !rec.done) {
         rec.done = true; rec.doneAt = new Date().toISOString();
       }
       out.push(rec);
     }
-    // 备注里已经删掉的行：连作业条目一起删
-    for (var j = list.length - 1; j >= 0; j--) {
-      var t = list[j];
-      if (t.blockId === blockId && t.date === dateK && !keep[normTaskText(t.text)]) { list.splice(j, 1); }
+    // 备注里已经删掉的行：软删除（进回收站，5 秒内可撤销）
+    for (var j = raw.length - 1; j >= 0; j--) {
+      var t = raw[j];
+      if (t.deletedAt) { continue; }
+      if (t.blockId === blockId && t.date === dateK && !keep[normTaskText(t.text)]) {
+        softDelete('tasks', t);
+      }
     }
     save(true);
     return out;
+  }
+
+  /**
+   * v0.4.1b：按现有备注重建作业条目（「刷新作业」）。
+   * 扫描所有「本次备注」（单次记录上的 newNote），用当前识别规则重新生成条目：
+   *   · 已经存在的条目按 (blockId, 日期, 文字) 复用，划掉的状态不丢；
+   *   · 之前因为 bug 没生成的条目会被补上；
+   *   · 备注里已经删掉的行不会复活（syncTasksFor 会把它软删除）。
+   */
+  function rebuildTasks() {
+    var ovs = state.overrides || [];
+    var scanned = 0, before = taskList().length;
+    for (var i = 0; i < ovs.length; i++) {
+      var ov = ovs[i];
+      if (ov.deletedAt || !ov.newNote) { continue; }
+      scanned++;
+      syncTasksFor(ov.blockId, ov.courseId, ov.date, ov.newNote);
+    }
+    var after = taskList().length;
+    return { scanned: scanned, created: Math.max(0, after - before), total: after };
   }
 
   /** 某一天那节课的作业 */
@@ -870,6 +899,11 @@ var APP_VERSION = '0.4.1a';
       }
       s.meta.countdownsMigrated = APP_VERSION;
     }
+    /* v0.4.1：回收站 / 墓碑 的保留期限（默认 90 天自动清理；0 = 不自动，纯手动） */
+    if (!s.settings.trash) { s.settings.trash = { keepDays: 90 }; }
+    if (s.settings.trash.keepDays == null) { s.settings.trash.keepDays = 90; }
+    /* v0.4.1：检查更新（默认不自动检查） */
+    if (!s.settings.update) { s.settings.update = { auto: false, every: 'week', lastAt: '' }; }
     /**
      * v0.3.4：备注分层。
      *
@@ -1075,26 +1109,25 @@ var APP_VERSION = '0.4.1a';
     var nowIso = new Date().toISOString();
     var merged = false;
     if (target) {
-      // 合并：把时段 + 变动记录改挂到目标课程上，然后删掉这门课
+      /**
+       * 合并：把时段 + 变动记录改挂到目标课程上，然后删掉这门课。
+       * v0.4.1b：只动**没被删**的时段/记录；被合并掉的那门课走软删除
+       * （进回收站，可恢复），不再直接从 courses 里剪掉。
+       */
       for (var b = 0; b < state.blocks.length; b++) {
-        if (state.blocks[b].courseId === courseId) {
+        if (state.blocks[b].courseId === courseId && !state.blocks[b].deletedAt) {
           state.blocks[b].courseId = target.id;
           state.blocks[b].courseName = name;
           state.blocks[b].updatedAt = nowIso;
         }
       }
       for (var b3 = 0; b3 < state.blocks.length; b3++) {
-        if (state.blocks[b3].courseId === target.id) { state.blocks[b3].courseName = name; }
+        if (state.blocks[b3].courseId === target.id && !state.blocks[b3].deletedAt) { state.blocks[b3].courseName = name; }
       }
       for (var o = 0; o < state.overrides.length; o++) {
-        if (state.overrides[o].courseId === courseId) { state.overrides[o].courseId = target.id; }
+        if (state.overrides[o].courseId === courseId && !state.overrides[o].deletedAt) { state.overrides[o].courseId = target.id; }
       }
-      var keptCourses = [];
-      for (var c = 0; c < state.courses.length; c++) {
-        if (state.courses[c].id !== courseId) { keptCourses.push(state.courses[c]); }
-      }
-      state.courses = keptCourses;
-      markDeleted('courses', courseId);
+      softDelete('courses', self);
       merged = true;
     } else {
       self.name = name;
@@ -2562,6 +2595,44 @@ var APP_VERSION = '0.4.1a';
     return out;
   }
 
+  /**
+   * v0.4.1：按保留期限清理回收站与墓碑（默认 90 天，可在设置里改成 30/90/180/不自动）。
+   * 只清理"过期"的：回收站里超过期限的记录真删，墓碑超过期限的也一起清掉；
+   * 期限设 0 = 不自动清理，只能手动点「立即清理」。
+   */
+  function pruneTrash(days) {
+    var keep = (days == null)
+      ? ((state.settings && state.settings.trash && state.settings.trash.keepDays) || 0)
+      : Number(days) || 0;
+    if (!keep || keep <= 0) { return { records: 0, tombstones: 0, skipped: true }; }
+    var cut = new Date(Date.now() - keep * 86400000).toISOString();
+    var removed = 0;
+    var ents = ['events', 'courses', 'blocks', 'overrides', 'tasks', 'longTasks', 'quickTodos', 'types'];
+    for (var e = 0; e < ents.length; e++) {
+      var k = ents[e];
+      if (!Array.isArray(state[k])) { continue; }
+      state[k] = state[k].filter(function (r) {
+        if (r && r.deletedAt && r.deletedAt < cut) { removed++; return false; }
+        return true;
+      });
+    }
+    var lt = state.longTasks || [];
+    for (var i = 0; i < lt.length; i++) {
+      if (!Array.isArray(lt[i].entries)) { continue; }
+      lt[i].entries = lt[i].entries.filter(function (x) {
+        if (x && x.deletedAt && x.deletedAt < cut) { removed++; return false; }
+        return true;
+      });
+    }
+    var before = (state.tombstones || []).length;
+    state.tombstones = (state.tombstones || []).filter(function (tb) {
+      var d = (tb && tb.deletedAt) || '';
+      return !(d && d < cut);
+    });
+    save(true);
+    return { records: removed, tombstones: before - state.tombstones.length, skipped: false };
+  }
+
   /** 还活着的课程（界面显示 / 计数都用这个） */
   function courseList() { return liveOnly(state.courses); }
 
@@ -2602,7 +2673,8 @@ var APP_VERSION = '0.4.1a';
     eventsOf: eventsOf, eventsBetween: eventsBetween, eventsInWeek: eventsInWeek,
     archivedEvents: archivedEvents,
     saveEvent: saveEvent, removeEvent: removeEvent,
-    tasksOf: tasksOf, taskBoard: taskBoard, syncTasksFor: syncTasksFor,
+    tasksOf: tasksOf, taskBoard: taskBoard, syncTasksFor: syncTasksFor, rebuildTasks: rebuildTasks,
+    taskList: taskList, taskRaw: taskRaw,
     parseNoteTasks: parseNoteTasks, setTaskDone: setTaskDone, removeTask: removeTask,
     homeworkSettings: homeworkSettings, taskDoneDay: taskDoneDay,
     longTaskList: longTaskList, longTaskById: longTaskById, longTaskStats: longTaskStats,
@@ -2617,6 +2689,7 @@ var APP_VERSION = '0.4.1a';
     /* v0.4.1 软删除 + 回收站 */
     isDeleted: isDeleted, softDelete: softDelete, restore: restore, trashList: trashList,
     emptyTrash: emptyTrash, liveOnly: liveOnly, courseList: courseList, stampOf: stampOf,
+    pruneTrash: pruneTrash,
     quickTodoList: quickTodoList, quickTodoRemove: quickTodoRemove, quickTodoRaw: quickTodoRaw,
     defaultPeriodTimes: defaultPeriodTimes, makePeriods: makePeriods
   };
