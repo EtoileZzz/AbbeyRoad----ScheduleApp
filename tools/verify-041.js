@@ -214,12 +214,13 @@ async function main() {
     var sub = document.querySelector('.modal-sub');
     return {
       actions: labels.join(','),
+      hasClose: !!document.querySelector('.modal-head .modal-close'),
       sub: sub ? sub.textContent : '',
       hint: body ? body.textContent.indexOf('只读查看') >= 0 : false
     };
   })()`);
-  ok('R4 「我的」页点课程 = 只读：没有编辑/删除入口、有「去哪儿改」提示',
-    readOnly.actions === '关闭' && readOnly.sub.indexOf('只读') >= 0 && readOnly.hint === true,
+  ok('R4 「我的」页点课程 = 只读：没有编辑/删除入口（纯「关闭」按钮已按定稿删除，只剩 ✕）、有「只读查看」提示',
+    readOnly.actions === '' && readOnly.hasClose === true && readOnly.sub.indexOf('只读') >= 0 && readOnly.hint === true,
     JSON.stringify(readOnly));
   await J(`AR.UI.closeModal();'ok'`);
 

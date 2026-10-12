@@ -1608,10 +1608,19 @@ var AR = window.AR || (window.AR = {});
       + '<span class="hw-t">学期进度</span>'
       + '<span class="hw-n">' + U.escapeHtml((sem && sem.name) || '') + '</span></div>'));
     var bodyEl = el('<div class="hw-body"></div>');
+    /**
+     * v0.4.1c 修复：进度条的填充 <i> 之前只有 width、没有背景色 —— 看起来"根本没渲染"。
+     * 现在给个语义类 .cm-sem-fill 上主题色；并在条上标出「期中 / 期末」两个刻度。
+     */
+    var midWeek = Math.max(1, Math.round(total / 2));
     bodyEl.appendChild(el('<div class="cm-semester">'
       + '<div class="cm-semester-val"><b>' + big + '</b>'
       + '<span class="muted"> / ' + total + ' 周 · ' + U.escapeHtml(mid) + '</span></div>'
-      + '<div class="lt-bar big"><i style="width:' + Math.round(rate * 100) + '%"></i></div>'
+      + '<div class="cm-sem-wrap">'
+      + '<div class="lt-bar big"><i class="cm-sem-fill" style="width:' + Math.round(rate * 100) + '%"></i></div>'
+      + '<span class="cm-sem-mark" style="left:50%">期中 · 第 ' + midWeek + ' 周</span>'
+      + '<span class="cm-sem-mark end" style="left:100%">期末 · 第 ' + total + ' 周</span>'
+      + '</div>'
       + '</div>'));
     card.appendChild(bodyEl);
     return card;
@@ -3202,11 +3211,22 @@ var AR = window.AR || (window.AR = {});
     });
   }
 
+  /**
+   * 把周次钳制在当前学期范围内。
+   * 之前只做下限（Math.max(1, …)），今天若已超出该学期（典型场景：切回一个旧学期），
+   * weekCursor 会变成 "第 41 / 20 周" → 周表落在学期外，看起来"所有课/日程都丢了"。
+   */
+  function clampWeek(n, sem) {
+    var max = Math.max(1, (sem && sem.weekCount) || 20);
+    n = Number(n) || 1;
+    return Math.max(1, Math.min(max, n));
+  }
+
   function renderWeek(opts) {
     var sem = AR.Store.currentSemester();
     if (!sem) { return; }
     var weekCount = sem.weekCount || 20;
-    if (weekCursor == null) { weekCursor = Math.max(1, AR.Schedule.weekNumber(new Date(), sem)); }
+    if (weekCursor == null) { weekCursor = clampWeek(AR.Schedule.weekNumber(new Date(), sem), sem); }
     $('weekSub').textContent = sem.name + ' · 第 ' + weekCursor + ' / ' + weekCount + ' 周';
     // 右上角的学期按钮：显示当前学期名，点开可以切学期
     var semBtn = $('weekSemBtn');
@@ -3330,7 +3350,7 @@ var AR = window.AR || (window.AR = {});
         b.addEventListener('click', function () {
           var delta = Number(b.getAttribute('data-m'));
           if (delta === 0) {
-            weekCursor = Math.max(1, AR.Schedule.weekNumber(new Date(), sem));
+            weekCursor = clampWeek(AR.Schedule.weekNumber(new Date(), sem), sem);
             cursorDate = new Date();
             weekMonthCursor = new Date(cursorDate.getFullYear(), cursorDate.getMonth(), 1);
           } else {
@@ -3374,7 +3394,7 @@ var AR = window.AR || (window.AR = {});
       (function (dd, node) {
         node.addEventListener('click', function () {
           cursorDate = dd;
-          weekCursor = Math.max(1, AR.Schedule.weekNumber(dd, sem));
+          weekCursor = clampWeek(AR.Schedule.weekNumber(dd, sem), sem);
           weekPageMode = 'week';        // 点日期 = 看那一周
           AR.Bridge.haptic('light', node);
           renderToday();
@@ -4706,18 +4726,19 @@ var AR = window.AR || (window.AR = {});
     scroller.appendChild(bodyNode);
     card.appendChild(scroller);
     var actions = null;
-    if (opts.actions && opts.actions.length) {
-      var nActs = opts.actions.length;
-      /**
-       * v0.4.1：按钮最多两行。
-       *   ≤3 个 → 一行（自然宽度，做窄一点）
-       *   ≥4 个 → 两行，每行 ceil(n/2) 个（窄屏最少 2 列）
-       */
-      var cols = nActs <= 3 ? nActs : Math.ceil(nActs / 2);
-      var actions = el('<div class="modal-actions' + (nActs >= 4 ? ' actions-many' : '') + '"></div>');
-      actions.style.setProperty('--acts-cols', String(cols));
-      actions.style.setProperty('--acts-cols-narrow', String(nActs <= 3 ? 2 : cols));
-      for (var i = 0; i < opts.actions.length; i++) {
+    /**
+     * v0.4.1c（用户定稿）：
+     *   · 删掉纯文字的「取消」「关闭」按钮 —— 它们和 ✕ / 点遮罩空白 / 系统返回完全等效；
+     *     带场景语义的（如「取消这一天的课」）不在删除之列。
+     *   · 按钮宽度由文字决定（CSS: flex:0 0 auto + nowrap），一行优先、放不下换第二行、间距 8px。
+     */
+    var actList = (opts.actions || []).filter(function (a) {
+      var lb = String((a && a.label) || '').trim();
+      return lb && lb !== '取消' && lb !== '关闭';
+    });
+    if (actList.length) {
+      var actions = el('<div class="modal-actions"></div>');
+      for (var i = 0; i < actList.length; i++) {
         (function (a) {
           var b = el('<button class="btn ' + (a.kind || '') + '" type="button">' + U.escapeHtml(a.label) + '</button>');
           b.addEventListener('click', function () {
@@ -4725,7 +4746,7 @@ var AR = window.AR || (window.AR = {});
             a.onClick && a.onClick(closeModal);
           });
           actions.appendChild(b);
-        })(opts.actions[i]);
+        })(actList[i]);
       }
       card.appendChild(actions);
     }
@@ -8031,7 +8052,7 @@ var AR = window.AR || (window.AR = {});
       if (wasOnToday) { cursorDate = now; }
       var sem = AR.Store.currentSemester();
       if (sem && currentView === 'week') {
-        weekCursor = Math.max(1, AR.Schedule.weekNumber(now, sem));
+        weekCursor = clampWeek(AR.Schedule.weekNumber(now, sem), sem);
         renderWeek();
       } else if (currentView === 'today') {
         renderToday();
@@ -8051,10 +8072,23 @@ var AR = window.AR || (window.AR = {});
     return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
   }
 
+  /**
+   * v0.4.1c：弹窗玻璃的可调参数（设置 → 长按「外观」→ 开发者模式 → 弹窗玻璃）。
+   * 默认：内容层 90% / 覆盖层 20% / 覆盖层模糊 11px。写在 body 行内变量上，CSS 直接吃。
+   */
+  function applyModalTuning() {
+    var ap = (S.settings && S.settings.appearance) || {};
+    var bs = document.body.style;
+    bs.setProperty('--modal-card-a', String(ap.modalCardA == null ? 0.9 : ap.modalCardA));
+    bs.setProperty('--modal-bar-a', String(ap.modalBarA == null ? 0.2 : ap.modalBarA));
+    bs.setProperty('--modal-bar-blur', (ap.modalBarBlur == null ? 11 : Number(ap.modalBarBlur)) + 'px');
+  }
+
   function applyTheme() {
     var dark = effectiveDark();
     document.body.setAttribute('data-theme', dark ? 'dark' : 'light');
     applyAccentInline(dark);
+    applyModalTuning();
     AR.Bridge.setSystemBars(dark ? '#0E1116' : '#FFFFFF', !dark);
   }
 
@@ -8965,6 +8999,7 @@ var AR = window.AR || (window.AR = {});
     openTeacherModal: openTeacherModal,
     openNoteModal: openNoteModal,
     applyTheme: applyTheme,
+    applyModalTuning: applyModalTuning,
     themeSwitch: themeSwitch,
     applyGlass: applyGlass,
     applyPerf: applyPerf,

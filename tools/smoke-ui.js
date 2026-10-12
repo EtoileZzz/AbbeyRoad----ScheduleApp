@@ -183,8 +183,10 @@ const script = String.raw`(async () => {
     check('单次改动后出现范围开关', !!scope);
     const scopeBtns = scope ? scope.querySelectorAll('.scope-btn') : [];
     check('默认选中「仅这次」', scopeBtns[0] && scopeBtns[0].classList.contains('active'));
-    const cancelBtn = byText($('#modalCard').querySelectorAll('.modal-actions .btn'), '取消')[0];
-    cancelBtn.click();
+    // v0.4.1c：纯「取消」按钮已按定稿删除 —— 用 ✕ 关闭（与点空白/系统返回等效）
+    const closeBtn = $('#modalCard').querySelector('.modal-head .modal-close');
+    check('弹窗有 ✕ 关闭按钮', !!closeBtn);
+    if (closeBtn) { closeBtn.click(); }
     await sleep(300);
     check('取消后弹窗彻底关闭', $('#modalRoot').hidden === true);
 
@@ -204,7 +206,8 @@ const script = String.raw`(async () => {
       mods[1].click();                       // 节次模块
       await sleep(260);
       check('节次模块能打开编辑器', !!$('#modalCard').querySelector('#ebPStart'));
-      byText($('#modalCard').querySelectorAll('.modal-actions .btn'), '取消')[0].click();
+      // 纯「取消」已删除：用 ✕ 关（等效）
+      ($('#modalCard').querySelector('.modal-head .modal-close') || { click: function () { } }).click();
       await sleep(300);
     }
     check('今日页收起时三栏都在', !!(document.getElementById('zoneWeek') && document.getElementById('zoneToday') && document.getElementById('zoneNext')));
@@ -291,9 +294,11 @@ const script = String.raw`(async () => {
           await sleep(260);
           const btns = Array.prototype.map.call(
             $('#modalCard').querySelectorAll('.modal-actions .btn'), (b) => b.textContent.trim());
-          check('展开态点课程块只弹只读详情（没有编辑按钮）',
-            btns.length === 1 && btns[0] === '关闭', btns.join('/'));
-          byText($('#modalCard').querySelectorAll('.modal-actions .btn'), '关闭')[0]?.click();
+          check('展开态点课程块只弹只读详情（没有编辑/删除按钮，纯文字关闭按钮已删）',
+            btns.length === 0, btns.join('/'));
+          const roClose = $('#modalCard').querySelector('.modal-head .modal-close');
+          check('只读详情有 ✕ 可关', !!roClose);
+          if (roClose) { roClose.click(); }
           await sleep(300);
         }
       }
@@ -835,6 +840,10 @@ const script = String.raw`(async () => {
         (document.querySelector('.ds-preview') || {}).textContent);
       const cancelBtn = byText($('#modalCard').querySelectorAll('.modal-actions .btn'), '取消')[0];
       if (cancelBtn) { cancelBtn.click(); }
+      else {
+        const dsClose = $('#modalCard').querySelector('.modal-head .modal-close');
+        if (dsClose) { dsClose.click(); }
+      }
       await sleep(320);
     }
     check('自绘色盘入口可用', typeof AR.UI.openColorPicker === 'function');
@@ -888,7 +897,11 @@ async function main() {
     console.error('无法连接 CDP（端口 ' + port + '）：' + e.message);
     process.exit(2);
   });
-  const page = targets.find((t) => t.type === 'page') || targets[0];
+  // 只认 App 自己的页面：CDP 里可能同时存在 new-tab / 扩展页等目标，
+  // 之前 find(t => t.type === 'page') 会挑到它们 → 页面里没有 AR，脚本直接 ReferenceError。
+  let page = targets.find((t) => t.type === 'page' && /127\.0\.0\.1:8123/.test(t.url || ''));
+  if (!page) { page = targets.find((t) => t.type === 'page' && /^https?:/.test(t.url || '')); }
+  if (!page) { page = targets.find((t) => t.type === 'page') || targets[0]; }
   if (!page) { console.error('没有找到页面目标'); process.exit(3); }
 
   const ws = new WebSocket(page.webSocketDebuggerUrl);
@@ -905,6 +918,16 @@ async function main() {
   });
   await new Promise((resolve) => ws.addEventListener('open', resolve));
   await send('Runtime.enable');
+  /**
+   * v0.4.1c：先清干净再跑。
+   * 之前跟在 verify-040/041 后面跑时，会带着它们留下的实验性设置（自定义标签模块等），
+   * 于是出现"chips=0 modules=0"这类假失败 —— 冒烟本来就该从全新装的 App 状态开始。
+   */
+  await send('Page.enable').catch(() => { });
+  await send('Network.clearBrowserCache').catch(() => { });
+  await send('Runtime.evaluate', { expression: 'try{localStorage.clear();}catch(e){}' });
+  await send('Page.reload', { ignoreCache: true });
+  await new Promise((resolve) => setTimeout(resolve, 3200));
 
   const res = await send('Runtime.evaluate', {
     expression: script, returnByValue: true, awaitPromise: true, userGesture: true
@@ -914,7 +937,17 @@ async function main() {
     console.error('执行失败：' + JSON.stringify(res).slice(0, 800));
     process.exit(1);
   }
-  const report = JSON.parse(payload);
+  let report;
+  try {
+    report = JSON.parse(payload);
+  } catch (e) {
+    console.error('脚本返回值不是 JSON 字符串：typeof=' + typeof payload
+      + ' 内容前 400 字=' + String(payload).slice(0, 400));
+    if (res.result && res.result.exceptionDetails) {
+      console.error('页面异常：' + JSON.stringify(res.result.exceptionDetails).slice(0, 600));
+    }
+    process.exit(4);
+  }
   let pass = 0, fail = 0;
   report.checks.forEach((c) => {
     if (c.ok) { pass++; return; }

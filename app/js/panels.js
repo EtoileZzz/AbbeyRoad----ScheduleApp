@@ -1459,6 +1459,25 @@ var AR = window.AR || (window.AR = {});
     foot.appendChild(reset);
     box.appendChild(foot);
 
+    /* ── 弹窗玻璃（0.4.1 定稿参数，开发者可微调）─────────────── */
+    box.appendChild(el('<div class="dev-sub">弹窗玻璃</div>'));
+    var gs = S.settings.appearance;
+    if (gs.modalCardA == null) { gs.modalCardA = 0.9; }
+    if (gs.modalBarA == null) { gs.modalBarA = 0.2; }
+    if (gs.modalBarBlur == null) { gs.modalBarBlur = 11; }
+    box.appendChild(el('<p class="muted" style="margin:0 0 6px;font-size:12px">'
+      + '内容层 / 覆盖层不透明度与覆盖层高斯模糊，改完立刻生效；'
+      + '流畅模式·标准 / 深度 下覆盖层自动改为不透明（不模糊）。</p>'));
+    box.appendChild(slider('内容层（弹窗卡片）不透明度', 40, 100, Math.round(gs.modalCardA * 100), '%', function (v) {
+      S.settings.appearance.modalCardA = v / 100; AR.Store.save(true); AR.UI.applyModalTuning();
+    }));
+    box.appendChild(slider('覆盖层（标题带/按钮条）不透明度', 0, 100, Math.round(gs.modalBarA * 100), '%', function (v) {
+      S.settings.appearance.modalBarA = v / 100; AR.Store.save(true); AR.UI.applyModalTuning();
+    }));
+    box.appendChild(slider('覆盖层高斯模糊', 0, 40, Number(gs.modalBarBlur) || 0, 'px', function (v) {
+      S.settings.appearance.modalBarBlur = v; AR.Store.save(true); AR.UI.applyModalTuning();
+    }));
+
     /* ── 开发者工具：随时开关，关掉立刻恢复原样 ─────────────── */
     box.appendChild(el('<div class="dev-sub">开发者工具</div>'));
     var flags = AR.UI.devFlags();

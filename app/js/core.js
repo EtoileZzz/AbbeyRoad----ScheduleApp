@@ -9,7 +9,7 @@ var AR = window.AR || (window.AR = {});
 (function () {
   'use strict';
 
-var APP_VERSION = '0.4.3';
+var APP_VERSION = '0.4.1';
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
@@ -421,9 +421,36 @@ var APP_VERSION = '0.4.3';
     return out;
   }
 
-  function taskList() {
+  /**
+   * v0.4.1c：任务归属的学期。
+   * 作业条目本身不带 semesterId（syncTasksFor 只写 courseId/blockId），
+   * 所以优先取自己的 semesterId，其次取它那门课的学期；取不到就返回 null（视为"不分学期"，照常显示）。
+   */
+  function semesterOfTask(t) {
+    if (!t) { return null; }
+    if (t.semesterId) { return t.semesterId; }
+    var c = t.courseId ? courseById(t.courseId) : null;
+    return c && c.semesterId ? c.semesterId : null;
+  }
+
+  /**
+   * 当前学期的作业条目（界面一律用这个）。
+   * v0.4.1c 修复：之前完全不分学期 —— 切到别的学期后，旧学期的作业仍然显示在列表里。
+   * 传 semId 可显式指定学期；不传用当前学期。
+   */
+  function taskList(semId) {
+    var cur = currentSemester();
+    var sid = semId || (cur && cur.id);
     var out = [], all = (state.tasks || (state.tasks = []));
-    for (var i = 0; i < all.length; i++) { if (!all[i].deletedAt) { out.push(all[i]); } }
+    for (var i = 0; i < all.length; i++) {
+      var t = all[i];
+      if (t.deletedAt) { continue; }
+      if (sid) {
+        var ts = semesterOfTask(t);
+        if (ts && ts !== sid) { continue; }
+      }
+      out.push(t);
+    }
     return out;
   }
   /** 原始数组（内部写用；界面一律用 taskList） */
@@ -442,8 +469,13 @@ var APP_VERSION = '0.4.3';
 
   function findTask(blockId, dateK, text) {
     var key = normTaskText(text);
-    var list = taskList();
+    /**
+     * 这里必须扫**原始数组**：taskList() 现在按当前学期过滤，
+     * 而 rebuildTasks() 会遍历所有学期的备注 —— 用过滤后的列表会找不到已有条目、建出重复作业。
+     */
+    var list = taskRaw();
     for (var i = 0; i < list.length; i++) {
+      if (list[i].deletedAt) { continue; }
       if (list[i].blockId === blockId && list[i].date === dateK && normTaskText(list[i].text) === key) { return list[i]; }
     }
     return null;
