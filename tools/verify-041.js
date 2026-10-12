@@ -617,16 +617,30 @@ async function main() {
   const modal2 = await J(`(function(){
     var acts = document.querySelector('.modal-actions');
     var bs = acts.querySelectorAll('.btn');
-    var tops = [];
-    for (var i = 0; i < bs.length; i++) { tops.push(bs[i].getBoundingClientRect().top); }
+    var tops = [], ws = [], nowrap = true;
+    for (var i = 0; i < bs.length; i++) {
+      tops.push(bs[i].getBoundingClientRect().top);
+      ws.push(bs[i].getBoundingClientRect().width);
+      if (getComputedStyle(bs[i]).whiteSpace !== 'nowrap') { nowrap = false; }
+    }
     var rows = 1;
     for (var k = 1; k < tops.length; k++) { if (Math.abs(tops[k] - tops[0]) > 3) { rows = 2; } }
-    var w0 = Math.round(bs[0].getBoundingClientRect().width), w1 = Math.round(bs[1].getBoundingClientRect().width);
+    // 间距不能再收窄：任意相邻同排按钮的水平间隙 ≥ 7px（设定 8px）
+    var gapOk = true;
+    for (var m = 0; m + 1 < bs.length; m++) {
+      if (Math.abs(tops[m] - tops[m + 1]) <= 3) {
+        var g = Math.round(bs[m + 1].getBoundingClientRect().left - bs[m].getBoundingClientRect().right);
+        if (g < 7) { gapOk = false; }
+      }
+    }
+    var varied = false;
+    for (var q = 0; q < ws.length; q++) { if (Math.abs(ws[q] - ws[0]) > 6) { varied = true; } }
     AR.UI.closeModal();
-    return { many: acts.classList.contains('actions-many'), rows: rows, equalWidth: Math.abs(w0 - w1) <= 6, w: w0 + '/' + w1 };
+    return { rows: rows, gapOk: gapOk, nowrap: nowrap, naturalWidth: varied, widths: ws.map(function (x) { return Math.round(x); }) };
   })()`);
-  ok('R12b 按钮 ≥4 个：两行等宽（主按钮在右下）',
-    modal2.many === true && modal2.rows === 2 && modal2.equalWidth === true, JSON.stringify(modal2));
+  ok('R12b 操作条：自然宽度（不强制等宽）、一行优先、间距不收窄；文字不折行',
+    modal2.rows === 1 && modal2.gapOk === true && modal2.nowrap === true && modal2.naturalWidth === true,
+    JSON.stringify(modal2));
 
   // R12c 已移除：按用户要求删掉「弹窗质感」设置项（模糊固定为标准档）
 
