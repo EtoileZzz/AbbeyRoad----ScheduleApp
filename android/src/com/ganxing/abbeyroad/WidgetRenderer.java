@@ -61,6 +61,9 @@ final class WidgetRenderer {
         v.setTextViewText(R.id.h_title, empty(d.dateText, "Abbey Road"));
         v.setTextViewText(R.id.h_sub, empty(d.todaySub, "还没有导入课表"));
         v.setTextViewText(R.id.h_badge, empty(d.todayBadge, "—"));
+        // 0.4.1c：元素开关（关掉的直接隐藏，不留空位）
+        v.setViewVisibility(R.id.h_sub, d.hidden("headSub") ? View.GONE : View.VISIBLE);
+        v.setViewVisibility(R.id.h_badge, d.hidden("headBadge") ? View.GONE : View.VISIBLE);
         v.setOnClickPendingIntent(R.id.h_root, open(ctx, "today", 10));
         return v;
     }
@@ -75,6 +78,10 @@ final class WidgetRenderer {
         v.setTextViewText(R.id.n_name, has ? d.nextName : "最近没有安排");
         v.setTextViewText(R.id.n_time, has ? d.nextTime : "导入课表后这里会显示下一节课");
         v.setTextViewText(R.id.n_place, has ? d.nextPlace : "");
+        // 0.4.1c：元素开关 —— 关掉的行隐藏
+        v.setViewVisibility(R.id.n_in, d.hidden("nextIn") ? View.GONE : View.VISIBLE);
+        v.setViewVisibility(R.id.n_time, d.hidden("nextTime") ? View.GONE : View.VISIBLE);
+        v.setViewVisibility(R.id.n_place, d.hidden("nextPlace") ? View.GONE : View.VISIBLE);
         v.setOnClickPendingIntent(R.id.n_root, open(ctx, has ? "today" : "import", 11));
         return v;
     }
@@ -101,6 +108,9 @@ final class WidgetRenderer {
                 v.setInt(bars[i], "setBackgroundColor", color(r.color, 0xFF5B8DEF));
                 v.setTextViewText(names[i], r.name);
                 v.setTextViewText(metas[i], joinMeta(r.time, r.place));
+                // 时间/地点都关掉（或本来就是空）时，整行 meta 隐藏，不留空行
+                boolean metaHidden = d.hidden("todayTime") && d.hidden("todayPlace");
+                v.setViewVisibility(metas[i], metaHidden ? View.GONE : View.VISIBLE);
             } else {
                 v.setViewVisibility(rows[i], View.GONE);
             }
@@ -115,6 +125,8 @@ final class WidgetRenderer {
         RemoteViews v = new RemoteViews(ctx.getPackageName(), R.layout.widget_week);
         v.setTextViewText(R.id.w_title, d.weekNo > 0 ? ("第 " + d.weekNo + " 周") : "本周课表");
         v.setTextViewText(R.id.w_sub, empty(d.weekTotalText, ""));
+        // 0.4.1c：总节数可以关掉
+        v.setViewVisibility(R.id.w_sub, d.hidden("weekSub") ? View.GONE : View.VISIBLE);
 
         int slot = ctx.getResources().getColor(R.color.widget_slot);
         for (int row = 0; row < WEEK_ROWS; row++) {

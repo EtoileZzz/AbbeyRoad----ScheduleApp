@@ -645,6 +645,89 @@ async function main() {
 
   // R12c 已移除：按用户要求删掉「弹窗质感」设置项（模糊固定为标准档）
 
+  // ── R13 桌面卡片：功能显示预设（每种尺寸 A/B/C）──
+  const wgPre = await J(`(function(){
+    var S = AR.Store.get();
+    S.settings.widgets = S.settings.widgets || {};
+    S.settings.widgets.presets = S.settings.widgets.presets || {};
+    S.settings.widgets.hidden = {};
+    var W = S.settings.widgets.presets;
+    var base = AR.WidgetData.build();
+    W.head = 'B'; var hb = AR.WidgetData.build();
+    W.head = 'C'; var hc = AR.WidgetData.build();
+    W.next = 'C'; var nc = AR.WidgetData.build();
+    W.week = 'A'; var wa = AR.WidgetData.build();
+    W.today = 'C'; var tc = AR.WidgetData.build();
+    W.head = 'A'; W.next = 'A'; W.week = 'B'; W.today = 'A';
+    var only = function (a, lo, hi) { for (var i = 0; i < a.length; i++) { if (a[i].d < lo || a[i].d > hi) { return false; } } return true; };
+    return {
+      headChanges: hb.todayBadge !== base.todayBadge || hb.todaySub !== base.todaySub,
+      headC: /还剩|休息/.test(hc.todayBadge),
+      nextC: nc.nextPlace === '',
+      weekA: only(wa.week, 1, 5),
+      todayC: tc.today.every(function (r) { return r.place === ''; }),
+      restored: AR.Store.get().settings.widgets.presets.head === 'A'
+    };
+  })()`);
+  ok('R13 桌面卡片功能预设：切换 A/B/C 会改变 payload 内容（今日头/下一节课/本周/今日清单）',
+    wgPre.headChanges === true && wgPre.headC === true && wgPre.nextC === true
+    && wgPre.weekA === true && wgPre.todayC === true && wgPre.restored === true,
+    JSON.stringify(wgPre));
+
+  // ── R14 桌面卡片：显示元素自由组合（hide 数组 + 字段清空 + UI 开关）──
+  const wgEl = await J(`(function(){
+    var S = AR.Store.get();
+    S.settings.widgets.hidden = {};
+    var base = AR.WidgetData.build();
+    S.settings.widgets.hidden = { headSub: true, headBadge: true, nextTime: true, nextPlace: true, nextIn: true, todayTime: true, todayPlace: true, weekSub: true };
+    var off = AR.WidgetData.build();
+    S.settings.widgets.hidden = { nextPlace: true, todayPlace: true };
+    var part = AR.WidgetData.build();
+    S.settings.widgets.hidden = {};
+    AR.WidgetData.sync(true);
+    return {
+      baseEmpty: base.hide.length === 0,
+      offAll: off.hide.length === 8 && off.todaySub === '' && off.todayBadge === '' && off.nextTime === '' && off.weekTotalText === '',
+      partOnly: part.hide.length === 2 && part.nextPlace === '' && part.nextTime !== ''
+    };
+  })()`);
+  // UI 分两步：先导航到「设置 → 桌面卡片」，再量开关（避免设置页停在二级页时点不到）
+  await J(`(function(){
+    if (AR.Panels && AR.Panels.settingsGoHome) { AR.Panels.settingsGoHome(); }
+    AR.UI.show('settings');
+    var cat = document.querySelector('#settingsGrid .set-cat[data-key="widgets"] .set-cat-head');
+    if (cat) { cat.click(); }
+    return 'nav';
+  })()`);
+  await sleep(320);
+  await J(`(function(){
+    var hit = null, rows = document.querySelectorAll('.q-item, .export-row, .set-row, .setting-row, .field');
+    for (var i = 0; i < rows.length; i++) { if ((rows[i].textContent || '').indexOf('桌面卡片') >= 0) { hit = rows[i]; } }
+    if (hit) { hit.click(); }
+    return 'open';
+  })()`);
+  await sleep(320);
+  const wgEl2 = await J(`(function(){
+    var chip = document.querySelector('.wg-el');
+    var before = chip ? chip.classList.contains('active') : null;
+    if (chip) { chip.click(); }
+    var after = chip ? chip.classList.contains('active') : null;
+    var saved = Object.keys(AR.Store.get().settings.widgets.hidden || {}).length > 0;
+    var out = {
+      elRows: document.querySelectorAll('.wg-els').length,
+      chips: document.querySelectorAll('.wg-el').length,
+      toggled: before !== null && before !== after,
+      saved: saved
+    };
+    AR.Store.get().settings.widgets.hidden = {};
+    AR.WidgetData.sync(true);
+    return out;
+  })()`);
+  ok('R14 桌面卡片显示元素：可自由组合（hide 数组 + 字段清空 + 4 行 8 个 UI 开关，点击落盘）',
+    wgEl.baseEmpty === true && wgEl.offAll === true && wgEl.partOnly === true
+    && wgEl2.elRows === 4 && wgEl2.chips === 8 && wgEl2.toggled === true && wgEl2.saved === true,
+    JSON.stringify({ payload: wgEl, ui: wgEl2 }));
+
   // ── 清理 ────────────────────────────────────────────────
   await J(`(function(){
     var S = AR.Store.get();

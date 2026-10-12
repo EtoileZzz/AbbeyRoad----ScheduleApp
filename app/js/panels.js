@@ -1707,6 +1707,40 @@ var AR = window.AR || (window.AR = {});
     return row;
   }
 
+  /* 0.4.1c · 桌面卡片：自由勾选要显示的元素（功能层，不动外观） */
+  function widgetHidden() {
+    var S = AR.Store.get();
+    S.settings.widgets = S.settings.widgets || {};
+    return S.settings.widgets.hidden || (S.settings.widgets.hidden = {});
+  }
+  function elementChips(key, title) {
+    var items = (AR.WidgetData && AR.WidgetData.ELEMENTS && AR.WidgetData.ELEMENTS[key]) || [];
+    if (!items.length) { return null; }
+    var hid = widgetHidden();
+    var row = el('<div class="wg-els"></div>');
+    row.appendChild(el('<span class="wg-els-t">' + esc(title) + ' 显示元素</span>'));
+    var wrap = el('<div class="wg-els-row"></div>');
+    for (var i = 0; i < items.length; i++) {
+      (function (it) {
+        var on = !hid[it.k];
+        var chip = el('<button class="chip-btn wg-el' + (on ? ' active' : '') + '" type="button">'
+          + (on ? '✓ ' : '') + esc(it.t) + '</button>');
+        chip.addEventListener('click', function () {
+          var cur = !widgetHidden()[it.k];
+          widgetHidden()[it.k] = cur;              // 点一下切换显示/隐藏
+          AR.Store.save(true);
+          if (AR.WidgetData && AR.WidgetData.sync) { AR.WidgetData.sync(true); }
+          AR.Bridge.haptic('light', chip);
+          chip.classList.toggle('active', !cur);
+          chip.textContent = (cur ? '' : '✓ ') + it.t;
+        });
+        wrap.appendChild(chip);
+      })(items[i]);
+    }
+    row.appendChild(wrap);
+    return row;
+  }
+
   /* 2b · 桌面卡片（5 种样式 + 添加教程） */
   function panelWidgets() {
     var box = el('<div></div>');
@@ -1724,6 +1758,7 @@ var AR = window.AR || (window.AR = {});
       + '<span class="wg-chip">' + esc(p.todayBadge || '08:00') + '</span></div>'
       + '<div class="wg-sub">第 ' + (p.weekNo || 1) + ' 周 · ' + esc(p.todaySub || '今天没有课') + '</div>'));
     list.appendChild(presetRow('head', '今日头 4×1', [['A', '今天节数'], ['B', '下一节倒计时'], ['C', '剩余节数']]));
+    (function () { var e = elementChips('head', '今日头'); if (e) { list.appendChild(e); } })();
 
     // ② 下一节课
     list.appendChild(widgetCard('下一节课 · 2×2', '课程、时间、地点、还有多久上课', 'w-next',
@@ -1733,6 +1768,7 @@ var AR = window.AR || (window.AR = {});
       + '<div class="wg-sub">' + esc(p.nextTime || '导入课表后显示下一节课') + '</div>'
       + '<div class="wg-sub">' + esc(p.nextPlace || '') + '</div>'));
     list.appendChild(presetRow('next', '下一节课 2×2', [['A', '课名·时间·地点'], ['B', '加周次'], ['C', '极简·倒计时']]));
+    (function () { var e = elementChips('next', '下一节课'); if (e) { list.appendChild(e); } })();
 
     // ③ 今日课程清单
     var rows = '';
@@ -1747,6 +1783,7 @@ var AR = window.AR || (window.AR = {});
       '<div class="wg-line"><b>今天 · ' + esc(U.WEEKDAY_NAMES[U.weekdayOf(new Date())]) + '</b>'
       + '<span class="wg-dim">' + today.length + ' 节课</span></div>' + rows));
     list.appendChild(presetRow('today', '今日课程清单 4×2', [['A', '全部'], ['B', '只显示没上完'], ['C', '只看时间·课名']]));
+    (function () { var e = elementChips('today', '今日清单'); if (e) { list.appendChild(e); } })();
 
     // ④ 本周迷你课表
     var grid = '';
@@ -1766,6 +1803,7 @@ var AR = window.AR || (window.AR = {});
       grid += '</div>';
     }
     list.appendChild(presetRow('week', '本周迷你课表 4×3', [['A', '周一到周五'], ['B', '含周末'], ['C', '今天起两天']]));
+    (function () { var e = elementChips('week', '本周课表'); if (e) { list.appendChild(e); } })();
     list.appendChild(widgetCard('本周迷你课表 · 4×3', '日期在上、节次在左，和「周表」同构', 'w-week',
       '<div class="wg-line"><b>第 ' + (p.weekNo || 1) + ' 周</b><span class="wg-dim">'
       + esc(p.weekRange || '') + '</span></div>'

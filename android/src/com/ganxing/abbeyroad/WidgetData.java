@@ -54,6 +54,10 @@ final class WidgetData {
     final List<String> dates = new ArrayList<String>();
     final List<Row> today = new ArrayList<Row>();
     final List<Cell> week = new ArrayList<Cell>();
+    /** 0.4.1c：用户关掉的元素（headSub / headBadge / nextIn / nextTime / nextPlace / todayTime / todayPlace / weekSub） */
+    final List<String> hide = new ArrayList<String>();
+
+    boolean hidden(String key) { return hide.contains(key); }
 
     static WidgetData load(Context ctx) {
         WidgetData d = new WidgetData();
@@ -86,6 +90,10 @@ final class WidgetData {
         JSONArray ds = o.optJSONArray("dates");
         if (ds != null) {
             for (int i = 0; i < ds.length(); i++) { dates.add(ds.optString(i, "")); }
+        }
+        JSONArray hd = o.optJSONArray("hide");
+        if (hd != null) {
+            for (int i = 0; i < hd.length(); i++) { hide.add(hd.optString(i, "")); }
         }
         JSONArray rows = o.optJSONArray("today");
         if (rows != null) {

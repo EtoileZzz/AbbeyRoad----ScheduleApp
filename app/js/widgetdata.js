@@ -29,6 +29,46 @@
   }
   function pre(key, def) { return presets()[key] || def; }
 
+  /**
+   * 0.4.1c：每张卡片可**自由组合要显示的元素**（功能层，不动外观）。
+   * 配置存 settings.widgets.hidden[key]=true；payload 输出 hide 数组，
+   * 同时把对应字段清空 —— 即使旧版原生不认 hide，也只会少显示、不会显示错内容。
+   */
+  var ELEMENTS = {
+    head: [{ k: 'headSub', t: '副标题' }, { k: 'headBadge', t: '右上徽标' }],
+    next: [{ k: 'nextIn', t: '倒计时' }, { k: 'nextTime', t: '时间' }, { k: 'nextPlace', t: '地点' }],
+    today: [{ k: 'todayTime', t: '时间' }, { k: 'todayPlace', t: '地点' }],
+    week: [{ k: 'weekSub', t: '总节数' }]
+  };
+  function hiddenMap() {
+    var S = AR.Store.get();
+    S.settings.widgets = S.settings.widgets || {};
+    return S.settings.widgets.hidden || (S.settings.widgets.hidden = {});
+  }
+  function applyElements(payload) {
+    var hid = hiddenMap(), hide = [], g, i;
+    for (g in ELEMENTS) {
+      if (!Object.prototype.hasOwnProperty.call(ELEMENTS, g)) { continue; }
+      for (i = 0; i < ELEMENTS[g].length; i++) {
+        if (hid[ELEMENTS[g][i].k]) { hide.push(ELEMENTS[g][i].k); }
+      }
+    }
+    payload.hide = hide;
+    if (hid.headSub) { payload.todaySub = ''; }
+    if (hid.headBadge) { payload.todayBadge = ''; }
+    if (hid.nextTime) { payload.nextTime = ''; }
+    if (hid.nextPlace) { payload.nextPlace = ''; }
+    if (hid.nextIn) { payload.nextIn = ''; }
+    if (hid.weekSub) { payload.weekTotalText = ''; }
+    if (hid.todayTime || hid.todayPlace) {
+      for (i = 0; i < payload.today.length; i++) {
+        if (hid.todayTime) { payload.today[i].time = ''; }
+        if (hid.todayPlace) { payload.today[i].place = ''; }
+      }
+    }
+    return payload;
+  }
+
   function rangeText(item) {
     var a = plain(item.start), b = plain(item.end);
     if (a && b) { return a + ' – ' + b; }
@@ -153,6 +193,9 @@
       payload.nextPlace = '';
     }
 
+    /* 元素开关放最后：用户关掉的元素直接不写进 payload */
+    applyElements(payload);
+
     return payload;
   }
 
@@ -169,5 +212,5 @@
     timer = setTimeout(run, 400);
   }
 
-  AR.WidgetData = { build: buildPayload, sync: sync };
+  AR.WidgetData = { build: buildPayload, sync: sync, ELEMENTS: ELEMENTS, hidden: hiddenMap };
 })();

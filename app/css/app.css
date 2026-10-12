@@ -3082,6 +3082,11 @@ body[data-perf="min"] .blob { display: none; }
 /* 0.4.2：桌面卡片「功能显示预设」选择器 */
 .wg-preset { margin: -4px 0 var(--sp-3); }
 .wg-preset-t { font-size: 12px; color: var(--text-tertiary); margin: 0 0 6px; }
+/* 0.4.1c：桌面卡片「显示元素」开关 */
+.wg-els { margin: -6px 0 var(--sp-3); }
+.wg-els-t { display: block; font-size: 12px; color: var(--text-tertiary); margin: 0 0 6px; }
+.wg-els-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.wg-els-row .wg-el { font-size: 12px; padding: 4px 10px; }
 /* 两条带（定稿）：不透明度 25% + 高斯模糊 12px（= --blur-modal 的 0.5 档，流畅模式自动降级），无渐变 */
 .modal-head {
   position: absolute;
