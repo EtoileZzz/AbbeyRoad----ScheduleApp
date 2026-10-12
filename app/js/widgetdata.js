@@ -14,6 +14,21 @@
 
   function plain(t) { return /^\d{1,2}:\d{2}$/.test(t || '') ? t : ''; }
 
+  /**
+   * 0.4.2：每种尺寸卡片的「功能显示预设」。
+   * 全部在网页侧决定 payload 内容 —— 原生渲染器不用改，卡片立刻按预设变样。
+   *   head  今日头 4×1：A 节数 / B 下一节倒计时 / C 今日剩余节数
+   *   next  下一节课 2×2：A 课名·时间·地点 / B 加周次 / C 极简课名·倒计时
+   *   today 今日清单 4×2：A 全部 ≤4 条 / B 只显示没上完的 / C 只显示时间+课名
+   *   week  本周迷你课表：A 周一到周五 / B 含周末 / C 今天起两天
+   */
+  function presets() {
+    var S = AR.Store.get();
+    S.settings.widgets = S.settings.widgets || {};
+    return S.settings.widgets.presets || (S.settings.widgets.presets = {});
+  }
+  function pre(key, def) { return presets()[key] || def; }
+
   function rangeText(item) {
     var a = plain(item.start), b = plain(item.end);
     if (a && b) { return a + ' – ' + b; }
@@ -48,13 +63,16 @@
       nextPlace: ''
     };
 
-    /* 今日清单（卡片最多画 4 条） */
+    /* 今日清单（卡片最多画 4 条）；_endMin 供「只显示没上完的」预设过滤 */
+    var todayMode = pre('today', 'A');
+    var nowMin = now.getHours() * 60 + now.getMinutes();
     for (var i = 0; i < items.length && i < 4; i++) {
       var it = items[i];
+      if (todayMode === 'B' && typeof it.endMin === 'number' && it.endMin <= nowMin) { continue; }
       payload.today.push({
         time: rangeText(it) + (it.periodLabel ? ' · ' + it.periodLabel : ''),
         name: it.course.name,
-        place: it.location ? it.location.raw : '',
+        place: todayMode === 'C' ? '' : (it.location ? it.location.raw : ''),
         color: it.color || '#5B8DEF'
       });
     }
@@ -66,9 +84,15 @@
       payload.weekRange = (monday.getMonth() + 1) + '月' + monday.getDate() + '日 – '
         + (sunday.getMonth() + 1) + '月' + sunday.getDate() + '日';
       var total = 0;
+      var weekMode = pre('week', 'A');
+      var wd = U.weekdayOf(now);
+      var dayFrom = 1, dayTo = 7;
+      if (weekMode === 'A') { dayTo = 5; }
+      else if (weekMode === 'C') { dayFrom = wd; dayTo = Math.min(7, wd + 1); }
       for (var d = 1; d <= 7; d++) {
         var dd = U.addDays(monday, d - 1);
         payload.dates.push(String(dd.getDate()));
+        if (d < dayFrom || d > dayTo) { continue; }   // 日期行仍填满 7 列，保证列对齐
         var list = AR.Schedule.weekItems(weekNo, d);
         total += list.length;
         for (var k = 0; k < list.length; k++) {
@@ -107,6 +131,27 @@
         }
       }
     } catch (e) { }
+
+    /* ── 预设收尾（放在最后：此时 items / 下一节课都已算好）── */
+    var headMode = pre('head', 'A');
+    if (headMode === 'B') {
+      payload.todayBadge = payload.nextIn || '今天没课';
+      payload.todaySub = payload.nextName || '最近没有安排';
+    } else if (headMode === 'C') {
+      var left = 0;
+      for (var li = 0; li < items.length; li++) {
+        if (typeof items[li].endMin !== 'number' || items[li].endMin > nowMin) { left++; }
+      }
+      payload.todayBadge = items.length ? ('还剩 ' + left + ' 节') : '休息';
+      payload.todaySub = '共 ' + items.length + ' 节';
+    }
+    var nextMode = pre('next', 'A');
+    if (nextMode === 'B' && payload.nextName) {
+      payload.nextPlace = payload.nextPlace ? (payload.nextPlace + ' · 第 ' + weekNo + ' 周') : ('第 ' + weekNo + ' 周');
+    } else if (nextMode === 'C' && payload.nextName) {
+      payload.nextTime = payload.nextIn || payload.nextTime;
+      payload.nextPlace = '';
+    }
 
     return payload;
   }

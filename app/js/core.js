@@ -9,7 +9,7 @@ var AR = window.AR || (window.AR = {});
 (function () {
   'use strict';
 
-var APP_VERSION = '0.4.1';
+var APP_VERSION = '0.4.2';
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
