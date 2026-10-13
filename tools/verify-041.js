@@ -744,6 +744,58 @@ async function main() {
     AR.UI.show('today');
     return 'clean';
   })()`);
+  // ── R15 兼容性回归：弹窗背景在旧 WebView 上不能变透明（0.4.1 线上 bug）──
+  const compat = await J(`(function(){
+    function alpha(c) {
+      var m = /rgba?\\(([^)]+)\\)/.exec(c || '');
+      if (!m) { return c === 'transparent' ? 0 : -1; }
+      var p = m[1].split(',');
+      return p.length > 3 ? parseFloat(p[3]) : 1;
+    }
+    function probe() {
+      var card = document.querySelector('.modal-card');
+      var head = document.querySelector('.modal-head');
+      var acts = document.querySelector('.modal-actions');
+      return { card: alpha(getComputedStyle(card).backgroundColor),
+               head: alpha(getComputedStyle(head).backgroundColor),
+               acts: acts ? alpha(getComputedStyle(acts).backgroundColor) : null };
+    }
+    AR.UI.closeModal();
+    document.body.setAttribute('data-theme', 'light');
+    AR.UI.openModal({ title: '兼容性回归', body: '<div style="height:240px">内容</div>', actions: [{ label: '保存', kind: 'primary' }] });
+    var light = probe();
+    document.body.setAttribute('data-theme', 'dark');
+    var dark = probe();
+    document.body.setAttribute('data-perf', 'lite');
+    var perf = probe();
+    document.body.removeAttribute('data-perf');
+    AR.UI.closeModal();
+    return { light: light, dark: dark, perf: perf };
+  })()`);
+  ok('R15a 弹窗背景三态都不透明：浅色/深色卡片 α≥0.5、两条带 α>0；流畅模式下带子完全不透明',
+    compat.light.card >= 0.5 && compat.light.head > 0 && compat.light.acts > 0
+    && compat.dark.card >= 0.5 && compat.dark.head > 0 && compat.dark.acts > 0
+    && compat.perf.head === 1 && compat.perf.acts === 1,
+    JSON.stringify(compat));
+
+  const cssScan = await J(`(async function(){
+    var txt = await fetch('css/app.css').then(function (r) { return r.text(); });
+    var code = txt.replace(/\\/\\*[\\s\\S]*?\\*\\//g, '');
+    return {
+      lightDark: (code.match(/light-dark\\(/g) || []).length,
+      colorMix: (code.match(/color-mix\\(/g) || []).length,
+      has: (code.match(/[^a-z-]:has\\(/g) || []).length,
+      container: (code.match(/@container/g) || []).length,
+      gutter: (code.match(/scrollbar-gutter/g) || []).length,
+      fallback: code.indexOf('@supports not') >= 0
+    };
+  })()`);
+  ok('R15b CSS 不用旧 WebView 不认的特性，且保留 backdrop-filter 兜底',
+    cssScan.lightDark === 0 && cssScan.colorMix === 0 && cssScan.has === 0 && cssScan.container === 0
+    && cssScan.gutter === 0 && cssScan.fallback === true,
+    JSON.stringify(cssScan));
+
+  await J(`AR.UI.show('today');'ok'`);
   ok('R6 收尾清理', true, '');
 
   console.log('');
