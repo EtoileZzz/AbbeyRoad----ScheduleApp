@@ -767,12 +767,14 @@ async function main() {
     document.body.setAttribute('data-theme', 'dark');
     var dark = probe();
     document.body.setAttribute('data-perf', 'lite');
+    AR.UI.applyModalTuning();     // 流畅模式会夹取透明度下限（切模式时会自动调）
     var perf = probe();
     document.body.removeAttribute('data-perf');
+    AR.UI.applyModalTuning();
     AR.UI.closeModal();
     return { light: light, dark: dark, perf: perf };
   })()`);
-  ok('R15a 整卡磨砂三态：浅色 78%/深色 70% + 24px 模糊；流畅模式玻璃提到 ≥90% 且不模糊、带子不透明',
+  ok('R15a 整卡磨砂：浅色 78%/深色 70% + 24px 背景化开；流畅模式透明度自动夹到 ≥90% 且不模糊、带子不透明',
     compat.light.glass >= 0.7 && /blur\(2[0-9]px\)/.test(compat.light.glassBlur || '')
     && compat.dark.glass >= 0.65 && compat.dark.head > 0.6
     && compat.perf.glass >= 0.9 && compat.perf.head === 1 && compat.perf.acts === 1

@@ -8125,14 +8125,27 @@ var AR = window.AR || (window.AR = {});
   function setModalActive(v) { modalCfg().active = v; }
   function setModalSlot(i, obj) { modalCfg(); S.settings.appearance.modalSlots[i] = obj; }
 
-  /** 把任意一套样式写进 body 变量（开发者面板拖滑块时用） */
+  /**
+   * 把任意一套样式写进 body 变量（开发者面板拖滑块时用）。
+   * 流畅模式下模糊会被全局规则关掉，所以这里**夹一下透明度下限**：
+   * 既保证正文可读（≥92%），又让滑块仍然有效（低于下限时按 92% 生效）。
+   */
   function applyModalStyleObj(st) {
     if (!st) { return; }
+    var perf = document.body.hasAttribute('data-perf');
+    var cardA = Number(st.cardA);
+    var cardAD = Number(st.cardAD == null ? st.cardA : st.cardAD);
+    var barA = Number(st.barA);
+    var barAD = Number(st.barAD == null ? st.barA : st.barAD);
+    if (perf) {
+      cardA = Math.max(0.92, cardA); cardAD = Math.max(0.92, cardAD);
+      barA = 1; barAD = 1;      // 流畅模式下两条带做成不透明（穿过它的内容不再需要糊）
+    }
     var bs = document.body.style;
-    bs.setProperty('--modal-card-a', String(st.cardA));
-    bs.setProperty('--modal-card-a-d', String(st.cardAD == null ? st.cardA : st.cardAD));
-    bs.setProperty('--modal-bar-a', String(st.barA));
-    bs.setProperty('--modal-bar-a-d', String(st.barAD == null ? st.barA : st.barAD));
+    bs.setProperty('--modal-card-a', String(cardA));
+    bs.setProperty('--modal-card-a-d', String(cardAD));
+    bs.setProperty('--modal-bar-a', String(barA));
+    bs.setProperty('--modal-bar-a-d', String(barAD));
     bs.setProperty('--modal-card-blur', (Number(st.cardBlur) || 0) + 'px');
     bs.setProperty('--modal-bar-blur', (Number(st.barBlur) || 0) + 'px');
     bs.setProperty('--modal-sat', String(st.sat == null ? 1.5 : st.sat));
@@ -9024,6 +9037,7 @@ var AR = window.AR || (window.AR = {});
     stopThemeInk();
     applyGlass();
     applyAccentInline();
+    applyModalTuning();   // v0.4.1c：流畅模式会夹取透明度下限，切换后立刻重算一次
   }
 
   function applyMotion() {

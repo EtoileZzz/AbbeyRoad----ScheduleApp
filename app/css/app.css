@@ -1145,7 +1145,14 @@ input[type="range"]::-moz-range-thumb {
 /* ── 弹窗：入场 300ms（scale .92）/ 出场 200ms（scale .96），遮罩 ≤20% ── */
 .modal-scrim {
   background: rgba(8, 10, 14, 0.18);
-  -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
+  /**
+   * v0.4.1c：**背景化开由遮罩层负责**。
+   * 遮罩是 .modal-root 的直接子元素，没有 transform/圆角裁剪的祖先，实测能稳定糊到 App 页面；
+   * 而卡片内部那层 .modal-glass 在某些引擎里采不到卡片背后的东西（见 ui.js 注释）。
+   * 强度吃 --modal-card-blur（开发者面板的「背景化开」滑块），所以滑块真的有效。
+   */
+  -webkit-backdrop-filter: blur(var(--modal-card-blur, 24px)) saturate(var(--modal-sat, 1.5));
+  backdrop-filter: blur(var(--modal-card-blur, 24px)) saturate(var(--modal-sat, 1.5));
   transition: opacity var(--dur-dialog-in) var(--ease-dialog-in);
 }
 .modal-card {
@@ -2002,7 +2009,12 @@ body { text-size-adjust: 100%; }
   transition: opacity var(--dur-pop) var(--ease-pop),
               transform var(--dur-pop) var(--ease-pop),
               max-height var(--dur-pop) var(--ease-pop);
-  will-change: transform, opacity;
+  /**
+   * v0.4.1c 修复：这里**不能**写 will-change: opacity ——
+   * Chromium 会把卡片当成 backdrop root，里面的 .modal-glass 就采不到卡片背后的页面，
+   * 于是"卡片背景永远不化开、模糊调到多大都没用"。只保留 transform 的合成提示即可。
+   */
+  will-change: transform;
 }
 .modal-root.open .modal-card { opacity: 1; transform: translateY(0) scale(1); }
 .modal-root.closing .modal-card {
@@ -3162,20 +3174,12 @@ body[data-theme="dark"] .modal-actions {
   body[data-theme="dark"] .modal-actions { background: #1C212B; }
 }
 
-/* 流畅模式·标准 / 深度：关掉模糊，同时把透明度补上去（否则 70% 无模糊 → 正文与背后内容混在一起） */
-body[data-perf] .modal-head,
-body[data-perf] .modal-actions {
-  background: #F2F4F8;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
-}
-body[data-perf][data-theme="dark"] .modal-head,
-body[data-perf][data-theme="dark"] .modal-actions {
-  background: #1C212B;
-}
-body[data-perf] .modal-glass { background: rgba(255, 255, 255, .96); }
-body[data-perf][data-theme="dark"] .modal-glass { background: rgba(28, 33, 43, .94); }
-/* 深度档再去掉大半径外阴影（老 GPU 上最贵的部分），只留 1px 内高光 */
+/**
+ * 流畅模式·标准 / 深度：
+ *   模糊由全局规则 body[data-perf] * { backdrop-filter: none !important } 关掉；
+ *   透明度**不能在这里写死**（写死会让开发者面板的滑块失效，0.4.1a 的 bug）——
+ *   改由 JS 在写变量时做下限夹取（见 ui.js applyModalStyleObj）。
+ */
 body[data-perf="min"] .modal-glass { box-shadow: inset 0 0 0 .5px var(--glass-stroke); }
 .modal-scroll {
   position: relative;
