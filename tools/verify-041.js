@@ -753,12 +753,12 @@ async function main() {
       return p.length > 3 ? parseFloat(p[3]) : 1;
     }
     function probe() {
-      var card = document.querySelector('.modal-card');
+      var glass = document.querySelector('.modal-glass');
       var head = document.querySelector('.modal-head');
       var acts = document.querySelector('.modal-actions');
-      return { card: alpha(getComputedStyle(card).backgroundColor),
-               head: alpha(getComputedStyle(head).backgroundColor),
-               acts: acts ? alpha(getComputedStyle(acts).backgroundColor) : null };
+      var gc = getComputedStyle(glass), hc = getComputedStyle(head);
+      return { glass: alpha(gc.backgroundColor), glassBlur: (gc.backdropFilter || gc.webkitBackdropFilter),
+               head: alpha(hc.backgroundColor), acts: acts ? alpha(getComputedStyle(acts).backgroundColor) : null };
     }
     AR.UI.closeModal();
     document.body.setAttribute('data-theme', 'light');
@@ -772,11 +772,80 @@ async function main() {
     AR.UI.closeModal();
     return { light: light, dark: dark, perf: perf };
   })()`);
-  ok('R15a 弹窗背景三态都不透明：浅色/深色卡片 α≥0.5、两条带 α>0；流畅模式下带子完全不透明',
-    compat.light.card >= 0.5 && compat.light.head > 0 && compat.light.acts > 0
-    && compat.dark.card >= 0.5 && compat.dark.head > 0 && compat.dark.acts > 0
-    && compat.perf.head === 1 && compat.perf.acts === 1,
+  ok('R15a 整卡磨砂三态：浅色 78%/深色 70% + 24px 模糊；流畅模式玻璃提到 ≥90% 且不模糊、带子不透明',
+    compat.light.glass >= 0.7 && /blur\(2[0-9]px\)/.test(compat.light.glassBlur || '')
+    && compat.dark.glass >= 0.65 && compat.dark.head > 0.6
+    && compat.perf.glass >= 0.9 && compat.perf.head === 1 && compat.perf.acts === 1
+    && (compat.perf.glassBlur === 'none' || compat.perf.glassBlur === ''),
     JSON.stringify(compat));
+
+  // ── R16 开发者模式：长按底部「设置」开关 + 独立分类 + 玻璃样式预设切换 ──
+  await J(`(function(){
+    var b = document.querySelector('.nav-btn[data-nav="settings"]');
+    AR.UI.show('settings');
+    var r = b.getBoundingClientRect();
+    b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: r.left + 5, clientY: r.top + 5 }));
+    return 'down';
+  })()`);
+  await sleep(1000);
+  const devOn = await J(`(function(){
+    return { on: AR.Store.get().settings.appearance.devMode === true,
+      cat: !!document.querySelector('#settingsGrid .set-cat[data-key="dev"]') };
+  })()`);
+  const devPanelInfo = await J(`(function(){
+    var head = document.querySelector('#settingsGrid .set-cat[data-key="dev"] .set-cat-head');
+    if (head) { head.click(); }
+    return { panel: !!document.getElementById('set-dev'), chips: document.querySelectorAll('.ms-chip').length };
+  })()`);
+  await sleep(400);
+  const styleMeasure = `(function(){
+    function a(c){ var m=/rgba?\\(([^)]+)\\)/.exec(c||''); if(!m){return c==='transparent'?0:-1;} var p=m[1].split(','); return p.length>3?parseFloat(p[3]):1; }
+    AR.UI.closeModal();
+    AR.UI.openModal({ title: '样式检查', body: '<div style="height:120px">内容</div>', actions: [{ label: '保存', kind: 'primary' }] });
+    var g = getComputedStyle(document.querySelector('.modal-glass'));
+    var h = getComputedStyle(document.querySelector('.modal-head'));
+    var out = { glass: a(g.backgroundColor), blur: (g.backdropFilter || g.webkitBackdropFilter), bar: a(h.backgroundColor), active: AR.UI.modalCfg().active };
+    AR.UI.closeModal();
+    return out;
+  })()`;
+  const stGlass = await J(styleMeasure);
+  await J(`(function(){
+    var chips = document.querySelectorAll('.ms-chip');
+    for (var i = 0; i < chips.length; i++) { if (chips[i].textContent.indexOf('轻量') >= 0) { chips[i].click(); return 'ok'; } }
+    return 'none';
+  })()`);
+  await sleep(400);
+  const stLite = await J(styleMeasure);
+  await J(`(function(){
+    AR.UI.show('settings'); AR.Panels.settingsGoHome();
+    var head = document.querySelector('#settingsGrid .set-cat[data-key="dev"] .set-cat-head');
+    if (head) { head.click(); }
+    var chips = document.querySelectorAll('.ms-chip');
+    for (var i = 0; i < chips.length; i++) { if (chips[i].textContent.indexOf('整卡磨砂') >= 0) { chips[i].click(); return 'ok'; } }
+    return 'none';
+  })()`);
+  await sleep(400);
+  const stBack = await J(styleMeasure);
+  await J(`(function(){
+    var b = document.querySelector('.nav-btn[data-nav="settings"]');
+    AR.UI.show('settings'); AR.Panels.settingsGoHome();
+    var r = b.getBoundingClientRect();
+    b.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: r.left + 5, clientY: r.top + 5 }));
+    return 'down';
+  })()`);
+  await sleep(1000);
+  const devOff = await J(`(function(){
+    return { on: AR.Store.get().settings.appearance.devMode === true,
+      cat: !!document.querySelector('#settingsGrid .set-cat[data-key="dev"]') };
+  })()`);
+  ok('R16 开发者模式：长按底部「设置」开关，设置里多出独立分类「开发者模式」（无高频项），再长按移除；玻璃样式预设可切换',
+    devOn.on === true && devOn.cat === true && devOn.quickItems === undefined
+    && devPanelInfo.panel === true && devPanelInfo.chips === 7
+    && stGlass.active === 'builtin:glass' && stGlass.glass >= 0.7
+    && stLite.active === 'builtin:lite' && stLite.glass >= 0.85 && stLite.bar <= 0.3
+    && stBack.active === 'builtin:glass' && stBack.glass >= 0.7
+    && devOff.on === false && devOff.cat === false,
+    JSON.stringify({ devOn: devOn, devPanelInfo: devPanelInfo, stGlass: stGlass, stLite: stLite, stBack: stBack, devOff: devOff }));
 
   const cssScan = await J(`(async function(){
     var txt = await fetch('css/app.css').then(function (r) { return r.text(); });

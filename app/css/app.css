@@ -3068,22 +3068,37 @@ body[data-perf="min"] .blob { display: none; }
   overflow: hidden;            /* 卡片自己不再滚动 */
   padding: 0;                  /* 内边距下放到三段 */
   /**
-   * 只有两条绝对定位的覆盖层（标题带 / 按钮条）带模糊。
-   * 卡片本身与内容层都不加 backdrop-filter：
-   *   · 卡片一旦有，Chromium 会把它当"背景根"，覆盖层的模糊就采不到内容（变成看穿原文的"鬼影"）；
-   *   · 内容层更不该有（那会让顶/底部的行始终处于模糊区）。
-   * 卡片保持半透明即可，页面背后的模糊由遮罩层（.modal-scrim）负责。
+   * 卡片本身**不加** backdrop-filter：一旦加，Chromium 会把卡片当"背景根"，
+   * 里面两条带的模糊就只能采卡片内部，容易出"糊不到内容"的问题。
+   * 整块磨砂改由内部的 .modal-glass 层负责（它只挡住卡片 → 糊的是弹窗背后的页面）。
+   *
+   * 兼容性铁律：这里**不能**用 light-dark()/color-mix() —— 旧安卓 WebView（< Chromium 123）
+   * 会把整条声明丢掉，弹窗就变全透明（0.4.1 的线上 bug）。一律 纯 rgba() + body[data-theme] 分主题。
    */
-  /* 定稿（可在「设置 → 开发者选项」调）：内容层 90% 不透明。
-     注意：这里**不能**用 light-dark()/color-mix() —— 旧安卓 WebView（< Chromium 123）会把整条声明丢掉，
-     弹窗就变成全透明（0.4.1 的线上 bug）。用 body[data-theme] 分主题 + 纯 rgba，兼容到很老的 WebView。 */
-  background: rgba(255, 255, 255, var(--modal-card-a, .9));
+  background: transparent;
   -webkit-backdrop-filter: none;
   backdrop-filter: none;
 }
-body[data-theme="dark"] .modal-card {
-  background: rgba(28, 33, 43, var(--modal-card-a, .9));
+/* 整块磨砂玻璃层：弹窗背后的 App 页面被它糊开（0.4.0 的质感） */
+.modal-glass {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  background: rgba(255, 255, 255, var(--modal-card-a, .78));
+  -webkit-backdrop-filter: blur(var(--modal-card-blur, 24px)) saturate(var(--modal-sat, 1.5));
+  backdrop-filter: blur(var(--modal-card-blur, 24px)) saturate(var(--modal-sat, 1.5));
+  box-shadow: var(--shadow-modal), inset 0 0 0 .5px var(--glass-stroke);
 }
+body[data-theme="dark"] .modal-glass {
+  background: rgba(28, 33, 43, var(--modal-card-a-d, .70));
+}
+/* 0.4.1b：开发者模式里的「弹窗玻璃样式」预设行 */
+.ms-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
+.ms-chips .ms-chip { font-size: 12px; padding: 5px 10px; }
+.ms-chips .ms-chip.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+
 /* 0.4.2：桌面卡片「功能显示预设」选择器 */
 .wg-preset { margin: -4px 0 var(--sp-3); }
 .wg-preset-t { font-size: 12px; color: var(--text-tertiary); margin: 0 0 6px; }
@@ -3092,7 +3107,7 @@ body[data-theme="dark"] .modal-card {
 .wg-els-t { display: block; font-size: 12px; color: var(--text-tertiary); margin: 0 0 6px; }
 .wg-els-row { display: flex; flex-wrap: wrap; gap: 6px; }
 .wg-els-row .wg-el { font-size: 12px; padding: 4px 10px; }
-/* 两条带（定稿）：不透明度 25% + 高斯模糊 12px（= --blur-modal 的 0.5 档，流畅模式自动降级），无渐变 */
+/* 两条带（与卡片同材质的磨砂玻璃）：内容从下面穿过时被它们糊开 */
 .modal-head {
   position: absolute;
   top: 0; left: 0; right: 0;
@@ -3103,14 +3118,14 @@ body[data-theme="dark"] .modal-card {
      （动画期间父级圆角裁剪会晚一帧，绝对定位 + backdrop-filter 的子层就先露出直角） */
   border-top-left-radius: var(--r-modal);
   border-top-right-radius: var(--r-modal);
-  background: rgba(255, 255, 255, var(--modal-bar-a, .2));
-  -webkit-backdrop-filter: blur(var(--modal-bar-blur, 11px));
-  backdrop-filter: blur(var(--modal-bar-blur, 11px));
-  border-bottom: 1px solid rgba(0, 0, 0, .08);
+  background: rgba(255, 255, 255, var(--modal-bar-a, .78));
+  -webkit-backdrop-filter: blur(var(--modal-bar-blur, 24px)) saturate(var(--modal-sat, 1.45));
+  backdrop-filter: blur(var(--modal-bar-blur, 24px)) saturate(var(--modal-sat, 1.45));
+  border-bottom: 1px solid rgba(0, 0, 0, .06);
 }
 body[data-theme="dark"] .modal-head {
-  background: rgba(28, 33, 43, var(--modal-bar-a, .2));
-  border-bottom-color: rgba(255, 255, 255, .1);
+  background: rgba(28, 33, 43, var(--modal-bar-a-d, .70));
+  border-bottom-color: rgba(255, 255, 255, .08);
 }
 .modal-actions {
   position: absolute;
@@ -3122,26 +3137,32 @@ body[data-theme="dark"] .modal-head {
   justify-content: flex-end;
   gap: 8px;
   padding: 10px 18px calc(10px + env(safe-area-inset-bottom, 0px));
-  background: rgba(255, 255, 255, var(--modal-bar-a, .2));
-  -webkit-backdrop-filter: blur(var(--modal-bar-blur, 11px));
-  backdrop-filter: blur(var(--modal-bar-blur, 11px));
+  background: rgba(255, 255, 255, var(--modal-bar-a, .78));
+  -webkit-backdrop-filter: blur(var(--modal-bar-blur, 24px)) saturate(var(--modal-sat, 1.45));
+  backdrop-filter: blur(var(--modal-bar-blur, 24px)) saturate(var(--modal-sat, 1.45));
   border-bottom-left-radius: var(--r-modal);
   border-bottom-right-radius: var(--r-modal);
-  border-top: 1px solid rgba(0, 0, 0, .08);
+  border-top: 1px solid rgba(0, 0, 0, .06);
 }
 body[data-theme="dark"] .modal-actions {
-  background: rgba(28, 33, 43, var(--modal-bar-a, .2));
-  border-top-color: rgba(255, 255, 255, .1);
+  background: rgba(28, 33, 43, var(--modal-bar-a-d, .70));
+  border-top-color: rgba(255, 255, 255, .08);
 }
 
-/* 老 WebView 没有 backdrop-filter：20% 的带子会让标题/按钮读不清 —— 直接做成不透明兜底 */
+/**
+ * 老 WebView 没有 backdrop-filter（WebView < 76）：
+ * 半透明 + 无模糊 = 正文跟背后彩色内容糊在一起，读不清。
+ * 兜底改成实底：玻璃层 96%（深色 94%）、两条带不透明。
+ */
 @supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
+  .modal-glass { background: rgba(255, 255, 255, .96); }
+  body[data-theme="dark"] .modal-glass { background: rgba(28, 33, 43, .94); }
   .modal-head, .modal-actions { background: #F2F4F8; }
   body[data-theme="dark"] .modal-head,
   body[data-theme="dark"] .modal-actions { background: #1C212B; }
 }
 
-/* 流畅模式·标准 / 深度：覆盖层直接做成不透明（不模糊）—— 省掉两处 backdrop-filter 的合成开销 */
+/* 流畅模式·标准 / 深度：关掉模糊，同时把透明度补上去（否则 70% 无模糊 → 正文与背后内容混在一起） */
 body[data-perf] .modal-head,
 body[data-perf] .modal-actions {
   background: #F2F4F8;
@@ -3152,6 +3173,10 @@ body[data-perf][data-theme="dark"] .modal-head,
 body[data-perf][data-theme="dark"] .modal-actions {
   background: #1C212B;
 }
+body[data-perf] .modal-glass { background: rgba(255, 255, 255, .96); }
+body[data-perf][data-theme="dark"] .modal-glass { background: rgba(28, 33, 43, .94); }
+/* 深度档再去掉大半径外阴影（老 GPU 上最贵的部分），只留 1px 内高光 */
+body[data-perf="min"] .modal-glass { box-shadow: inset 0 0 0 .5px var(--glass-stroke); }
 .modal-scroll {
   position: relative;
   flex: 1 1 auto;

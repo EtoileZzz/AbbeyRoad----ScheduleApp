@@ -721,16 +721,25 @@ const script = String.raw`(async () => {
     AR.UI.show('settings');
     await sleep(300);
 
-    /* ── ⑩ 开发者模式：长按首页「关于与帮助」分类行（v0.4.0 左栏已去掉） ── */
+    /* ── ⑩ 开发者模式：长按底部导航「设置」（v0.4.1b 定稿；旧的长按「关于与帮助」已删除） ── */
     const devBefore = AR.Store.get().settings.appearance.devMode === true;
-    const navAppearance = document.querySelector('#settingsGrid .set-cat[data-key="about"] .set-cat-head');
-    check('设置首页有「关于与帮助」分类行', !!navAppearance);
-    if (navAppearance) {
-      navAppearance.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 8, clientY: 8 }));
+    const navSettings = document.querySelector('.nav-btn[data-nav="settings"]');
+    check('底部导航有「设置」入口', !!navSettings);
+    if (navSettings) {
+      AR.UI.show('settings');
+      const r = navSettings.getBoundingClientRect();
+      navSettings.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: r.left + 8, clientY: r.top + 8 }));
       await sleep(1000);
       const devAfter = AR.Store.get().settings.appearance.devMode === true;
-      check('长按「关于与帮助」切换开发者模式', devAfter !== devBefore, 'devMode=' + devAfter);
-      await sleep(260);
+      check('长按底部「设置」切换开发者模式', devAfter !== devBefore, 'devMode=' + devAfter);
+      await sleep(300);
+      check('开启后设置分类页多出独立分类「开发者模式」',
+        !devAfter || !!document.querySelector('#settingsGrid .set-cat[data-key="dev"]'));
+      if (devAfter) {
+        const devHead = document.querySelector('#settingsGrid .set-cat[data-key="dev"] .set-cat-head');
+        if (devHead) { devHead.click(); }
+        await sleep(300);
+      }
       check('开发者模式打开后出现动画设置区', !devAfter || !!document.querySelector('.dev-motion'));
       /* 只数「场景行」（带样式选择器的）—— .dev-motion 里还混着实验性功能的模块行，
          直接数 .dev-row 会把它们算进去。场景行数永远跟 AR.Motion 注册表一致。 */

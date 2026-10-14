@@ -4709,6 +4709,8 @@ var AR = window.AR || (window.AR = {});
     // 表单类弹窗（课程编辑）要宽一点，普通弹窗保持窄卡片
     card.classList[opts.wide ? 'add' : 'remove']('modal-wide');
     card.innerHTML = '';
+    // v0.4.1b：整块磨砂玻璃层（糊弹窗背后的页面）。卡片本身不加 backdrop-filter，见 app.css 注释。
+    card.appendChild(el('<i class="modal-glass"></i>'));
     var head = el('<div class="modal-head"><div><h3 class="modal-title">' + U.escapeHtml(opts.title || '') + '</h3>'
       + (opts.sub ? '<p class="modal-sub">' + U.escapeHtml(opts.sub) + '</p>' : '') + '</div>'
       + '<button class="modal-close" type="button">✕</button></div>');
@@ -8073,15 +8075,72 @@ var AR = window.AR || (window.AR = {});
   }
 
   /**
-   * v0.4.1c：弹窗玻璃的可调参数（设置 → 长按「外观」→ 开发者模式 → 弹窗玻璃）。
-   * 默认：内容层 90% / 覆盖层 20% / 覆盖层模糊 11px。写在 body 行内变量上，CSS 直接吃。
+   * v0.4.1b：弹窗玻璃「样式预设」。
+   * 数值只存数字；CSS 那边一律 rgba() + 变量 + body[data-theme] 分主题 —— 旧 WebView 也认。
+   * 流畅模式与老设备（无 backdrop-filter）由 CSS 自动改用实底，与预设互不干扰。
    */
-  function applyModalTuning() {
-    var ap = (S.settings && S.settings.appearance) || {};
+  var MODAL_BUILTIN = [
+    { k: 'glass', name: '整卡磨砂', desc: '0.4.0 的整块玻璃（默认）',
+      cardA: .78, cardAD: .70, barA: .78, barAD: .70, cardBlur: 24, barBlur: 24, sat: 1.5 },
+    { k: 'airy', name: '更透更糊', desc: '更透、模糊更重',
+      cardA: .68, cardAD: .62, barA: .68, barAD: .62, cardBlur: 32, barBlur: 32, sat: 1.6 },
+    { k: 'lite', name: '轻量', desc: '省电：卡片实底 + 带子淡玻璃',
+      cardA: .90, cardAD: .90, barA: .20, barAD: .20, cardBlur: 0, barBlur: 11, sat: 1.0 },
+    { k: 'solid', name: '纯实底', desc: '最省性能，全实底',
+      cardA: .96, cardAD: .94, barA: 1, barAD: 1, cardBlur: 0, barBlur: 0, sat: 1.0 }
+  ];
+  function modalCfg() {
+    var ap = (S.settings.appearance = S.settings.appearance || {});
+    if (!ap.modalStyle || typeof ap.modalStyle !== 'object') {
+      ap.modalStyle = { active: 'builtin:glass' };
+      // 迁移：0.4.1a 的三个老字段存进 1 号自定义槽，老设置不丢
+      if (ap.modalCardA != null || ap.modalBarA != null || ap.modalBarBlur != null) {
+        ap.modalSlots = ap.modalSlots || [null, null, null];
+        ap.modalSlots[0] = {
+          cardA: ap.modalCardA == null ? .9 : ap.modalCardA, cardAD: ap.modalCardA == null ? .9 : ap.modalCardA,
+          barA: ap.modalBarA == null ? .2 : ap.modalBarA, barAD: ap.modalBarA == null ? .2 : ap.modalBarA,
+          cardBlur: 0, barBlur: ap.modalBarBlur == null ? 11 : Number(ap.modalBarBlur), sat: 1
+        };
+      }
+    }
+    if (!ap.modalSlots || Object.prototype.toString.call(ap.modalSlots) !== '[object Array]') {
+      ap.modalSlots = [null, null, null];
+    }
+    while (ap.modalSlots.length < 3) { ap.modalSlots.push(null); }
+    return ap.modalStyle;
+  }
+  function activeModalStyle() {
+    var ap = S.settings.appearance || {};
+    var a = String(modalCfg().active || 'builtin:glass');
+    if (a.indexOf('slot:') === 0) {
+      var slot = (ap.modalSlots || [])[Number(a.slice(5))];
+      if (slot) { return slot; }
+      return MODAL_BUILTIN[0];
+    }
+    for (var i = 0; i < MODAL_BUILTIN.length; i++) {
+      if ('builtin:' + MODAL_BUILTIN[i].k === a) { return MODAL_BUILTIN[i]; }
+    }
+    return MODAL_BUILTIN[0];
+  }
+  function setModalActive(v) { modalCfg().active = v; }
+  function setModalSlot(i, obj) { modalCfg(); S.settings.appearance.modalSlots[i] = obj; }
+
+  /** 把任意一套样式写进 body 变量（开发者面板拖滑块时用） */
+  function applyModalStyleObj(st) {
+    if (!st) { return; }
     var bs = document.body.style;
-    bs.setProperty('--modal-card-a', String(ap.modalCardA == null ? 0.9 : ap.modalCardA));
-    bs.setProperty('--modal-bar-a', String(ap.modalBarA == null ? 0.2 : ap.modalBarA));
-    bs.setProperty('--modal-bar-blur', (ap.modalBarBlur == null ? 11 : Number(ap.modalBarBlur)) + 'px');
+    bs.setProperty('--modal-card-a', String(st.cardA));
+    bs.setProperty('--modal-card-a-d', String(st.cardAD == null ? st.cardA : st.cardAD));
+    bs.setProperty('--modal-bar-a', String(st.barA));
+    bs.setProperty('--modal-bar-a-d', String(st.barAD == null ? st.barA : st.barAD));
+    bs.setProperty('--modal-card-blur', (Number(st.cardBlur) || 0) + 'px');
+    bs.setProperty('--modal-bar-blur', (Number(st.barBlur) || 0) + 'px');
+    bs.setProperty('--modal-sat', String(st.sat == null ? 1.5 : st.sat));
+  }
+
+  /** 把当前样式写进 body 变量（CSS 直接吃）；启动与开发者面板改动时都调 */
+  function applyModalTuning() {
+    applyModalStyleObj(activeModalStyle());
   }
 
   function applyTheme() {
@@ -9000,6 +9059,12 @@ var AR = window.AR || (window.AR = {});
     openNoteModal: openNoteModal,
     applyTheme: applyTheme,
     applyModalTuning: applyModalTuning,
+    applyModalStyleObj: applyModalStyleObj,
+    MODAL_BUILTIN: MODAL_BUILTIN,
+    modalCfg: modalCfg,
+    activeModalStyle: activeModalStyle,
+    setModalActive: setModalActive,
+    setModalSlot: setModalSlot,
     themeSwitch: themeSwitch,
     applyGlass: applyGlass,
     applyPerf: applyPerf,

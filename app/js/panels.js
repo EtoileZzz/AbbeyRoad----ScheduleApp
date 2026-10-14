@@ -731,7 +731,7 @@ var AR = window.AR || (window.AR = {});
 
   /** 七个分类：icon / 名称 / 说明 / 首页高频项 / 二级页面板（提醒归到课表里了） */
   function settingsCats() {
-    return [
+    var list = [
       { key: 'prefs', icon: '🎨', label: '外观与布局', desc: '主题、主题色、流畅模式、布局',
         quick: quickPrefs, panels: [panelAppearance, panelLayout] },
       { key: 'widgets', icon: '📱', label: '桌面卡片', desc: '把课表放到手机桌面',
@@ -747,6 +747,15 @@ var AR = window.AR || (window.AR = {});
       { key: 'about', icon: 'ℹ️', label: '关于与帮助', desc: '版本、引导、反馈',
         quick: quickAbout, panels: [panelAbout] }
     ];
+    /**
+     * v0.4.1b：开发者模式开启后，分类页**末尾多出一个独立分类**（不做高频项、不塞进别的分类）。
+     * 开关在 长按底部导航「设置」；默认关闭。
+     */
+    if (S.settings.appearance && S.settings.appearance.devMode === true) {
+      list.push({ key: 'dev', icon: '🧪', label: '开发者模式',
+        desc: '实验性功能 · 样式预设 · 诊断工具', panels: [devPanel] });
+    }
+    return list;
   }
 
   /* ── 首页高频项的小控件 ─────────────────────────────────── */
@@ -1114,9 +1123,6 @@ var AR = window.AR || (window.AR = {});
           AR.Bridge.haptic('light', head);
           openSettingsCat(cat.key);
         });
-        // 彩蛋锚点：长按首页「关于与帮助」这一行（左栏没了的替代），
-        // 二级页里长按「外观」小标题同样有效
-        if (cat.key === 'about') { bindDevModeLongPress(head); }
         card.appendChild(head);
         if (cat.quick) {
           var q = cat.quick();
@@ -1157,9 +1163,6 @@ var AR = window.AR || (window.AR = {});
       for (var p = 0; p < cat.panels.length; p++) { host.appendChild(cat.panels[p]()); }
       grid.appendChild(host);
     }
-    // 彩蛋双轨：长按「外观」小标题也能进 / 出开发者模式
-    var apTitle = grid.querySelector('#set-appearance .panel-title');
-    if (apTitle) { bindDevModeLongPress(apTitle); }
     // 搜索点进来的高亮
     if (pendingHighlight) {
       var lab = pendingHighlight.slice(0, 16);
@@ -1177,6 +1180,7 @@ var AR = window.AR || (window.AR = {});
 
   function renderSettings() {
     ensure();
+    bindDevNav();
     var grid = $('settingsGrid');
     if (!grid) { return; }
     var body = $('settingsBody');
@@ -1208,6 +1212,16 @@ var AR = window.AR || (window.AR = {});
    * 长按 800ms 进入开发者模式（再长按一次退出）。
    * 用 pointerdown/up + 位移取消，避免"想滚动结果被当成长按"。
    */
+  var devNavBound = false;
+  /** v0.4.1b：把开发者模式的开关挂到**底部导航的「设置」**（手机 Tab 与桌面侧栏各一个） */
+  function bindDevNav() {
+    if (devNavBound) { return; }
+    var btns = document.querySelectorAll('.nav-btn[data-nav="settings"]');
+    if (!btns.length) { return; }
+    for (var i = 0; i < btns.length; i++) { bindDevModeLongPress(btns[i]); }
+    devNavBound = true;
+  }
+
   function bindDevModeLongPress(btn) {
     var timer = null;
     function cancel() {
@@ -1222,15 +1236,19 @@ var AR = window.AR || (window.AR = {});
         S.settings.appearance.devMode = on;
         AR.Store.save(true);
         AR.Bridge.haptic('heavy', btn);
-        // 开启后直接进「外观与布局」二级页 —— 动画面板在那里，
-        // 不然用户长按完什么都看不到（还以为没生效）。
-        if (on) { settingsCat = 'prefs'; }
+        /**
+         * v0.4.1b（用户定稿）：开启后**不跳**二级页 —— 就停在设置分类页，
+         * 列表末尾会多出一个独立分类「开发者模式」，点进去才是面板。
+         * 关闭时如果正停在该分类页，就退回分类首页（否则页面会指向一个不存在的分类）。
+         */
+        if (!on && settingsCat === 'dev') { settingsCat = null; }
         renderSettings();
         var body = $('settingsBody');
-        if (body && on) { body.scrollTop = 0; }
-        if (on) { playSettingsEnter(); }
+        if (body) { body.scrollTop = 0; }
+        playSettingsEnter();
         if (AR.UI && AR.UI.toast) {
-          AR.UI.toast(on ? '开发者模式已开启：外观页底部可调过渡动画' : '开发者模式已关闭');
+          AR.UI.toast(on ? '开发者模式已开启：设置里多了「开发者模式」分类'
+            : '开发者模式已关闭：分类已移除');
         }
       }, 800);
       var move = function (e2) {
@@ -1387,8 +1405,139 @@ var AR = window.AR || (window.AR = {});
           if (AR.UI.renderToday) { AR.UI.renderToday(); }
         }));
     }
-    if (ap.devMode === true) { box.appendChild(devMotionBox()); }
+    if (ap.devMode === true) { /* v0.4.1b：开发者面板已搬到「设置 → 开发者模式」独立分类 */ }
     return panel('外观', box, 'appearance');
+  }
+
+  /* ── 开发者模式（独立分类页）────────────────────────────── */
+
+  /** 「设置 → 开发者模式」整页：弹窗玻璃样式 + 过渡动画 + 开发者工具 */
+  function devPanel() {
+    var box = el('<div></div>');
+    box.appendChild(el('<p class="muted">长按底部导航的「设置」可以关闭开发者模式（再长按一次即退出，'
+      + '该分类会从设置里消失）。</p>'));
+    box.appendChild(devMotionBox());
+    return panel('开发者模式', box, 'dev');
+  }
+
+  /* ── 弹窗玻璃样式：内置 4 套 + 3 个自定义槽 + 微调滑块 ─────── */
+
+  /**
+   * 交互约定：
+   *   · 点内置/自定义 → 立即套用并落盘
+   *   · 拖滑块 → 只是"临时草稿"（立刻能看到效果），点「保存为自定义」才记住
+   *   · 长按自定义槽 → 清除该槽
+   */
+  function modalStyleBox() {
+    var box = el('<div></div>');
+    var draft = null;                       // 拖动中的草稿；切预设时清空
+    function curStyle() { return draft || AR.UI.activeModalStyle(); }
+    function chipRow(items, activeKey, onPick, onLong) {
+      var row = el('<div class="ms-chips"></div>');
+      for (var i = 0; i < items.length; i++) {
+        (function (it) {
+          var on = it.key === activeKey;
+          var b = el('<button class="chip-btn ms-chip' + (on ? ' active' : '') + '" type="button">'
+            + esc(it.name) + (on ? ' ✓' : '') + '</button>');
+          b.addEventListener('click', function () {
+            AR.Bridge.haptic('light', b);
+            if (b.__msHold) { b.__msHold = false; return; }
+            onPick(it);
+          });
+          if (onLong) {
+            var t = null;
+            b.addEventListener('pointerdown', function () {
+              t = setTimeout(function () { t = null; b.__msHold = true; onLong(it); }, 600);
+            });
+            b.addEventListener('pointerup', function () { if (t) { clearTimeout(t); } });
+            b.addEventListener('pointercancel', function () { if (t) { clearTimeout(t); } });
+            b.addEventListener('pointerleave', function () { if (t) { clearTimeout(t); } });
+            b.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+          }
+          row.appendChild(b);
+        })(items[i]);
+      }
+      return row;
+    }
+
+    function paint() {
+      var cfg = AR.UI.modalCfg();
+      var active = String(cfg.active || 'builtin:glass');
+      var builtins = AR.UI.MODAL_BUILTIN.map(function (s) { return { key: 'builtin:' + s.k, name: s.name, st: s }; });
+      box.innerHTML = '';
+      box.appendChild(el('<p class="muted" style="margin:0 0 6px;font-size:12px">'
+        + '内置样式 + 自定义槽，点一下即生效。流畅模式·标准/深度 与 没有 backdrop-filter 的老设备会自动改用实底，'
+        + '以这里保存的数值为基础。</p>'));
+      box.appendChild(chipRow(builtins, active, function (it) {
+        draft = null; AR.UI.setModalActive(it.key); AR.Store.save(true); AR.UI.applyModalTuning();
+        AR.UI.toast('弹窗玻璃：' + it.name);
+        renderSettings();
+      }));
+      var slots = (S.settings.appearance.modalSlots || []);
+      var slotItems = [];
+      for (var i = 0; i < 3; i++) {
+        slotItems.push({ key: 'slot:' + i, name: slots[i] ? ('自定义 ' + (i + 1)) : ('自定义 ' + (i + 1) + '（空）') });
+      }
+      box.appendChild(chipRow(slotItems, active, function (it) {
+        var idx = Number(it.key.slice(5));
+        if (!(S.settings.appearance.modalSlots || [])[idx]) { AR.UI.toast('这个槽还是空的：先拖滑块再「保存」'); return; }
+        draft = null; AR.UI.setModalActive(it.key); AR.Store.save(true); AR.UI.applyModalTuning();
+        AR.UI.toast('已套用「' + it.name + '」');
+        renderSettings();
+      }, function (it) {
+        var idx = Number(it.key.slice(5));
+        if (!(S.settings.appearance.modalSlots || [])[idx]) { return; }
+        S.settings.appearance.modalSlots[idx] = null;
+        if (String(AR.UI.modalCfg().active) === it.key) { AR.UI.setModalActive('builtin:glass'); }
+        draft = null; AR.Store.save(true); AR.UI.applyModalTuning();
+        AR.UI.toast('已清除「' + it.name + '」');
+        renderSettings();
+      }));
+      var st = curStyle();
+      box.appendChild(slider('卡片（玻璃层）不透明度', 40, 100, Math.round((st.cardA == null ? .78 : st.cardA) * 100), '%', function (v) {
+        draft = draft || copyStyle(curStyle()); draft.cardA = v / 100; draft.cardAD = v / 100;
+        AR.UI.applyModalStyleObj(draft);
+      }));
+      box.appendChild(slider('卡片模糊', 0, 40, Number(st.cardBlur) || 0, 'px', function (v) {
+        draft = draft || copyStyle(curStyle()); draft.cardBlur = v; AR.UI.applyModalStyleObj(draft);
+      }));
+      box.appendChild(slider('两条带不透明度', 0, 100, Math.round((st.barA == null ? .78 : st.barA) * 100), '%', function (v) {
+        draft = draft || copyStyle(curStyle()); draft.barA = v / 100; draft.barAD = v / 100;
+        AR.UI.applyModalStyleObj(draft);
+      }));
+      box.appendChild(slider('两条带模糊', 0, 40, Number(st.barBlur) || 0, 'px', function (v) {
+        draft = draft || copyStyle(curStyle()); draft.barBlur = v; AR.UI.applyModalStyleObj(draft);
+      }));
+      box.appendChild(slider('饱和度', 100, 180, Math.round((st.sat == null ? 1.5 : st.sat) * 100), '%', function (v) {
+        draft = draft || copyStyle(curStyle()); draft.sat = v / 100; AR.UI.applyModalStyleObj(draft);
+      }));
+      var row = el('<div class="row gap" style="margin-top:8px"></div>');
+      var save = el('<button class="btn" type="button">保存为自定义</button>');
+      save.addEventListener('click', function () {
+        var slots2 = S.settings.appearance.modalSlots = S.settings.appearance.modalSlots || [null, null, null];
+        var idx = -1;
+        for (var i = 0; i < 3; i++) { if (!slots2[i]) { idx = i; break; } }
+        if (idx < 0) { idx = 0; }
+        AR.UI.setModalSlot(idx, copyStyle(curStyle()));
+        AR.UI.setModalActive('slot:' + idx);
+        draft = null;
+        AR.Store.save(true);
+        AR.UI.applyModalTuning();
+        AR.UI.toast('已保存到「自定义 ' + (idx + 1) + '」');
+        renderSettings();
+      });
+      row.appendChild(save);
+      box.appendChild(row);
+      box.appendChild(el('<p class="muted" style="margin:6px 0 0;font-size:12px">'
+        + '拖滑块时立刻生效，但要点「保存为自定义」才会记住；长按自定义槽可以清除。</p>'));
+    }
+    function copyStyle(s) {
+      return { cardA: s.cardA, cardAD: s.cardAD == null ? s.cardA : s.cardAD, barA: s.barA,
+        barAD: s.barAD == null ? s.barA : s.barAD, cardBlur: Number(s.cardBlur) || 0,
+        barBlur: Number(s.barBlur) || 0, sat: s.sat == null ? 1.5 : s.sat };
+    }
+    paint();
+    return box;
   }
 
   /* ── 开发者模式：逐场景挑选过渡动画 ───────────────────────── */
@@ -1402,8 +1551,8 @@ var AR = window.AR || (window.AR = {});
     var box = el('<div class="dev-motion"></div>');
     box.appendChild(el('<div class="dev-badge">开发者模式</div>'));
     box.appendChild(el('<p class="muted" style="margin:6px 0 10px">'
-      + '长按左侧「外观」可退出。这里改的是全局过渡动画，改完立刻生效，'
-      + '每个场景可以先「试放」看一眼。</p>'));
+      + '长按底部导航的「设置」可以关闭开发者模式（再长按一次即退出）。'
+      + '这里改的是全局过渡动画，改完立刻生效，每个场景可以先「试放」看一眼。</p>'));
 
     var order = AR.Motion.order;
     for (var i = 0; i < order.length; i++) {
@@ -1459,24 +1608,9 @@ var AR = window.AR || (window.AR = {});
     foot.appendChild(reset);
     box.appendChild(foot);
 
-    /* ── 弹窗玻璃（0.4.1 定稿参数，开发者可微调）─────────────── */
-    box.appendChild(el('<div class="dev-sub">弹窗玻璃</div>'));
-    var gs = S.settings.appearance;
-    if (gs.modalCardA == null) { gs.modalCardA = 0.9; }
-    if (gs.modalBarA == null) { gs.modalBarA = 0.2; }
-    if (gs.modalBarBlur == null) { gs.modalBarBlur = 11; }
-    box.appendChild(el('<p class="muted" style="margin:0 0 6px;font-size:12px">'
-      + '内容层 / 覆盖层不透明度与覆盖层高斯模糊，改完立刻生效；'
-      + '流畅模式·标准 / 深度 下覆盖层自动改为不透明（不模糊）。</p>'));
-    box.appendChild(slider('内容层（弹窗卡片）不透明度', 40, 100, Math.round(gs.modalCardA * 100), '%', function (v) {
-      S.settings.appearance.modalCardA = v / 100; AR.Store.save(true); AR.UI.applyModalTuning();
-    }));
-    box.appendChild(slider('覆盖层（标题带/按钮条）不透明度', 0, 100, Math.round(gs.modalBarA * 100), '%', function (v) {
-      S.settings.appearance.modalBarA = v / 100; AR.Store.save(true); AR.UI.applyModalTuning();
-    }));
-    box.appendChild(slider('覆盖层高斯模糊', 0, 40, Number(gs.modalBarBlur) || 0, 'px', function (v) {
-      S.settings.appearance.modalBarBlur = v; AR.Store.save(true); AR.UI.applyModalTuning();
-    }));
+    /* ── 弹窗玻璃样式：内置预设 + 自定义槽 + 微调滑块（v0.4.1b）── */
+    box.appendChild(el('<div class="dev-sub">弹窗玻璃样式</div>'));
+    box.appendChild(modalStyleBox());
 
     /* ── 开发者工具：随时开关，关掉立刻恢复原样 ─────────────── */
     box.appendChild(el('<div class="dev-sub">开发者工具</div>'));
