@@ -774,9 +774,10 @@ async function main() {
     AR.UI.closeModal();
     return { light: light, dark: dark, perf: perf };
   })()`);
-  ok('R15a 整卡磨砂：浅色 78%/深色 70% + 24px 背景化开；流畅模式透明度自动夹到 ≥90% 且不模糊、带子不透明',
+  ok('R15a 玻璃：卡片 78%/70% + 24px 背景化开；两条带只做"淡淡的糊带"（α≤0.35，不再双重上色成实心条）；流畅模式带子不透明、玻璃自动夹到 ≥90%',
     compat.light.glass >= 0.7 && /blur\(2[0-9]px\)/.test(compat.light.glassBlur || '')
-    && compat.dark.glass >= 0.65 && compat.dark.head > 0.6
+    && compat.light.head > 0.03 && compat.light.head <= 0.35
+    && compat.dark.glass >= 0.65 && compat.dark.head > 0.03 && compat.dark.head <= 0.35
     && compat.perf.glass >= 0.9 && compat.perf.head === 1 && compat.perf.acts === 1
     && (compat.perf.glassBlur === 'none' || compat.perf.glassBlur === ''),
     JSON.stringify(compat));

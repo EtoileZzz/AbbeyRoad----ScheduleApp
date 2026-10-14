@@ -8080,10 +8080,10 @@ var AR = window.AR || (window.AR = {});
    * 流畅模式与老设备（无 backdrop-filter）由 CSS 自动改用实底，与预设互不干扰。
    */
   var MODAL_BUILTIN = [
-    { k: 'glass', name: '整卡磨砂', desc: '0.4.0 的整块玻璃（默认）',
-      cardA: .78, cardAD: .70, barA: .78, barAD: .70, cardBlur: 24, barBlur: 24, sat: 1.5 },
+    { k: 'glass', name: '整卡磨砂', desc: '整块玻璃（默认）',
+      cardA: .78, cardAD: .70, barA: .12, barAD: .14, cardBlur: 24, barBlur: 24, sat: 1.5 },
     { k: 'airy', name: '更透更糊', desc: '更透、模糊更重',
-      cardA: .68, cardAD: .62, barA: .68, barAD: .62, cardBlur: 32, barBlur: 32, sat: 1.6 },
+      cardA: .68, cardAD: .62, barA: .10, barAD: .12, cardBlur: 32, barBlur: 32, sat: 1.6 },
     { k: 'lite', name: '轻量', desc: '省电：卡片实底 + 带子淡玻璃',
       cardA: .90, cardAD: .90, barA: .20, barAD: .20, cardBlur: 0, barBlur: 11, sat: 1.0 },
     { k: 'solid', name: '纯实底', desc: '最省性能，全实底',
