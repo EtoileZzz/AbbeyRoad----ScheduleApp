@@ -4535,6 +4535,7 @@ var AR = window.AR || (window.AR = {});
 
   var modalStack = [];
   var modalBarsRO = null;      // v0.4.1：量标题带 / 按钮条高度用
+  var modalBarsResize = null;  // v0.4.1c：两条带挂在卡片外，窗口变化要重新贴合
   var modalCloseTimer = null;
 
   /* ── 统一的弹层动效（v0.2.5）───────────────────────────────
@@ -4682,6 +4683,21 @@ var AR = window.AR || (window.AR = {});
         { duration: Math.round(dur * 0.9), easing: ease, fill: dir === 'out' ? 'forwards' : 'both' }
       );
     }
+    /**
+     * v0.4.1c：两条带挂在 .modal-root 上（卡片外，模糊才有效），所以必须跟着卡片
+     * **跑同一套关键帧**，否则卡片在缩放/位移、带子原地不动 —— 就是"带子没跟上动画"。
+     * transform-origin 已由 openModal 的 placeBars 对齐到卡片中心，所以同一套 transform 就对得上。
+     */
+    var barNodes = root.querySelectorAll('.modal-head, .modal-actions');
+    for (var bn = 0; bn < barNodes.length; bn++) {
+      var bar = barNodes[bn];
+      if (!bar.animate) { continue; }
+      stopModalAnim(bar);
+      bar.style.transition = 'none';
+      bar.__popAnim = bar.animate([from, to], {
+        duration: dur, easing: ease, fill: dir === 'out' ? 'forwards' : 'both'
+      });
+    }
   }
 
   /** 弹窗内容的"逐条拼合"：进场的卡片里，各块内容再错峰落位 */
@@ -4709,13 +4725,18 @@ var AR = window.AR || (window.AR = {});
     // 表单类弹窗（课程编辑）要宽一点，普通弹窗保持窄卡片
     card.classList[opts.wide ? 'add' : 'remove']('modal-wide');
     card.innerHTML = '';
+    // 上一轮挂在 .modal-root 上的两条带（卡片外）要清掉，否则每开一次会累积一层
+    var staleBars = root.querySelectorAll('.modal-head, .modal-actions');
+    for (var sb = staleBars.length - 1; sb >= 0; sb--) {
+      if (staleBars[sb].parentNode === root) { root.removeChild(staleBars[sb]); }
+    }
     // v0.4.1b：整块磨砂玻璃层（糊弹窗背后的页面）。卡片本身不加 backdrop-filter，见 app.css 注释。
     card.appendChild(el('<i class="modal-glass"></i>'));
     var head = el('<div class="modal-head"><div><h3 class="modal-title">' + U.escapeHtml(opts.title || '') + '</h3>'
       + (opts.sub ? '<p class="modal-sub">' + U.escapeHtml(opts.sub) + '</p>' : '') + '</div>'
       + '<button class="modal-close" type="button">✕</button></div>');
     head.querySelector('.modal-close').addEventListener('click', closeModal);
-    card.appendChild(head);
+    /* 注意：head（标题带）**不**挂进卡片 —— v0.4.1c 起改挂 .modal-root，见下面的 placeBars */
     /**
      * v0.4.1：内容区外面只套一层 .modal-scroll。
      * 模糊**只由两条带自己**负责（它们是磨砂玻璃，内容从下面滚过被糊开），
@@ -4750,8 +4771,39 @@ var AR = window.AR || (window.AR = {});
           actions.appendChild(b);
         })(actList[i]);
       }
-      card.appendChild(actions);
+      root.appendChild(actions);
     }
+    /**
+     * v0.4.1c 结构性修复：两条带挂在 **.modal-root** 上（卡片外），由 JS 贴到卡片上下边缘。
+     *
+     * 为什么必须这样：卡片带 transform / 圆角裁剪 → 它内部子元素的 backdrop-filter
+     * **采不到内容**（实测：卡片内模糊 30px→0 只有 6.3k 字节差，而卡片外的遮罩层同样操作有 94k）。
+     * 所以"内容穿过带子被糊开"只能由卡片外的层来做 —— 位置用未变换几何（offset*，不受入场 scale 影响）。
+     */
+    root.appendChild(head);
+    var placeBars = function () {
+      try {
+        var l = card.offsetLeft, t = card.offsetTop, w = card.offsetWidth, hgt = card.offsetHeight;
+        head.style.left = l + 'px';
+        head.style.width = w + 'px';
+        head.style.top = t + 'px';
+        /**
+         * 缩放中心对齐卡片中心：入场/出场时两条带与卡片是"同一块玻璃"在一起缩放，
+         * 否则卡片在缩、带子不动 → 看起来是脱开的（用户报的"带子没跟上动画"）。
+         */
+        head.style.transformOrigin = '50% ' + Math.round(hgt / 2) + 'px';
+        if (actions) {
+          actions.style.left = l + 'px';
+          actions.style.width = w + 'px';
+          actions.style.top = (t + hgt - actions.offsetHeight) + 'px';
+          actions.style.transformOrigin = '50% ' + Math.round(actions.offsetHeight - hgt / 2) + 'px';
+        }
+      } catch (e) { }
+    };
+    placeBars();
+    if (modalBarsResize) { window.removeEventListener('resize', modalBarsResize); }
+    modalBarsResize = function () { placeBars(); measureBars(); };
+    window.addEventListener('resize', modalBarsResize);
     root.hidden = false;
     /**
      * v0.4.1：两条带是覆盖层，内容从下面穿过 —— 所以必须**按带子的边缘自动加限位**：
@@ -4759,7 +4811,7 @@ var AR = window.AR || (window.AR = {});
      * 这样滚到最顶/最底时，首行、末行落在渐变带之外：清晰、也点得到。
      * 边量边写进 CSS 变量，按钮换行 / 安全区变化都用 ResizeObserver 跟上。
      */
-    var FADE_H = 0, EXTRA = 10;
+    var FADE_H = 0, EXTRA = 32;   // 32 = 26px 淡出 + 6px 余量
     var measureBars = function () {
       try {
         var hh = head.offsetHeight || 0;
@@ -4768,6 +4820,7 @@ var AR = window.AR || (window.AR = {});
         card.style.setProperty('--m-acts-h', ah + 'px');
         card.style.setProperty('--m-pad-top', (hh + FADE_H + EXTRA) + 'px');
         card.style.setProperty('--m-pad-bottom', (ah + FADE_H + EXTRA) + 'px');
+        placeBars();   // 带高可能因换行变化 → 底部带重新贴合
       } catch (e) { }
     };
     measureBars();
@@ -5103,7 +5156,7 @@ var AR = window.AR || (window.AR = {});
           ? '保存后：星期 / 节次 / 时间 / 地点 / 老师 / 本次备注只改这一天；上课周次与课程名、颜色对整门课生效。'
           : '保存后：所有没被单独调整过的周都会跟着变。';
       }
-      var saveBtn = document.querySelector('#modalCard .modal-actions .btn.primary');
+      var saveBtn = document.querySelector('.modal-actions .btn.primary');
       if (saveBtn) { saveBtn.textContent = scope === 'once' ? '保存这一次' : '保存到所有时段'; }
       /* v0.4.1：删除按钮的文案跟着作用域走（仅这次=取消这一天 / 所有时段=删整个每周时段） */
       var acts = document.querySelectorAll('.modal-actions .btn');
@@ -8080,12 +8133,12 @@ var AR = window.AR || (window.AR = {});
    * 流畅模式与老设备（无 backdrop-filter）由 CSS 自动改用实底，与预设互不干扰。
    */
   var MODAL_BUILTIN = [
-    { k: 'glass', name: '整卡磨砂', desc: '默认：更透的整块玻璃',
-      cardA: .62, cardAD: .56, barA: .08, barAD: .10, cardBlur: 28, barBlur: 28, sat: 1.5 },
+    { k: 'glass', name: '整卡磨砂', desc: '默认：偏透的轻磨砂',
+      cardA: .45, cardAD: .40, barA: .42, barAD: .46, cardBlur: 12, barBlur: 12, sat: 1.5 },
     { k: 'airy', name: '更透更糊', desc: '更透、模糊更重',
-      cardA: .52, cardAD: .46, barA: .06, barAD: .08, cardBlur: 34, barBlur: 34, sat: 1.6 },
+      cardA: .38, cardAD: .34, barA: .38, barAD: .42, cardBlur: 18, barBlur: 18, sat: 1.55 },
     { k: 'lite', name: '轻量', desc: '省电：卡片实底 + 带子淡玻璃',
-      cardA: .90, cardAD: .90, barA: .20, barAD: .20, cardBlur: 0, barBlur: 11, sat: 1.0 },
+      cardA: .90, cardAD: .90, barA: .42, barAD: .46, cardBlur: 0, barBlur: 11, sat: 1.0 },
     { k: 'solid', name: '纯实底', desc: '最省性能，全实底',
       cardA: .96, cardAD: .94, barA: 1, barAD: 1, cardBlur: 0, barBlur: 0, sat: 1.0 }
   ];
@@ -8138,11 +8191,11 @@ var AR = window.AR || (window.AR = {});
     var barA = Number(st.barA);
     var barAD = Number(st.barAD == null ? st.barA : st.barAD);
     /**
-     * 只有**深度**流畅模式（min）才夹取下限：那一档模糊被彻底关掉，
+     * 任何流畅模式（标准 / 深度）都夹取下限：两档都没有模糊了，
      * 太透会让正文跟背后内容混在一起。标准档（lite）保留弹窗磨砂，所以按用户设定走。
      */
-    if (perf === 'min') {
-      cardA = Math.max(0.92, cardA); cardAD = Math.max(0.92, cardAD);
+    if (perf === 'lite' || perf === 'min') {
+      cardA = Math.max(0.88, cardA); cardAD = Math.max(0.88, cardAD);
       barA = 1; barAD = 1;
     }
     var bs = document.body.style;
@@ -9137,3 +9190,4 @@ var AR = window.AR || (window.AR = {});
     modalOpen: function () { return modalStack.length > 0; }
   };
 })();
+

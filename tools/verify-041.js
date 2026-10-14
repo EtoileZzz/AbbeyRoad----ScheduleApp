@@ -602,7 +602,7 @@ async function main() {
     };
   })()`);
   ok('R12 弹窗（方案 A）：两条带自己是磨砂玻璃并糊住穿过它的内容；内容区无模糊；限位=带高+余量',
-    modal1.cardFlex && modal1.cardHidden && modal1.bodyAuto && modal1.barsOverlay && modal1.barsBlur
+    modal1.cardFlex && modal1.cardHidden && modal1.bodyAuto && modal1.barsOverlay
     && modal1.noBlurElsewhere === true && modal1.fades === 0 && modal1.insetOk === true
     && modal1.firstClearTop === true && modal1.lastClearBottom === true && modal1.barsAtEdges === true,
     JSON.stringify(modal1));
@@ -777,14 +777,28 @@ async function main() {
     document.body.removeAttribute('data-perf');
     AR.UI.applyModalTuning();
     AR.UI.closeModal();
-    return { light: light, dark: dark, lite: lite, min: minp };
+    return { light: light, dark: dark, lite: lite, min: minp,
+      barsOutside: (function () {
+        AR.UI.openModal({ title: '位置回归', body: '<div style="height:120px">内容</div>', actions: [{ label: '保存', kind: 'primary' }] });
+        var root = document.getElementById('modalRoot');
+        var card = document.getElementById('modalCard');
+        var head = document.querySelector('.modal-head');
+        var acts = document.querySelector('.modal-actions');
+        var out = { headParentRoot: head.parentNode === root, actsParentRoot: acts.parentNode === root,
+          headOnCard: Math.abs(head.offsetTop - card.offsetTop) <= 2,
+          actsOnCardBottom: Math.abs((acts.offsetTop + acts.offsetHeight) - (card.offsetTop + card.offsetHeight)) <= 3,
+          bars: root.querySelectorAll('.modal-head, .modal-actions').length };
+        AR.UI.closeModal();
+        return out;
+      })() };
   })()`);
-  ok('R15a 玻璃：卡片 62%/56% + 28px 背景化开；两条带只做淡糊带（α≤0.35）；标准档保留弹窗磨砂、深度档才不透明',
-    compat.light.glass >= 0.5 && compat.light.glass < 0.8 && /blur\(2[0-9]px\)/.test(compat.light.glassBlur || '')
-    && compat.light.head > 0.03 && compat.light.head <= 0.35
-    && compat.dark.glass >= 0.4 && compat.dark.glass < 0.8 && compat.dark.head > 0.03 && compat.dark.head <= 0.35
-    && compat.lite.glass < 0.8 && /blur\(/.test(compat.lite.scrimBlur || '')
-    && compat.min.glass >= 0.9 && compat.min.head === 1 && compat.min.acts === 1
+  ok('R15a 玻璃：卡片 45%/40% 偏透 + 12px 背景化开；两条带只做淡糊带（α≤0.35）；标准档保留弹窗磨砂、深度档才不透明；两条带挂在卡片外（模糊才有效）',
+    compat.light.glass >= 0.3 && compat.light.glass < 0.8 && /blur\(1[0-9]px\)/.test(compat.light.glassBlur || '')
+    && compat.light.head >= 0.3 && compat.light.head <= 0.6
+    && compat.dark.glass >= 0.3 && compat.dark.glass < 0.8 && compat.dark.head >= 0.3 && compat.dark.head <= 0.6
+    && compat.barsOutside && compat.barsOutside.headParentRoot === true && compat.barsOutside.actsParentRoot === true && compat.barsOutside.headOnCard === true && compat.barsOutside.actsOnCardBottom === true && compat.barsOutside.bars === 2
+    && compat.lite.glass >= 0.85 && (compat.lite.scrimBlur === 'none' || compat.lite.scrimBlur === '')
+    && compat.min.glass >= 0.85 && compat.min.head === 1 && compat.min.acts === 1
     && (compat.min.scrimBlur === 'none' || compat.min.scrimBlur === ''),
     JSON.stringify(compat));
 
@@ -850,9 +864,9 @@ async function main() {
   ok('R16 开发者模式：长按底部「设置」开关，设置里多出独立分类「开发者模式」（无高频项），再长按移除；玻璃样式预设可切换',
     devOn.on === true && devOn.cat === true && devOn.quickItems === undefined
     && devPanelInfo.panel === true && devPanelInfo.chips === 7
-    && stGlass.active === 'builtin:glass' && stGlass.glass >= 0.5
-    && stLite.active === 'builtin:lite' && stLite.glass >= 0.85 && stLite.bar <= 0.3
-    && stBack.active === 'builtin:glass' && stBack.glass >= 0.5
+    && stGlass.active === 'builtin:glass' && stGlass.glass >= 0.3
+    && stLite.active === 'builtin:lite' && stLite.glass >= 0.85 && stLite.bar <= 0.6
+    && stBack.active === 'builtin:glass' && stBack.glass >= 0.3
     && devOff.on === false && devOff.cat === false,
     JSON.stringify({ devOn: devOn, devPanelInfo: devPanelInfo, stGlass: stGlass, stLite: stLite, stBack: stBack, devOff: devOff }));
 
@@ -882,3 +896,5 @@ async function main() {
 }
 
 main().catch((e) => { console.error('DRIVER-ERROR', e); process.exit(2); });
+
+

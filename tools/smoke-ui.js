@@ -30,7 +30,7 @@ const script = String.raw`(async () => {
   /* 保存按钮的文案随作用域变化（「保存到所有时段」/「保存这一次」），
      所以统一按前缀找，别写死等于「保存」。 */
   const saveBtnIn = (host) => Array.prototype.filter.call(
-    host.querySelectorAll('.modal-actions .btn'), (b) => /^保存/.test((b.textContent || '').trim()))[0];
+    document.querySelectorAll('.modal-actions .btn'), (b) => /^保存/.test((b.textContent || '').trim()))[0];
   const key = AR.Const.STORAGE_KEY;
   const backup = localStorage.getItem(key);
 
@@ -184,7 +184,7 @@ const script = String.raw`(async () => {
     const scopeBtns = scope ? scope.querySelectorAll('.scope-btn') : [];
     check('默认选中「仅这次」', scopeBtns[0] && scopeBtns[0].classList.contains('active'));
     // v0.4.1c：纯「取消」按钮已按定稿删除 —— 用 ✕ 关闭（与点空白/系统返回等效）
-    const closeBtn = $('#modalCard').querySelector('.modal-head .modal-close');
+    const closeBtn = document.querySelector('.modal-head .modal-close');
     check('弹窗有 ✕ 关闭按钮', !!closeBtn);
     if (closeBtn) { closeBtn.click(); }
     await sleep(300);
@@ -207,7 +207,7 @@ const script = String.raw`(async () => {
       await sleep(260);
       check('节次模块能打开编辑器', !!$('#modalCard').querySelector('#ebPStart'));
       // 纯「取消」已删除：用 ✕ 关（等效）
-      ($('#modalCard').querySelector('.modal-head .modal-close') || { click: function () { } }).click();
+      (document.querySelector('.modal-head .modal-close') || { click: function () { } }).click();
       await sleep(300);
     }
     check('今日页收起时三栏都在', !!(document.getElementById('zoneWeek') && document.getElementById('zoneToday') && document.getElementById('zoneNext')));
@@ -293,10 +293,10 @@ const script = String.raw`(async () => {
           block.click();
           await sleep(260);
           const btns = Array.prototype.map.call(
-            $('#modalCard').querySelectorAll('.modal-actions .btn'), (b) => b.textContent.trim());
+            document.querySelectorAll('.modal-actions .btn'), (b) => b.textContent.trim());
           check('展开态点课程块只弹只读详情（没有编辑/删除按钮，纯文字关闭按钮已删）',
             btns.length === 0, btns.join('/'));
-          const roClose = $('#modalCard').querySelector('.modal-head .modal-close');
+          const roClose = document.querySelector('.modal-head .modal-close');
           check('只读详情有 ✕ 可关', !!roClose);
           if (roClose) { roClose.click(); }
           await sleep(300);
@@ -847,10 +847,10 @@ const script = String.raw`(async () => {
         !!document.getElementById('dsSrc') && !!document.getElementById('dsDst')
         && !!document.querySelector('.ds-preview'),
         (document.querySelector('.ds-preview') || {}).textContent);
-      const cancelBtn = byText($('#modalCard').querySelectorAll('.modal-actions .btn'), '取消')[0];
+      const cancelBtn = byText(document.querySelectorAll('.modal-actions .btn'), '取消')[0];
       if (cancelBtn) { cancelBtn.click(); }
       else {
-        const dsClose = $('#modalCard').querySelector('.modal-head .modal-close');
+        const dsClose = document.querySelector('.modal-head .modal-close');
         if (dsClose) { dsClose.click(); }
       }
       await sleep(320);
@@ -973,3 +973,5 @@ async function main() {
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
+
+

@@ -54,7 +54,7 @@ if ($LASTEXITCODE -ne 0) { throw 'aapt2 compile failed' }
 Write-Host '== aapt2 link =='
 & "$bt\aapt2.exe" link -o "$out\base.apk" -I $platform --manifest "$root\AndroidManifest.xml" `
     --java $gen --min-sdk-version 26 --target-sdk-version 34 `
-    --version-code 56 --version-name $version "$out\res.zip"
+    --version-code 58 --version-name $version "$out\res.zip"
 if ($LASTEXITCODE -ne 0) { throw 'aapt2 link failed' }
 
 # 3) Java 编译
