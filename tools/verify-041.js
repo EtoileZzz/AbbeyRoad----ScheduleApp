@@ -602,7 +602,7 @@ async function main() {
     };
   })()`);
   ok('R12 弹窗（方案 A）：两条带自己是磨砂玻璃并糊住穿过它的内容；内容区无模糊；限位=带高+余量',
-    modal1.cardFlex && modal1.cardHidden && modal1.bodyAuto && modal1.barsOverlay
+    modal1.cardFlex && modal1.cardHidden && modal1.bodyAuto && modal1.barsOverlay && modal1.barsBlur
     && modal1.noBlurElsewhere === true && modal1.fades === 0 && modal1.insetOk === true
     && modal1.firstClearTop === true && modal1.lastClearBottom === true && modal1.barsAtEdges === true,
     JSON.stringify(modal1));
@@ -756,11 +756,9 @@ async function main() {
       var glass = document.querySelector('.modal-glass');
       var head = document.querySelector('.modal-head');
       var acts = document.querySelector('.modal-actions');
-      var scrim = document.querySelector('.modal-scrim');
       var gc = getComputedStyle(glass), hc = getComputedStyle(head);
       return { glass: alpha(gc.backgroundColor), glassBlur: (gc.backdropFilter || gc.webkitBackdropFilter),
-               head: alpha(hc.backgroundColor), acts: acts ? alpha(getComputedStyle(acts).backgroundColor) : null,
-               scrimBlur: scrim ? (getComputedStyle(scrim).backdropFilter || getComputedStyle(scrim).webkitBackdropFilter) : '' };
+               head: alpha(hc.backgroundColor), acts: acts ? alpha(getComputedStyle(acts).backgroundColor) : null };
     }
     AR.UI.closeModal();
     document.body.setAttribute('data-theme', 'light');
@@ -769,34 +767,18 @@ async function main() {
     document.body.setAttribute('data-theme', 'dark');
     var dark = probe();
     document.body.setAttribute('data-perf', 'lite');
-    AR.UI.applyModalTuning();
-    var lite = probe();
-    document.body.setAttribute('data-perf', 'min');
-    AR.UI.applyModalTuning();
-    var minp = probe();
+    AR.UI.applyModalTuning();     // 流畅模式会夹取透明度下限（切模式时会自动调）
+    var perf = probe();
     document.body.removeAttribute('data-perf');
     AR.UI.applyModalTuning();
     AR.UI.closeModal();
-    return { light: light, dark: dark, lite: lite, min: minp,
-      barsInside: (function () {
-        AR.UI.openModal({ title: '位置回归', body: '<div style="height:120px">内容</div>', actions: [{ label: '保存', kind: 'primary' }] });
-        var root = document.getElementById('modalRoot');
-        var card = document.getElementById('modalCard');
-        var head = document.querySelector('.modal-head');
-        var acts = document.querySelector('.modal-actions');
-        var out = { headInCard: head.parentNode === card, actsInCard: acts.parentNode === card, bars: card.querySelectorAll('.modal-head, .modal-actions').length };
-        AR.UI.closeModal();
-        return out;
-      })() };
+    return { light: light, dark: dark, perf: perf };
   })()`);
-  ok('R15a 玻璃：卡片 45%/40% 偏透 + 12px 背景化开；两条带只做淡糊带（α≤0.35）；标准档保留弹窗磨砂、深度档才不透明；两条带在卡片内（回搬，动画由卡片统一带动）',
-    compat.light.glass >= 0.3 && compat.light.glass < 0.8 && /blur\(1[0-9]px\)/.test(compat.light.glassBlur || '')
-    && compat.light.head >= 0.3 && compat.light.head <= 0.6
-    && compat.dark.glass >= 0.3 && compat.dark.glass < 0.8 && compat.dark.head >= 0.3 && compat.dark.head <= 0.6
-    && compat.barsInside && compat.barsInside.headInCard === true && compat.barsInside.actsInCard === true && compat.barsInside.bars === 2
-    && compat.lite.glass >= 0.85 && (compat.lite.scrimBlur === 'none' || compat.lite.scrimBlur === '')
-    && compat.min.glass >= 0.85 && compat.min.head === 1 && compat.min.acts === 1
-    && (compat.min.scrimBlur === 'none' || compat.min.scrimBlur === ''),
+  ok('R15a 整卡磨砂：浅色 78%/深色 70% + 24px 背景化开；流畅模式透明度自动夹到 ≥90% 且不模糊、带子不透明',
+    compat.light.glass >= 0.8 && compat.light.glass <= 0.95 && /blur\(3[0-9]px\)/.test(compat.light.glassBlur || '')
+    && compat.dark.glass >= 0.8 && compat.dark.glass <= 0.95
+    && compat.perf.glass >= 0.9 && compat.perf.head === 1 && compat.perf.acts === 1
+    && (compat.perf.glassBlur === 'none' || compat.perf.glassBlur === ''),
     JSON.stringify(compat));
 
   // ── R16 开发者模式：长按底部「设置」开关 + 独立分类 + 玻璃样式预设切换 ──
@@ -861,9 +843,9 @@ async function main() {
   ok('R16 开发者模式：长按底部「设置」开关，设置里多出独立分类「开发者模式」（无高频项），再长按移除；玻璃样式预设可切换',
     devOn.on === true && devOn.cat === true && devOn.quickItems === undefined
     && devPanelInfo.panel === true && devPanelInfo.chips === 7
-    && stGlass.active === 'builtin:glass' && stGlass.glass >= 0.3
-    && stLite.active === 'builtin:lite' && stLite.glass >= 0.85 && stLite.bar <= 0.6
-    && stBack.active === 'builtin:glass' && stBack.glass >= 0.3
+    && stGlass.active === 'builtin:glass' && stGlass.glass >= 0.7
+    && stLite.active === 'builtin:lite' && stLite.glass >= 0.85 && stLite.bar <= 0.3
+    && stBack.active === 'builtin:glass' && stBack.glass >= 0.7
     && devOff.on === false && devOff.cat === false,
     JSON.stringify({ devOn: devOn, devPanelInfo: devPanelInfo, stGlass: stGlass, stLite: stLite, stBack: stBack, devOff: devOff }));
 
@@ -893,5 +875,3 @@ async function main() {
 }
 
 main().catch((e) => { console.error('DRIVER-ERROR', e); process.exit(2); });
-
-

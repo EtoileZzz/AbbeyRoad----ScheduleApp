@@ -10,6 +10,8 @@ var AR = window.AR || (window.AR = {});
   'use strict';
 
 var APP_VERSION = '0.4.1a';
+  var APP_BUILD_CODE = 59;                       // Android versionCode（打包脚本自动写）
+  var APP_BUILD_AT = '2026-10-14 14:31';        // 打包时间（打包脚本自动写）
   var SCHEMA_VERSION = 1;
   var STORAGE_KEY = 'abbeyroad.state.v1';
   var LAYOUT_KEY = 'abbeyroad.layout.v1';
@@ -316,6 +318,8 @@ var APP_VERSION = '0.4.1a';
       kind: 'abbeyroad.sync',
       exportedAt: null,
       appVersion: APP_VERSION,
+    buildCode: APP_BUILD_CODE,
+    buildAt: APP_BUILD_AT,
       device: { id: uid(), name: '', platform: '' },
       settings: defaultSettings(semId),
       semesters: [{

@@ -1151,8 +1151,8 @@ input[type="range"]::-moz-range-thumb {
    * 而卡片内部那层 .modal-glass 在某些引擎里采不到卡片背后的东西（见 ui.js 注释）。
    * 强度吃 --modal-card-blur（开发者面板的「背景化开」滑块），所以滑块真的有效。
    */
-  -webkit-backdrop-filter: blur(var(--modal-card-blur, 12px)) saturate(var(--modal-sat, 1.5));
-  backdrop-filter: blur(var(--modal-card-blur, 12px)) saturate(var(--modal-sat, 1.5));
+  -webkit-backdrop-filter: blur(var(--modal-card-blur, 30px)) saturate(var(--modal-sat, 1.5));
+  backdrop-filter: blur(var(--modal-card-blur, 30px)) saturate(var(--modal-sat, 1.5));
   transition: opacity var(--dur-dialog-in) var(--ease-dialog-in);
 }
 .modal-card {
@@ -3098,15 +3098,14 @@ body[data-perf="min"] .blob { display: none; }
   z-index: 0;
   pointer-events: none;
   border-radius: inherit;
-  background: rgba(255, 255, 255, var(--modal-card-a, .78));
-  -webkit-backdrop-filter: blur(var(--modal-card-blur, 24px)) saturate(var(--modal-sat, 1.5));
-  backdrop-filter: blur(var(--modal-card-blur, 24px)) saturate(var(--modal-sat, 1.5));
+  background: rgba(255, 255, 255, var(--modal-card-a, .85));
+  -webkit-backdrop-filter: blur(var(--modal-card-blur, 30px)) saturate(var(--modal-sat, 1.5));
+  backdrop-filter: blur(var(--modal-card-blur, 30px)) saturate(var(--modal-sat, 1.5));
   box-shadow: var(--shadow-modal), inset 0 0 0 .5px var(--glass-stroke);
 }
 body[data-theme="dark"] .modal-glass {
-  background: rgba(28, 33, 43, var(--modal-card-a-d, .70));
+  background: rgba(28, 33, 43, var(--modal-card-a-d, .85));
 }
-
 /* 0.4.1b：开发者模式里的「弹窗玻璃样式」预设行 */
 .ms-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
 .ms-chips .ms-chip { font-size: 12px; padding: 5px 10px; }
@@ -3131,13 +3130,13 @@ body[data-theme="dark"] .modal-glass {
      （动画期间父级圆角裁剪会晚一帧，绝对定位 + backdrop-filter 的子层就先露出直角） */
   border-top-left-radius: var(--r-modal);
   border-top-right-radius: var(--r-modal);
-  background: rgba(255, 255, 255, var(--modal-bar-a, .42));
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  background: rgba(255, 255, 255, var(--modal-bar-a, .12));
+  -webkit-backdrop-filter: blur(var(--modal-bar-blur, 24px)) saturate(var(--modal-sat, 1.5));
+  backdrop-filter: blur(var(--modal-bar-blur, 24px)) saturate(var(--modal-sat, 1.5));
   border-bottom: 1px solid rgba(0, 0, 0, .06);
 }
 body[data-theme="dark"] .modal-head {
-  background: rgba(28, 33, 43, var(--modal-bar-a-d, .46));
+  background: rgba(28, 33, 43, var(--modal-bar-a-d, .14));
   border-bottom-color: rgba(255, 255, 255, .08);
 }
 .modal-actions {
@@ -3150,15 +3149,15 @@ body[data-theme="dark"] .modal-head {
   justify-content: flex-end;
   gap: 8px;
   padding: 10px 18px calc(10px + env(safe-area-inset-bottom, 0px));
-  background: rgba(255, 255, 255, var(--modal-bar-a, .42));
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+  background: rgba(255, 255, 255, var(--modal-bar-a, .12));
+  -webkit-backdrop-filter: blur(var(--modal-bar-blur, 24px)) saturate(var(--modal-sat, 1.5));
+  backdrop-filter: blur(var(--modal-bar-blur, 24px)) saturate(var(--modal-sat, 1.5));
   border-bottom-left-radius: var(--r-modal);
   border-bottom-right-radius: var(--r-modal);
   border-top: 1px solid rgba(0, 0, 0, .06);
 }
 body[data-theme="dark"] .modal-actions {
-  background: rgba(28, 33, 43, var(--modal-bar-a-d, .46));
+  background: rgba(28, 33, 43, var(--modal-bar-a-d, .14));
   border-top-color: rgba(255, 255, 255, .08);
 }
 
@@ -3175,6 +3174,13 @@ body[data-theme="dark"] .modal-actions {
   body[data-theme="dark"] .modal-actions { background: #1C212B; }
 }
 
+/**
+ * 流畅模式·标准 / 深度：
+ *   模糊由全局规则 body[data-perf] * { backdrop-filter: none !important } 关掉；
+ *   透明度**不能在这里写死**（写死会让开发者面板的滑块失效，0.4.1a 的 bug）——
+ *   改由 JS 在写变量时做下限夹取（见 ui.js applyModalStyleObj）。
+ */
+body[data-perf="min"] .modal-glass { box-shadow: inset 0 0 0 .5px var(--glass-stroke); }
 .modal-scroll {
   position: relative;
   flex: 1 1 auto;
@@ -3211,52 +3217,10 @@ body[data-theme="dark"] .modal-actions {
    内容从下面滚过时被糊掉。内容区里**不放任何模糊层**（那会让顶/底的行始终处于模糊区）。
    带子的高度 + 一点余量由 openModal 量出来写进 --m-pad-top / --m-pad-bottom。 */
 
-/**
- * 边缘淡出（替代"穿过带子被糊开"）：纯 linear-gradient，不采样背景、不做高斯，
- * 比 backdrop-filter 便宜一个数量级 → 所有模式都开（含流畅模式）。
- * 高度已包含在限位 --m-pad-* 里，所以滚到最顶/最底时首尾两行仍完整清晰。
- */
-.modal-head::after,
-.modal-actions::after {
-  content: "";
-  position: absolute;
-  left: 0; right: 0;
-  height: var(--modal-fade, 26px);
-  pointer-events: none;
-  background: linear-gradient(to bottom, rgba(255, 255, 255, .5), rgba(255, 255, 255, 0));
-}
-.modal-head::after { top: 100%; }
-.modal-actions::after {
-  bottom: 100%;
-  background: linear-gradient(to top, rgba(255, 255, 255, .5), rgba(255, 255, 255, 0));
-}
-body[data-theme="dark"] .modal-head::after { background: linear-gradient(to bottom, rgba(28, 33, 43, .55), rgba(28, 33, 43, 0)); }
-body[data-theme="dark"] .modal-actions::after { background: linear-gradient(to top, rgba(28, 33, 43, .55), rgba(28, 33, 43, 0)); }
-
-/* 流畅模式（标准 / 深度）：弹窗完全没有模糊，两条带不透明保证可读 */
+/* 流畅模式（标准 / 深度）：弹窗彻底无模糊（透明度由 JS 夹到 ≥90%） */
+body[data-perf] .modal-glass,
 body[data-perf] .modal-head,
 body[data-perf] .modal-actions {
-  background: #F2F4F8;
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
-}
-body[data-perf][data-theme="dark"] .modal-head,
-body[data-perf][data-theme="dark"] .modal-actions {
-  background: #1C212B;
-}
-body[data-perf] .modal-scrim {
-  -webkit-backdrop-filter: none !important;
-  backdrop-filter: none !important;
-}
-/**
- * 方案 B：弹窗打开时给 **App 页面**整体加 filter: blur()（不是 backdrop-filter）。
- *   · filter 在卡片外、作用于真实页面内容 → 任何引擎/WebView 都成立（实测 backdrop-filter 在卡片内无效）
- *   · 一次静态模糊，不逐帧采样 → 比 backdrop-filter 便宜
- *   · 流畅模式（data-perf）不启用，保证省电与可读
- */
-body.modal-open:not([data-perf]) .view,
-body.modal-open:not([data-perf]) #tabbar,
-body.modal-open:not([data-perf]) #railNav {
-  filter: blur(12px) saturate(1.5);
-  transition: filter var(--dur-dialog-in) var(--ease-dialog-in);
 }

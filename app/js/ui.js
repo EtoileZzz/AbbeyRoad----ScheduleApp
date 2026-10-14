@@ -4709,13 +4709,13 @@ var AR = window.AR || (window.AR = {});
     // 表单类弹窗（课程编辑）要宽一点，普通弹窗保持窄卡片
     card.classList[opts.wide ? 'add' : 'remove']('modal-wide');
     card.innerHTML = '';
-    // 上一轮挂在 .modal-root 上的两条带（卡片外）要清掉，否则每开一次会累积一层
     // v0.4.1b：整块磨砂玻璃层（糊弹窗背后的页面）。卡片本身不加 backdrop-filter，见 app.css 注释。
     card.appendChild(el('<i class="modal-glass"></i>'));
     var head = el('<div class="modal-head"><div><h3 class="modal-title">' + U.escapeHtml(opts.title || '') + '</h3>'
       + (opts.sub ? '<p class="modal-sub">' + U.escapeHtml(opts.sub) + '</p>' : '') + '</div>'
       + '<button class="modal-close" type="button">✕</button></div>');
     head.querySelector('.modal-close').addEventListener('click', closeModal);
+    card.appendChild(head);
     /**
      * v0.4.1：内容区外面只套一层 .modal-scroll。
      * 模糊**只由两条带自己**负责（它们是磨砂玻璃，内容从下面滚过被糊开），
@@ -4752,23 +4752,14 @@ var AR = window.AR || (window.AR = {});
       }
       card.appendChild(actions);
     }
-    /**
-     * v0.4.1c 结构性修复：两条带挂在 **.modal-root** 上（卡片外），由 JS 贴到卡片上下边缘。
-     *
-     * 为什么必须这样：卡片带 transform / 圆角裁剪 → 它内部子元素的 backdrop-filter
-     * **采不到内容**（实测：卡片内模糊 30px→0 只有 6.3k 字节差，而卡片外的遮罩层同样操作有 94k）。
-     * 所以"内容穿过带子被糊开"只能由卡片外的层来做 —— 位置用未变换几何（offset*，不受入场 scale 影响）。
-     */
-    card.appendChild(head);
     root.hidden = false;
-    document.body.classList.add('modal-open');   // 方案 B：弹窗打开时把 App 页面整体糊开
     /**
      * v0.4.1：两条带是覆盖层，内容从下面穿过 —— 所以必须**按带子的边缘自动加限位**：
      *   限位 = 带高 + 四层渐变总高(37px) + 余量(8px)
      * 这样滚到最顶/最底时，首行、末行落在渐变带之外：清晰、也点得到。
      * 边量边写进 CSS 变量，按钮换行 / 安全区变化都用 ResizeObserver 跟上。
      */
-    var FADE_H = 0, EXTRA = 32;   // 32 = 26px 淡出 + 6px 余量
+    var FADE_H = 0, EXTRA = 10;
     var measureBars = function () {
       try {
         var hh = head.offsetHeight || 0;
@@ -4801,7 +4792,6 @@ var AR = window.AR || (window.AR = {});
   }
 
   function closeModal() {
-    document.body.classList.remove('modal-open');
     var root = $('modalRoot');
     if (root.hidden) { return false; }
     modalStack.pop();
@@ -5113,7 +5103,7 @@ var AR = window.AR || (window.AR = {});
           ? '保存后：星期 / 节次 / 时间 / 地点 / 老师 / 本次备注只改这一天；上课周次与课程名、颜色对整门课生效。'
           : '保存后：所有没被单独调整过的周都会跟着变。';
       }
-      var saveBtn = document.querySelector('.modal-actions .btn.primary');
+      var saveBtn = document.querySelector('#modalCard .modal-actions .btn.primary');
       if (saveBtn) { saveBtn.textContent = scope === 'once' ? '保存这一次' : '保存到所有时段'; }
       /* v0.4.1：删除按钮的文案跟着作用域走（仅这次=取消这一天 / 所有时段=删整个每周时段） */
       var acts = document.querySelectorAll('.modal-actions .btn');
@@ -8090,12 +8080,12 @@ var AR = window.AR || (window.AR = {});
    * 流畅模式与老设备（无 backdrop-filter）由 CSS 自动改用实底，与预设互不干扰。
    */
   var MODAL_BUILTIN = [
-    { k: 'glass', name: '整卡磨砂', desc: '默认：偏透的轻磨砂',
-      cardA: .45, cardAD: .40, barA: .42, barAD: .46, cardBlur: 12, barBlur: 12, sat: 1.5 },
+    { k: 'glass', name: '整卡磨砂', desc: '0.4.0 的整块玻璃（默认）',
+      cardA: .85, cardAD: .85, barA: .12, barAD: .14, cardBlur: 30, barBlur: 30, sat: 1.5 },
     { k: 'airy', name: '更透更糊', desc: '更透、模糊更重',
-      cardA: .38, cardAD: .34, barA: .38, barAD: .42, cardBlur: 18, barBlur: 18, sat: 1.55 },
+      cardA: .68, cardAD: .62, barA: .68, barAD: .62, cardBlur: 32, barBlur: 32, sat: 1.6 },
     { k: 'lite', name: '轻量', desc: '省电：卡片实底 + 带子淡玻璃',
-      cardA: .90, cardAD: .90, barA: .42, barAD: .46, cardBlur: 0, barBlur: 11, sat: 1.0 },
+      cardA: .90, cardAD: .90, barA: .20, barAD: .20, cardBlur: 0, barBlur: 11, sat: 1.0 },
     { k: 'solid', name: '纯实底', desc: '最省性能，全实底',
       cardA: .96, cardAD: .94, barA: 1, barAD: 1, cardBlur: 0, barBlur: 0, sat: 1.0 }
   ];
@@ -8142,18 +8132,14 @@ var AR = window.AR || (window.AR = {});
    */
   function applyModalStyleObj(st) {
     if (!st) { return; }
-    var perf = document.body.getAttribute('data-perf');
+    var perf = document.body.hasAttribute('data-perf');
     var cardA = Number(st.cardA);
     var cardAD = Number(st.cardAD == null ? st.cardA : st.cardAD);
     var barA = Number(st.barA);
     var barAD = Number(st.barAD == null ? st.barA : st.barAD);
-    /**
-     * 任何流畅模式（标准 / 深度）都夹取下限：两档都没有模糊了，
-     * 太透会让正文跟背后内容混在一起。标准档（lite）保留弹窗磨砂，所以按用户设定走。
-     */
-    if (perf === 'lite' || perf === 'min') {
-      cardA = Math.max(0.88, cardA); cardAD = Math.max(0.88, cardAD);
-      barA = 1; barAD = 1;
+    if (perf) {
+      cardA = Math.max(0.90, cardA); cardAD = Math.max(0.90, cardAD);
+      barA = 1; barAD = 1;      // 流畅模式下两条带做成不透明（穿过它的内容不再需要糊）
     }
     var bs = document.body.style;
     bs.setProperty('--modal-card-a', String(cardA));
@@ -9147,4 +9133,3 @@ var AR = window.AR || (window.AR = {});
     modalOpen: function () { return modalStack.length > 0; }
   };
 })();
-

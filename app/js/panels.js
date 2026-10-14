@@ -895,7 +895,9 @@ var AR = window.AR || (window.AR = {});
 
   function quickAbout() {
     var row = el('<div class="q-row"></div>');
-    row.appendChild(qItem('版本', el('<span class="q-ver">v' + esc(AR.Const.APP_VERSION) + '</span>')));
+    row.appendChild(qItem('版本', el('<span class="q-ver">v' + esc(AR.Const.APP_VERSION)
+    + '（versionCode ' + esc(String(AR.Const.buildCode || '')) + '）</span>')));
+  row.appendChild(qItem('打包时间', el('<span class="q-ver">' + esc(AR.Const.buildAt || '—') + '</span>')));
     row.appendChild(qItem('检查更新', qBtn('检查', function () { checkUpdate(true); })));
     row.appendChild(qItem('引导', qBtn('重新观看', function () {
       AR.Panels.startOnboarding(true);

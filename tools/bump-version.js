@@ -9,6 +9,21 @@
 const fs = require('fs');
 const path = require('path');
 const root = path.resolve(__dirname, '..');
+
+/** 把 versionCode 与打包时间写进 app/js/core.js（关于与帮助里要显示） */
+function stampBuild(code) {
+  const f = path.join(root, 'app', 'js', 'core.js');
+  let t = fs.readFileSync(f, 'utf8');
+  if (t.charCodeAt(0) === 0xFEFF) { t = t.slice(1); }
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const at = d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+    + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+  t = t.replace(/var APP_BUILD_CODE = \d+;/, 'var APP_BUILD_CODE = ' + code + ';');
+  t = t.replace(/var APP_BUILD_AT = '[^']*';/, "var APP_BUILD_AT = '" + at + "';");
+  fs.writeFileSync(f, t, 'utf8');
+  return at;
+}
 const next = process.argv[2];
 const code = process.argv[3];
 if (!/^\d+\.\d+\.\d+([a-z]+)?$/.test(next || '')) { throw new Error('用法：node tools/bump-version.js 0.2.5 16（小修订可写 0.3.2a / 0.4.0beta）'); }
@@ -61,3 +76,5 @@ swapRe('windows/installer/Installer.cs', /private const string Version = "[\d.a-
 swapRe('app/index.html', /\?v=[\d.a-z]+/g, '?v=' + next);
 swapRe('windows/installer/Installer.cs', /版本 " \+ "[\d.a-z]+"/, '版本 " + "' + next + '"');
 console.log('版本已更新到 ' + next + '（Android versionCode ' + code + '）');
+
+stampBuild(code);
