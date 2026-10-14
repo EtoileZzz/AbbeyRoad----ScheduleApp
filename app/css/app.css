@@ -1151,8 +1151,8 @@ input[type="range"]::-moz-range-thumb {
    * 而卡片内部那层 .modal-glass 在某些引擎里采不到卡片背后的东西（见 ui.js 注释）。
    * 强度吃 --modal-card-blur（开发者面板的「背景化开」滑块），所以滑块真的有效。
    */
-  -webkit-backdrop-filter: blur(var(--modal-card-blur, 24px)) saturate(var(--modal-sat, 1.5));
-  backdrop-filter: blur(var(--modal-card-blur, 24px)) saturate(var(--modal-sat, 1.5));
+  -webkit-backdrop-filter: blur(var(--modal-card-blur, 28px)) saturate(var(--modal-sat, 1.5));
+  backdrop-filter: blur(var(--modal-card-blur, 28px)) saturate(var(--modal-sat, 1.5));
   transition: opacity var(--dur-dialog-in) var(--ease-dialog-in);
 }
 .modal-card {
@@ -3175,20 +3175,31 @@ body[data-theme="dark"] .modal-actions {
 }
 
 /**
- * 流畅模式·标准 / 深度：
- *   模糊由全局规则 body[data-perf] * { backdrop-filter: none !important } 关掉；
- *   两条带**必须不透明**（没有模糊可依赖，12% 的带子会让标题压在清晰内容上读不清）——
- *   这条只锁带子；玻璃层的透明度仍由 JS 夹取下限（见 ui.js applyModalStyleObj），滑块继续有效。
+ * 流畅模式：
+ *   标准（lite）→ 弹窗**保留磨砂**（只有遮罩 + 两条带共 3 层，代价可控），别处的重特效仍关；
+ *                否则用户会觉得"弹窗根本不像磨砂玻璃"（0.4.1a 的反馈就是这个）。
+ *   深度（min）→ 弹窗也彻底不透明、不模糊，最省。
+ * 透明度的下限夹取在 ui.js applyModalStyleObj（只对 min 生效），所以滑块始终有效。
  */
-body[data-perf] .modal-head,
-body[data-perf] .modal-actions {
-  background: #F2F4F8;
-  -webkit-backdrop-filter: none;
-  backdrop-filter: none;
+body[data-perf="lite"] .modal-scrim,
+body[data-perf="lite"] .modal-head,
+body[data-perf="lite"] .modal-actions {
+  -webkit-backdrop-filter: blur(var(--modal-card-blur, 28px)) saturate(var(--modal-sat, 1.5)) !important;
+  backdrop-filter: blur(var(--modal-card-blur, 28px)) saturate(var(--modal-sat, 1.5)) !important;
 }
-body[data-perf][data-theme="dark"] .modal-head,
-body[data-perf][data-theme="dark"] .modal-actions {
+body[data-perf="min"] .modal-head,
+body[data-perf="min"] .modal-actions {
+  background: #F2F4F8;
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
+}
+body[data-perf="min"][data-theme="dark"] .modal-head,
+body[data-perf="min"][data-theme="dark"] .modal-actions {
   background: #1C212B;
+}
+body[data-perf="min"] .modal-scrim {
+  -webkit-backdrop-filter: none !important;
+  backdrop-filter: none !important;
 }
 body[data-perf="min"] .modal-glass { box-shadow: inset 0 0 0 .5px var(--glass-stroke); }
 .modal-scroll {

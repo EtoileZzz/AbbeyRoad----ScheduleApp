@@ -8080,10 +8080,10 @@ var AR = window.AR || (window.AR = {});
    * 流畅模式与老设备（无 backdrop-filter）由 CSS 自动改用实底，与预设互不干扰。
    */
   var MODAL_BUILTIN = [
-    { k: 'glass', name: '整卡磨砂', desc: '整块玻璃（默认）',
-      cardA: .78, cardAD: .70, barA: .12, barAD: .14, cardBlur: 24, barBlur: 24, sat: 1.5 },
+    { k: 'glass', name: '整卡磨砂', desc: '默认：更透的整块玻璃',
+      cardA: .62, cardAD: .56, barA: .08, barAD: .10, cardBlur: 28, barBlur: 28, sat: 1.5 },
     { k: 'airy', name: '更透更糊', desc: '更透、模糊更重',
-      cardA: .68, cardAD: .62, barA: .10, barAD: .12, cardBlur: 32, barBlur: 32, sat: 1.6 },
+      cardA: .52, cardAD: .46, barA: .06, barAD: .08, cardBlur: 34, barBlur: 34, sat: 1.6 },
     { k: 'lite', name: '轻量', desc: '省电：卡片实底 + 带子淡玻璃',
       cardA: .90, cardAD: .90, barA: .20, barAD: .20, cardBlur: 0, barBlur: 11, sat: 1.0 },
     { k: 'solid', name: '纯实底', desc: '最省性能，全实底',
@@ -8132,14 +8132,18 @@ var AR = window.AR || (window.AR = {});
    */
   function applyModalStyleObj(st) {
     if (!st) { return; }
-    var perf = document.body.hasAttribute('data-perf');
+    var perf = document.body.getAttribute('data-perf');
     var cardA = Number(st.cardA);
     var cardAD = Number(st.cardAD == null ? st.cardA : st.cardAD);
     var barA = Number(st.barA);
     var barAD = Number(st.barAD == null ? st.barA : st.barAD);
-    if (perf) {
+    /**
+     * 只有**深度**流畅模式（min）才夹取下限：那一档模糊被彻底关掉，
+     * 太透会让正文跟背后内容混在一起。标准档（lite）保留弹窗磨砂，所以按用户设定走。
+     */
+    if (perf === 'min') {
       cardA = Math.max(0.92, cardA); cardAD = Math.max(0.92, cardAD);
-      barA = 1; barAD = 1;      // 流畅模式下两条带做成不透明（穿过它的内容不再需要糊）
+      barA = 1; barAD = 1;
     }
     var bs = document.body.style;
     bs.setProperty('--modal-card-a', String(cardA));

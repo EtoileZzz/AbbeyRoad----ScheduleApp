@@ -756,9 +756,11 @@ async function main() {
       var glass = document.querySelector('.modal-glass');
       var head = document.querySelector('.modal-head');
       var acts = document.querySelector('.modal-actions');
+      var scrim = document.querySelector('.modal-scrim');
       var gc = getComputedStyle(glass), hc = getComputedStyle(head);
       return { glass: alpha(gc.backgroundColor), glassBlur: (gc.backdropFilter || gc.webkitBackdropFilter),
-               head: alpha(hc.backgroundColor), acts: acts ? alpha(getComputedStyle(acts).backgroundColor) : null };
+               head: alpha(hc.backgroundColor), acts: acts ? alpha(getComputedStyle(acts).backgroundColor) : null,
+               scrimBlur: scrim ? (getComputedStyle(scrim).backdropFilter || getComputedStyle(scrim).webkitBackdropFilter) : '' };
     }
     AR.UI.closeModal();
     document.body.setAttribute('data-theme', 'light');
@@ -767,19 +769,23 @@ async function main() {
     document.body.setAttribute('data-theme', 'dark');
     var dark = probe();
     document.body.setAttribute('data-perf', 'lite');
-    AR.UI.applyModalTuning();     // 流畅模式会夹取透明度下限（切模式时会自动调）
-    var perf = probe();
+    AR.UI.applyModalTuning();
+    var lite = probe();
+    document.body.setAttribute('data-perf', 'min');
+    AR.UI.applyModalTuning();
+    var minp = probe();
     document.body.removeAttribute('data-perf');
     AR.UI.applyModalTuning();
     AR.UI.closeModal();
-    return { light: light, dark: dark, perf: perf };
+    return { light: light, dark: dark, lite: lite, min: minp };
   })()`);
-  ok('R15a 玻璃：卡片 78%/70% + 24px 背景化开；两条带只做"淡淡的糊带"（α≤0.35，不再双重上色成实心条）；流畅模式带子不透明、玻璃自动夹到 ≥90%',
-    compat.light.glass >= 0.7 && /blur\(2[0-9]px\)/.test(compat.light.glassBlur || '')
+  ok('R15a 玻璃：卡片 62%/56% + 28px 背景化开；两条带只做淡糊带（α≤0.35）；标准档保留弹窗磨砂、深度档才不透明',
+    compat.light.glass >= 0.5 && compat.light.glass < 0.8 && /blur\(2[0-9]px\)/.test(compat.light.glassBlur || '')
     && compat.light.head > 0.03 && compat.light.head <= 0.35
-    && compat.dark.glass >= 0.65 && compat.dark.head > 0.03 && compat.dark.head <= 0.35
-    && compat.perf.glass >= 0.9 && compat.perf.head === 1 && compat.perf.acts === 1
-    && (compat.perf.glassBlur === 'none' || compat.perf.glassBlur === ''),
+    && compat.dark.glass >= 0.4 && compat.dark.glass < 0.8 && compat.dark.head > 0.03 && compat.dark.head <= 0.35
+    && compat.lite.glass < 0.8 && /blur\(/.test(compat.lite.scrimBlur || '')
+    && compat.min.glass >= 0.9 && compat.min.head === 1 && compat.min.acts === 1
+    && (compat.min.scrimBlur === 'none' || compat.min.scrimBlur === ''),
     JSON.stringify(compat));
 
   // ── R16 开发者模式：长按底部「设置」开关 + 独立分类 + 玻璃样式预设切换 ──
@@ -844,9 +850,9 @@ async function main() {
   ok('R16 开发者模式：长按底部「设置」开关，设置里多出独立分类「开发者模式」（无高频项），再长按移除；玻璃样式预设可切换',
     devOn.on === true && devOn.cat === true && devOn.quickItems === undefined
     && devPanelInfo.panel === true && devPanelInfo.chips === 7
-    && stGlass.active === 'builtin:glass' && stGlass.glass >= 0.7
+    && stGlass.active === 'builtin:glass' && stGlass.glass >= 0.5
     && stLite.active === 'builtin:lite' && stLite.glass >= 0.85 && stLite.bar <= 0.3
-    && stBack.active === 'builtin:glass' && stBack.glass >= 0.7
+    && stBack.active === 'builtin:glass' && stBack.glass >= 0.5
     && devOff.on === false && devOff.cat === false,
     JSON.stringify({ devOn: devOn, devPanelInfo: devPanelInfo, stGlass: stGlass, stLite: stLite, stBack: stBack, devOff: devOff }));
 
