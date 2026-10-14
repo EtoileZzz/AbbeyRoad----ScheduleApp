@@ -3106,20 +3106,6 @@ body[data-perf="min"] .blob { display: none; }
 body[data-theme="dark"] .modal-glass {
   background: rgba(28, 33, 43, var(--modal-card-a-d, .70));
 }
-/* v0.4.1c：两条带挂在 .modal-root 上（卡片外，模糊才采得到内容），位置由 JS 设置。
-   它们必须跟着卡片一起缩放/淡入淡出 —— transform-origin 由 JS 对齐到卡片中心，所以走的是同一套运动。 */
-.modal-root > .modal-actions { left: 0; right: auto; bottom: auto; top: 0; }
-.modal-head, .modal-actions {
-  opacity: 0;
-  transform: scale(.92);
-  transition: opacity var(--dur-dialog-in) var(--ease-dialog-in),
-              transform var(--dur-dialog-in) var(--ease-dialog-in);
-}
-.modal-root.open .modal-head, .modal-root.open .modal-actions { opacity: 1; transform: none; }
-.modal-root.closing .modal-head, .modal-root.closing .modal-actions {
-  opacity: 0;
-  transform: scale(.96);
-}
 
 /* 0.4.1b：开发者模式里的「弹窗玻璃样式」预设行 */
 .ms-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 8px; }
@@ -3261,4 +3247,16 @@ body[data-perf][data-theme="dark"] .modal-actions {
 body[data-perf] .modal-scrim {
   -webkit-backdrop-filter: none !important;
   backdrop-filter: none !important;
+}
+/**
+ * 方案 B：弹窗打开时给 **App 页面**整体加 filter: blur()（不是 backdrop-filter）。
+ *   · filter 在卡片外、作用于真实页面内容 → 任何引擎/WebView 都成立（实测 backdrop-filter 在卡片内无效）
+ *   · 一次静态模糊，不逐帧采样 → 比 backdrop-filter 便宜
+ *   · 流畅模式（data-perf）不启用，保证省电与可读
+ */
+body.modal-open:not([data-perf]) .view,
+body.modal-open:not([data-perf]) #tabbar,
+body.modal-open:not([data-perf]) #railNav {
+  filter: blur(12px) saturate(1.5);
+  transition: filter var(--dur-dialog-in) var(--ease-dialog-in);
 }
