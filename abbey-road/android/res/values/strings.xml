@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Abbey Road</string>
+    <string name="widget_head_desc">今日：日期、周次、今天几节课</string>
+    <string name="widget_next_desc">下一节课：课程、时间、地点与倒计时</string>
+    <string name="widget_today_desc">今日课程清单（最多 4 条）</string>
+    <string name="widget_week_desc">本周迷你课表：一周 7 天色块总览</string>
+    <string name="widget_shortcuts_desc">快捷入口：今日 / 周表 / 导入 / 设置</string>
+    <string name="widget_head_name">Abbey Road · 今日头</string>
+    <string name="widget_next_name">Abbey Road · 下一节课</string>
+    <string name="widget_today_name">Abbey Road · 今日课程</string>
+    <string name="widget_week_name">Abbey Road · 本周课表</string>
+    <string name="widget_shortcuts_name">Abbey Road · 快捷入口</string>
+</resources>
