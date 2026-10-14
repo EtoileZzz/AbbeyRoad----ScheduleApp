@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg_screen">#0E1116</color>
+    <color name="accent">#7AA5F6</color>
+    <!-- 桌面卡片（深色） -->
+    <color name="widget_bg">#161A21</color>
+    <color name="widget_chip">#232833</color>
+    <color name="widget_stroke">#33FFFFFF</color>
+    <color name="widget_title">#E8EAF0</color>
+    <color name="widget_text">#A8AFBF</color>
+    <color name="widget_dim">#767E90</color>
+    <color name="widget_slot">#20242D</color>
+</resources>

@@ -1,0 +1,30 @@
+# ── 交付产物（不进库） ──────────────────────────────────────
+*.apk
+*.idsig
+*.exe
+*.zip
+
+# ── 旧版本归档 ─────────────────────────────────────────────
+_legacy/
+
+# ── 打包工作区（钥匙副本 / 中间产物，一律不进库） ─────────────
+_build/
+
+# ── 构建产物（源码在 abbey-road/ 下，构建也在那里） ──────────
+abbey-road/dist/
+abbey-road/build/
+android/build/
+windows/build/
+android/assets/
+
+# ── 本地私有配置（签名口令 / 本机工具链路径） ────────────────
+build.local.ps1
+*.keystore
+*.jks
+
+# ── 编辑器 / 系统 ──────────────────────────────────────────
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
+*.log
