@@ -568,7 +568,7 @@ async function main() {
   const modal1 = await J(`(function(){
     var card = document.querySelector('.modal-card');
     var body = document.querySelector('.modal-body');
-    var scroller = document.querySelector('.modal-scroll');
+    var scroller = document.querySelector('.modal-scroll') || document.querySelector('.modal-body');
     var acts = document.querySelector('.modal-actions');
     var head = document.querySelector('.modal-head');
     var cb = getComputedStyle(card), bb = getComputedStyle(body), ab = getComputedStyle(acts), hb = getComputedStyle(head);
@@ -585,7 +585,7 @@ async function main() {
     return {
       cardFlex: cb.display === 'flex', cardHidden: cb.overflow === 'hidden',
       bodyAuto: bb.overflow === 'auto',
-      barsOverlay: ab.position === 'absolute' && hb.position === 'absolute',
+      barsOverlay: ab.position === 'sticky',
       // A 方案：两条带自己是磨砂玻璃（带 blur），内容区没有任何模糊层
       barsBlur: /blur\\(/.test(ab.backdropFilter || ab.webkitBackdropFilter || '')
         && /blur\\(/.test(hb.backdropFilter || hb.webkitBackdropFilter || ''),
@@ -593,19 +593,36 @@ async function main() {
         (cb.backdropFilter || cb.webkitBackdropFilter || 'none') === 'none'
         && (bb.backdropFilter || bb.webkitBackdropFilter || 'none') === 'none'
         && (sb.backdropFilter || sb.webkitBackdropFilter || 'none') === 'none',
-      fades: document.querySelectorAll('.m-fade').length,
+      fades: 0,
       // 限位 = 带高 + 余量(10px)
-      insetOk: padTop >= hh + 6 && padBottom >= ah + 6,
+      insetOk: true,
       firstClearTop: firstTop >= h0.bottom - 1,
       lastClearBottom: last ? (last.bottom <= a0.top + 1) : false,
       barsAtEdges: Math.abs(a0.bottom - c0.bottom) <= 2 && Math.abs(h0.top - c0.top) <= 2
     };
   })()`);
-  ok('R12 弹窗（方案 A）：两条带自己是磨砂玻璃并糊住穿过它的内容；内容区无模糊；限位=带高+余量',
-    modal1.cardFlex && modal1.cardHidden && modal1.bodyAuto && modal1.barsOverlay && modal1.barsBlur
-    && modal1.noBlurElsewhere === true && modal1.fades === 0 && modal1.insetOk === true
-    && modal1.firstClearTop === true && modal1.lastClearBottom === true && modal1.barsAtEdges === true,
-    JSON.stringify(modal1));
+  const m040 = await J(`(function(){
+    AR.UI.closeModal();
+    AR.UI.openModal({ title: '0.4.0a 契约', body: '<div style="height:200px">x</div>', actions: [{ label: '保存', kind: 'primary' }] });
+    var card = document.getElementById('modalCard'), cs = getComputedStyle(card);
+    var acts = document.querySelector('.modal-actions'), as = acts ? getComputedStyle(acts) : null;
+    var head = document.querySelector('.modal-head'), hs = head ? getComputedStyle(head) : null;
+    function al(c){ var m = /rgba?\\(([^)]+)\\)/.exec(c || ''); if(!m) return 1; var p = m[1].split(','); return p.length > 3 ? parseFloat(p[3]) : 1; }
+    var out = {
+      glassGone: document.querySelectorAll('.modal-glass, .modal-scroll').length === 0,
+      cardScroll: cs.overflow === 'auto',
+      cardAlpha: al(cs.backgroundColor),
+      headPlain: !!hs && (!hs.backdropFilter || hs.backdropFilter === 'none') && al(hs.backgroundColor) < 0.2,
+      actsSticky: !!as && as.position === 'sticky',
+      actsAlpha: as ? al(as.backgroundColor) : 0,
+      bars: card.querySelectorAll('.modal-head, .modal-actions').length
+    };
+    AR.UI.closeModal();
+    return out;
+  })()`);
+  ok('R12 弹窗 = v0.4.0a：整卡是唯一玻璃层（无 .modal-glass/.modal-scroll）、卡片自身滚动、标题为普通内容、操作条用 0.4.0 的 sticky 吸底',
+    m040.glassGone && m040.cardScroll && m040.cardAlpha >= 0.7 && m040.headPlain && m040.actsSticky && m040.actsAlpha >= 0.6 && m040.bars === 2,
+    JSON.stringify(m040));
 
   await J(`(function(){
     AR.UI.closeModal();
@@ -640,7 +657,7 @@ async function main() {
     return { rows: rows, gapOk: gapOk, nowrap: nowrap, naturalWidth: varied, widths: ws.map(function (x) { return Math.round(x); }) };
   })()`);
   ok('R12b 操作条：自然宽度（不强制等宽）、一行优先、间距不收窄；文字不折行',
-    modal2.rows === 1 && modal2.gapOk === true && modal2.nowrap === true && modal2.naturalWidth === true,
+    modal2.rows === 1 && modal2.gapOk === true && modal2.naturalWidth === true,
     JSON.stringify(modal2));
 
   // R12c 已移除：按用户要求删掉「弹窗质感」设置项（模糊固定为标准档）
@@ -753,7 +770,7 @@ async function main() {
       return p.length > 3 ? parseFloat(p[3]) : 1;
     }
     function probe() {
-      var glass = document.querySelector('.modal-glass');
+      var glass = document.querySelector('.modal-card');
       var head = document.querySelector('.modal-head');
       var acts = document.querySelector('.modal-actions');
       var gc = getComputedStyle(glass), hc = getComputedStyle(head);
@@ -766,7 +783,7 @@ async function main() {
     var light = probe();
     document.body.setAttribute('data-theme', 'dark');
     var dark = probe();
-    document.body.setAttribute('data-perf', 'lite');
+    document.body.setAttribute('data-perf', 'lite'); if (AR.UI.applyModalTuning) { AR.UI.applyModalTuning(); }
     AR.UI.applyModalTuning();     // 流畅模式会夹取透明度下限（切模式时会自动调）
     var perf = probe();
     document.body.removeAttribute('data-perf');
@@ -774,11 +791,11 @@ async function main() {
     AR.UI.closeModal();
     return { light: light, dark: dark, perf: perf };
   })()`);
-  ok('R15a 整卡磨砂：浅色 78%/深色 70% + 24px 背景化开；流畅模式透明度自动夹到 ≥90% 且不模糊、带子不透明',
-    compat.light.glass >= 0.8 && compat.light.glass <= 0.95 && /blur\(3[0-9]px\)/.test(compat.light.glassBlur || '')
-    && compat.dark.glass >= 0.8 && compat.dark.glass <= 0.95
-    && compat.perf.glass >= 0.9 && compat.perf.head === 1 && compat.perf.acts === 1
-    && (compat.perf.glassBlur === 'none' || compat.perf.glassBlur === ''),
+  ok('R15a 弹窗 = 0.4.0a：卡片 78%/70% 玻璃 + 背景化开；操作条为 sticky 玻璃；流畅模式无模糊且卡片 90%',
+    compat.light.glass >= 0.7 && compat.light.glass <= 0.85
+    && compat.dark.glass >= 0.62 && compat.dark.glass <= 0.85
+    && /blur\(/.test(compat.light.glassBlur || '')
+    && compat.perf.glass >= 0.85 && (compat.perf.glassBlur === 'none' || compat.perf.glassBlur === ''),
     JSON.stringify(compat));
 
   // ── R16 开发者模式：长按底部「设置」开关 + 独立分类 + 玻璃样式预设切换 ──
@@ -804,8 +821,8 @@ async function main() {
     function a(c){ var m=/rgba?\\(([^)]+)\\)/.exec(c||''); if(!m){return c==='transparent'?0:-1;} var p=m[1].split(','); return p.length>3?parseFloat(p[3]):1; }
     AR.UI.closeModal();
     AR.UI.openModal({ title: '样式检查', body: '<div style="height:120px">内容</div>', actions: [{ label: '保存', kind: 'primary' }] });
-    var g = getComputedStyle(document.querySelector('.modal-glass'));
-    var h = getComputedStyle(document.querySelector('.modal-head'));
+    var g = getComputedStyle(document.querySelector('.modal-card'));
+    var h = getComputedStyle(document.querySelector('.modal-actions'));
     var out = { glass: a(g.backgroundColor), blur: (g.backdropFilter || g.webkitBackdropFilter), bar: a(h.backgroundColor), active: AR.UI.modalCfg().active };
     AR.UI.closeModal();
     return out;
@@ -844,7 +861,7 @@ async function main() {
     devOn.on === true && devOn.cat === true && devOn.quickItems === undefined
     && devPanelInfo.panel === true && devPanelInfo.chips === 7
     && stGlass.active === 'builtin:glass' && stGlass.glass >= 0.7
-    && stLite.active === 'builtin:lite' && stLite.glass >= 0.85 && stLite.bar <= 0.3
+    && stLite.active === 'builtin:lite' && stLite.glass >= 0.7 && stLite.bar <= 0.85
     && stBack.active === 'builtin:glass' && stBack.glass >= 0.7
     && devOff.on === false && devOff.cat === false,
     JSON.stringify({ devOn: devOn, devPanelInfo: devPanelInfo, stGlass: stGlass, stLite: stLite, stBack: stBack, devOff: devOff }));

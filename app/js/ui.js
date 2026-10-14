@@ -4709,24 +4709,15 @@ var AR = window.AR || (window.AR = {});
     // 表单类弹窗（课程编辑）要宽一点，普通弹窗保持窄卡片
     card.classList[opts.wide ? 'add' : 'remove']('modal-wide');
     card.innerHTML = '';
-    // v0.4.1b：整块磨砂玻璃层（糊弹窗背后的页面）。卡片本身不加 backdrop-filter，见 app.css 注释。
-    card.appendChild(el('<i class="modal-glass"></i>'));
     var head = el('<div class="modal-head"><div><h3 class="modal-title">' + U.escapeHtml(opts.title || '') + '</h3>'
       + (opts.sub ? '<p class="modal-sub">' + U.escapeHtml(opts.sub) + '</p>' : '') + '</div>'
       + '<button class="modal-close" type="button">✕</button></div>');
     head.querySelector('.modal-close').addEventListener('click', closeModal);
     card.appendChild(head);
-    /**
-     * v0.4.1：内容区外面只套一层 .modal-scroll。
-     * 模糊**只由两条带自己**负责（它们是磨砂玻璃，内容从下面滚过被糊开），
-     * 内容区里不放任何模糊层 —— 那样会让顶部/底部的行"始终"处在模糊区。
-     */
-    var scroller = el('<div class="modal-scroll"></div>');
     var bodyNode = el('<div class="modal-body"></div>');
     if (typeof opts.body === 'string') { bodyNode.innerHTML = opts.body; }
     else if (opts.body) { bodyNode.appendChild(opts.body); }
-    scroller.appendChild(bodyNode);
-    card.appendChild(scroller);
+    card.appendChild(bodyNode);
     var actions = null;
     /**
      * v0.4.1c（用户定稿）：
@@ -4753,31 +4744,6 @@ var AR = window.AR || (window.AR = {});
       card.appendChild(actions);
     }
     root.hidden = false;
-    /**
-     * v0.4.1：两条带是覆盖层，内容从下面穿过 —— 所以必须**按带子的边缘自动加限位**：
-     *   限位 = 带高 + 四层渐变总高(37px) + 余量(8px)
-     * 这样滚到最顶/最底时，首行、末行落在渐变带之外：清晰、也点得到。
-     * 边量边写进 CSS 变量，按钮换行 / 安全区变化都用 ResizeObserver 跟上。
-     */
-    var FADE_H = 0, EXTRA = 10;
-    var measureBars = function () {
-      try {
-        var hh = head.offsetHeight || 0;
-        var ah = actions ? (actions.offsetHeight || 0) : 0;
-        card.style.setProperty('--m-head-h', hh + 'px');
-        card.style.setProperty('--m-acts-h', ah + 'px');
-        card.style.setProperty('--m-pad-top', (hh + FADE_H + EXTRA) + 'px');
-        card.style.setProperty('--m-pad-bottom', (ah + FADE_H + EXTRA) + 'px');
-      } catch (e) { }
-    };
-    measureBars();
-    if (typeof requestAnimationFrame === 'function') { requestAnimationFrame(measureBars); }
-    if (typeof ResizeObserver === 'function') {
-      if (modalBarsRO) { try { modalBarsRO.disconnect(); } catch (e) { } }
-      modalBarsRO = new ResizeObserver(measureBars);
-      modalBarsRO.observe(head);
-      if (actions) { modalBarsRO.observe(actions); }
-    }
     /**
      * v0.2.0 修复：弹窗内容永远是原地替换（同一张卡片），
      * 所以栈里只能留最后一个 —— 之前从「课程详情」再开「设置颜色」时，
@@ -8081,7 +8047,7 @@ var AR = window.AR || (window.AR = {});
    */
   var MODAL_BUILTIN = [
     { k: 'glass', name: '整卡磨砂', desc: '0.4.0 的整块玻璃（默认）',
-      cardA: .85, cardAD: .85, barA: .12, barAD: .14, cardBlur: 30, barBlur: 30, sat: 1.5 },
+      cardA: .78, cardAD: .70, barA: .78, barAD: .70, cardBlur: null, barBlur: 0, sat: 1.5 },
     { k: 'airy', name: '更透更糊', desc: '更透、模糊更重',
       cardA: .68, cardAD: .62, barA: .68, barAD: .62, cardBlur: 32, barBlur: 32, sat: 1.6 },
     { k: 'lite', name: '轻量', desc: '省电：卡片实底 + 带子淡玻璃',
@@ -8144,11 +8110,17 @@ var AR = window.AR || (window.AR = {});
     var bs = document.body.style;
     bs.setProperty('--modal-card-a', String(cardA));
     bs.setProperty('--modal-card-a-d', String(cardAD));
-    bs.setProperty('--modal-bar-a', String(barA));
-    bs.setProperty('--modal-bar-a-d', String(barAD));
     bs.setProperty('--modal-card-blur', (Number(st.cardBlur) || 0) + 'px');
-    bs.setProperty('--modal-bar-blur', (Number(st.barBlur) || 0) + 'px');
     bs.setProperty('--modal-sat', String(st.sat == null ? 1.5 : st.sat));
+    /* 内联再写一次：预设 / 流畅模式的透明度与模糊必须真正落到卡片上（样式表变量在部分渲染路径下量不到） */
+    var modalCardEl = document.getElementById('modalCard');
+    if (modalCardEl) {
+      var isDarkTheme = document.body.getAttribute('data-theme') === 'dark';
+      modalCardEl.style.background = isDarkTheme ? ('rgba(28, 33, 43, ' + cardAD + ')') : ('rgba(255, 255, 255, ' + cardA + ')');
+      var cbv = st.cardBlur;
+      modalCardEl.style.backdropFilter = (cbv == null ? '' : (Number(cbv) > 0 ? ('blur(' + Number(cbv) + 'px) saturate(' + (st.sat == null ? 1.5 : st.sat) + ')') : 'none'));
+      modalCardEl.style.webkitBackdropFilter = modalCardEl.style.backdropFilter;
+    }
   }
 
   /** 把当前样式写进 body 变量（CSS 直接吃）；启动与开发者面板改动时都调 */
