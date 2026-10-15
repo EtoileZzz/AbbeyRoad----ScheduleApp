@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<!-- user-scalable=no：WebView 里 setSupportZoom(false) 只挡了系统级缩放，
+     双指捏合仍然会让整个界面被放大，这里再从 viewport 上关掉一次。 -->
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Abbey Road · 课表与日程</title>
+<link rel="stylesheet" href="css/tokens.css?v=0.4.2">
+<link rel="stylesheet" href="css/app.css?v=0.4.2">
+</head>
+<body data-theme="light" data-platform="web" data-preset="dual-horizontal" data-focus="off">
+
+<!-- 背景装饰：柔光斑，让毛玻璃有层次可模糊 -->
+<div class="backdrop" aria-hidden="true">
+  <span class="blob blob-a"></span>
+  <span class="blob blob-b"></span>
+  <span class="blob blob-c"></span>
+</div>
+
+<div class="app" id="app">
+
+  <!-- ── 左侧 Rail（Windows / 宽屏） ───────────────────────────── -->
+  <aside class="rail glass" id="rail">
+    <div class="brand">
+      <span class="brand-mark" aria-label="Abbey Road"></span>
+      <span class="brand-text">Abbey Road</span>
+    </div>
+    <nav class="rail-nav" id="railNav">
+      <button class="nav-btn" data-nav="today" type="button"><i class="ico ico-today"></i><span>今日</span></button>
+      <button class="nav-btn" data-nav="week" type="button"><i class="ico ico-week"></i><span>周表</span></button>
+      <button class="nav-btn" data-nav="import" type="button"><i class="ico ico-import"></i><span>导入</span></button>
+        <button class="nav-btn" data-nav="settings" type="button"><i class="ico ico-settings"></i><span>设置</span></button>
+      </nav>
+      <div class="rail-foot">
+      <span id="railWeekInfo">—</span>
+      <span class="muted" id="railVersion">v0.1.7</span>
+    </div>
+  </aside>
+
+  <!-- ── 主区域 ──────────────────────────────────────────────── -->
+  <main class="main" id="main">
+
+    <!-- 今日 -->
+    <section class="view" id="view-today" data-view="today">
+      <header class="view-head today-head">
+        <!-- 左列：「今日 + 时间」同一行，下面一行副标题；右上角竖排三个日期切换按钮 -->
+        <div class="today-head-main">
+          <div class="today-head-top">
+            <h1 class="view-title" id="todayTitle">今日</h1>
+            <div class="clock-box">
+              <span class="clock-time" id="todayClock">--:--</span>
+              <span class="clock-date" id="todayClockDate"></span>
+            </div>
+          </div>
+          <p class="view-sub" id="todaySub">—</p>
+        </div>
+        <!-- 日期切换：窄屏（直板机）只留两个箭头 + 「今天」，三个按钮永远待在标题右边，
+             不再被挤到标题下面另起一行；宽屏才把「前一天 / 后一天」的文字显示出来 -->
+        <div class="head-right today-day-nav">
+          <button class="chip-btn dnav-btn dnav-prev" id="btnPrevDay" type="button"
+                  title="前一天" aria-label="前一天"><span class="dnav-ico" aria-hidden="true"></span><span class="dnav-txt">前一天</span></button>
+          <button class="chip-btn dnav-btn dnav-center" id="btnToday" type="button"
+                  title="回到今天" aria-label="回到今天"><span class="dnav-txt">今天</span></button>
+          <button class="chip-btn dnav-btn dnav-next" id="btnNextDay" type="button"
+                  title="后一天" aria-label="后一天"><span class="dnav-txt">后一天</span><span class="dnav-ico" aria-hidden="true"></span></button>
+        </div>
+      </header>
+
+      <div class="layout" id="todayLayout">
+        <!-- 本周概览 -->
+        <section class="zone zone-week" id="zoneWeek">
+          <!-- 毛玻璃独立一层：动画时只移动不改尺寸，模糊只算一次 -->
+          <div class="zone-glass" aria-hidden="true"></div>
+          <!-- 内容和栏框分开：聚焦放大时内容整层按"最终尺寸"排版好，
+               栏框从旧矩形长到新矩形，内容只被裁剪、不跟着重排 -->
+          <div class="zone-inner">
+            <header class="zone-head">
+              <h2 class="zone-title">本周概览</h2>
+              <div class="zone-head-right">
+                <span class="zone-badge" id="weekBadge">—</span>
+                <button class="zone-toggle" data-zone-toggle="week" type="button" title="展开本周">⤢</button>
+              </div>
+            </header>
+            <div class="zone-body scroll" id="weekBody"></div>
+          </div>
+        </section>
+
+        <!-- 今日时间线 -->
+        <section class="zone zone-today" id="zoneToday">
+          <div class="zone-glass" aria-hidden="true"></div>
+          <div class="zone-inner">
+            <header class="zone-head">
+              <h2 class="zone-title">今日日程</h2>
+              <div class="zone-head-right">
+                <span class="zone-badge" id="todayBadge">—</span>
+                <button class="zone-toggle" data-zone-toggle="today" type="button" title="展开今日">⤢</button>
+              </div>
+            </header>
+            <div class="zone-body scroll" id="todayBody"></div>
+          </div>
+        </section>
+
+        <!-- 最近的课 -->
+        <section class="zone zone-next" id="zoneNext" tabindex="0" role="button"
+                 aria-label="查看最近的课程详情">
+          <div class="zone-glass" aria-hidden="true"></div>
+          <div class="zone-inner">
+            <header class="zone-head">
+              <h2 class="zone-title">最近的课</h2>
+              <div class="zone-head-right">
+                <span class="zone-badge" id="nextBadge">—</span>
+                <button class="zone-toggle" data-zone-toggle="next" type="button" title="展开详情">⤢</button>
+              </div>
+            </header>
+            <div class="zone-body scroll" id="nextBody"></div>
+          </div>
+        </section>
+
+      </div>
+    </section>
+
+    <!-- 周表 -->
+    <section class="view" id="view-week" data-view="week" hidden>
+      <header class="view-head">
+        <div class="head-left">
+          <h1 class="view-title">周表</h1>
+          <p class="view-sub" id="weekSub">—</p>
+        </div>
+        <div class="head-right">
+          <button class="chip-btn" id="btnDayShift" type="button" title="把某一天的课搬到 / 复制到另一天">调休</button>
+          <button class="chip-btn" id="btnConflicts" type="button" title="查看时间冲突">冲突 <span class="zone-badge" id="conflictCount">0</span></button>
+          <button class="chip-btn sem-btn" id="weekSemBtn" type="button" title="切换学期">我的学期</button>
+          <button class="chip-btn" id="btnPrevWeek" type="button">‹ 上一周</button>
+          <button class="chip-btn" id="btnThisWeek" type="button">本周</button>
+          <button class="chip-btn" id="btnNextWeek" type="button">下一周 ›</button>
+        </div>
+      </header>
+      <!-- 周视图/月视图 + 周次快切：挤在一行里，把纵向空间让给课表 -->
+      <div class="week-bar">
+        <div class="segmented seg-compact" id="weekMode">
+          <button class="seg active" type="button" data-mode="week">周视图</button>
+          <button class="seg" type="button" data-mode="month">月视图</button>
+        </div>
+        <div class="week-strip glass" id="weekStrip"></div>
+      </div>
+      <div class="glass panel week-panel">
+        <div class="week-grid-wrap scroll-x" id="weekGridWrap"></div>
+      </div>
+    </section>
+
+    <!-- 导入 -->
+    <section class="view" id="view-import" data-view="import" hidden>
+      <header class="view-head">
+        <div class="head-left">
+          <h1 class="view-title">导入</h1>
+          <p class="view-sub">用手机上的 AI（DeepSeek / 豆包）整理课表，或直接导入配置文件</p>
+        </div>
+      </header>
+
+      <div class="pane-scroll">
+      <div class="glass panel tabs-panel">
+        <!-- 第一行：导入课表的两步流程（带序号、加粗）；第二行：另外两个入口 -->
+        <div class="segmented" id="importTabs">
+          <button class="seg seg-step" data-tab="prompt" type="button"><b>1</b> 提示词</button>
+          <button class="seg seg-step" data-tab="md" type="button"><b>2</b> 课表文本</button>
+        </div>
+        <!-- 第二行：「手动导入」一个按钮，点开是「手动添加 / 配置文件」两个小按钮（子菜单） -->
+        <div class="sub-nav" id="importSubNav">
+          <button class="sub-nav-btn" id="btnSubNav" type="button" aria-haspopup="true" aria-expanded="false">
+            <span class="sub-nav-label" id="subNavLabel">手动导入</span>
+            <span class="sub-nav-caret" aria-hidden="true">▾</span>
+          </button>
+          <div class="sub-menu" id="importSubMenu" hidden>
+            <button class="sub-menu-item seg" data-tab="manual" type="button">手动添加</button>
+            <button class="sub-menu-item seg" data-tab="json" type="button">配置文件</button>
+          </div>
+        </div>
+
+        <!-- 提示词 -->
+        <div class="tab-body" data-tab-body="prompt">
+          <ol class="steps">
+            <li>点下面的「复制提示词」。</li>
+            <li>打开 DeepSeek / 豆包，粘贴提示词，把课表截图一起发给它。</li>
+            <li>复制 AI 的完整回复，回到这里选「粘贴 AI 结果」。</li>
+          </ol>
+          <div class="row gap">
+            <button class="btn primary" id="btnCopyPrompt" type="button">复制提示词</button>
+            <button class="btn" id="btnSharePrompt" type="button">分享到 AI 应用</button>
+            <span class="muted" id="promptVersion"></span>
+          </div>
+          <details class="fold">
+            <summary>预览提示词内容</summary>
+            <pre class="code" id="promptPreview"></pre>
+          </details>
+        </div>
+
+        <!-- 课表文本（AI 整理结果粘贴区） -->
+        <div class="tab-body" data-tab-body="md" hidden>
+          <div class="opt-grid">
+            <div class="field"><label class="field-label">学期名称</label>
+              <input class="input" id="optSemName" placeholder="留空则用当前学期"></div>
+            <div class="field"><label class="field-label">开学第一周周一</label>
+              <input class="input" id="optSemStart" type="date"></div>
+            <div class="field"><label class="field-label">总周数</label>
+              <input class="input" id="optSemWeeks" type="number" min="1" max="30" value="20"></div>
+            <div class="field"><label class="field-label">文本没写单双周时按</label>
+              <span class="pick-slot" data-pick="optParity"></span></div>
+          </div>
+          <div class="scroll-hint">↓ 继续下滑，把 AI 整理好的课表文本粘贴到下面的输入框</div>
+          <div class="fmt-hint">一行一门课，字段用全角 ｜ 分隔（半角 | 也认）：
+课程名 ｜ 星期 ｜ 节次 ｜ 周次 ｜ 地点 ｜ 老师 ｜ 备注
+例：高等数学 ｜ 周一 ｜ 1-2 ｜ 1-16 ｜ XX大学 信息楼305 ｜ 张三 ｜ 需带教材
+缺的字段直接空着或用 - ，顺序不能乱；调课另起一行：调课 ｜ 高等数学 ｜ 2026-10-08 ｜ 周四 ｜ 1-2 ｜ XX大学信息楼201 ｜ 国庆调休</div>
+          <div class="row gap">
+            <button class="btn" id="btnPickMd" type="button">选择 .md / .txt 文件</button>
+            <button class="btn" id="btnDemoMd" type="button">填入示例文本</button>
+            <button class="btn" id="btnClearMd" type="button">清空</button>
+          </div>
+          <textarea class="input code-area" id="mdInput" rows="10"
+            placeholder="把 AI 整理好的课表文本粘贴到这里（一行一门课）…"></textarea>
+          <div class="parse-summary" id="mdSummary"></div>
+          <div class="parse-issues" id="mdIssues"></div>
+          <div class="parse-preview" id="mdPreview"></div>
+          <!-- 给右下角悬浮按钮留出空间，长内容不会被挡住 -->
+          <div class="fab-space"></div>
+        </div>
+
+        <!-- 配置文件（本地 JSON 文件，手机 / 电脑手动同步用） -->
+        <div class="tab-body" data-tab-body="json" hidden>
+          <p class="muted">
+            配置文件就是 App 自己的数据（.json / .txt）。用法和「课表文本」一模一样：
+            这里复制走 → 在另一台设备整段粘回来 → 点右下角「合并导入」。
+          </p>
+          <p class="muted">
+            换手机最省事的走法：点「复制配置文本」发到微信「文件传输助手」（或点「导出到微信」发文件），
+            在新手机上复制那段文字，粘到下面就能导入；也可以用「选择 .json / .txt 文件」或
+            「从导出目录导入」。
+          </p>
+          <div class="row gap">
+            <button class="btn primary" id="btnCopyJson" type="button">复制配置文本</button>
+            <button class="btn" id="btnExportJson" type="button">导出为文件</button>
+            <button class="btn" id="btnExportWechat" type="button">导出到微信</button>
+            <button class="btn" id="btnImportJson" type="button">选择 .json / .txt 文件</button>
+            <button class="btn" id="btnImportFromExports" type="button">从导出目录导入</button>
+          </div>
+          <div class="scroll-hint">↓ 继续下滑，把配置内容整段粘贴到下面的输入框（粘贴完自动解析）</div>
+          <div class="fmt-hint">配置内容形如：{"kind":"abbeyroad.sync", …}
+整段复制 / 粘贴即可，内容里换行、缩进乱掉都没关系；粘错成课表文本时会自动转到「课表文本」页。</div>
+          <div class="row gap">
+            <button class="btn" id="btnApplyJsonText" type="button">解析并预览</button>
+            <button class="btn" id="btnClearJson" type="button">清空</button>
+          </div>
+          <textarea class="input code-area" id="jsonInput" rows="10"
+            placeholder='把配置内容整段粘贴到这里，例如：{"kind":"abbeyroad.sync", …}'></textarea>
+          <div class="parse-summary" id="jsonSummary"></div>
+          <div class="parse-issues" id="jsonIssues"></div>
+          <!-- 给右下角悬浮按钮留出空间 -->
+          <div class="fab-space"></div>
+        </div>
+
+        <!-- 手动添加：一门课 / 一个特殊事件 -->
+        <div class="tab-body" data-tab-body="manual" hidden>
+          <h3 class="sub-title">添加一门课</h3>
+          <div class="opt-grid">
+            <div class="field"><label class="field-label">课程名 *</label>
+              <input class="input" id="manName" placeholder="例如：高等数学"></div>
+            <div class="field"><label class="field-label">星期 *</label>
+              <span class="pick-slot" data-pick="manWeekday"></span></div>
+            <div class="field"><label class="field-label">节次 *</label>
+              <div class="row gap" style="align-items:center">
+                <span class="pick-slot" data-pick="manPeriodStart"></span>
+                <span class="muted">到</span>
+                <span class="pick-slot" data-pick="manPeriodEnd"></span>
+              </div></div>
+            <div class="field"><label class="field-label">周次 *</label>
+              <input class="input" id="manWeeks" value="1-16" placeholder="1-16 / 单周 / 双周 / 全周"></div>
+            <div class="field"><label class="field-label">地点</label>
+              <input class="input" id="manPlace" placeholder="XX大学 信息楼305"></div>
+            <div class="field"><label class="field-label">老师</label>
+              <input class="input" id="manTeacher" placeholder="张三"></div>
+            <div class="field"><label class="field-label">备注</label>
+              <input class="input" id="manNote" placeholder="需带教材"></div>
+            <div class="field"><label class="field-label">颜色</label>
+              <span class="pick-slot" data-pick="manColor"></span></div>
+          </div>
+          <div class="row gap" style="align-items:center">
+            <button class="btn primary" id="btnManualAdd" type="button">添加到课表</button>
+            <span class="muted">同名课程会合并成同一门，并统一颜色</span>
+          </div>
+          <div class="parse-issues" id="manIssues"></div>
+
+          <h3 class="sub-title" style="margin-top:20px">添加特殊事件（考试 / 讲座 / 活动）</h3>
+          <div class="opt-grid">
+            <div class="field"><label class="field-label">类型</label>
+              <span class="pick-slot" data-pick="evType"></span></div>
+            <div class="field"><label class="field-label">标题 *</label>
+              <input class="input" id="evTitle" placeholder="高等数学 期中考试"></div>
+            <div class="field"><label class="field-label">日期 *</label>
+              <input class="input" id="evDate" type="date"></div>
+            <div class="field"><label class="field-label">时间</label>
+              <div class="row gap" style="align-items:center">
+                <input class="input" id="evStart" type="time">
+                <span class="muted">到</span>
+                <input class="input" id="evEnd" type="time">
+              </div></div>
+            <div class="field"><label class="field-label">地点</label>
+              <input class="input" id="evPlace" placeholder="XX大学 信息楼305"></div>
+            <div class="field"><label class="field-label">备注</label>
+              <input class="input" id="evNote" placeholder="闭卷 / 带计算器"></div>
+          </div>
+          <div class="row gap" style="align-items:center">
+            <button class="btn primary" id="btnAddEvent" type="button">添加事件</button>
+            <span class="muted">事件会在「本周概览」和「周表」里用特殊颜色显示</span>
+          </div>
+          <div id="eventList" class="list" style="margin-top:10px"></div>
+        </div>
+      </div>
+      </div>
+
+      <!-- 「课表文本」页的悬浮应用按钮：始终钉在右下角，不用滚到底部才能点 -->
+      <button class="btn primary fab" id="btnApplyMd" type="button" disabled hidden>应用到课表</button>
+      <!-- 「配置文件」页的悬浮合并按钮：和上面那个同一个位置、同一套动效 -->
+      <button class="btn primary fab" id="btnApplyJson" type="button" disabled hidden>合并导入</button>
+    </section>
+
+    <!-- 自定义模块页（实验性：开发者选项开启后顶替「导入」标签） -->
+    <section class="view" id="view-custom" data-view="custom" hidden>
+      <header class="view-head">
+        <div class="head-left">
+          <h1 class="view-title">我的</h1>
+          <p class="view-sub">自由添加你的模块</p>
+        </div>
+        <div class="head-right">
+          <button class="chip-btn" id="btnCustomToImport" type="button" title="打开导入页">导入</button>
+        </div>
+      </header>
+      <div class="pane-scroll">
+        <div class="custom-modules" id="customModules"></div>
+      </div>
+    </section>
+
+    <!-- 设置 -->
+    <section class="view" id="view-settings" data-view="settings" hidden>
+      <header class="view-head">
+        <div class="head-left">
+          <h1 class="view-title">设置</h1>
+          <p class="view-sub">外观、布局、课表、提醒、导入、系统集成、数据、关于</p>
+        </div>
+      </header>
+      <div class="settings-shell">
+        <div class="settings-body" id="settingsBody">
+          <div class="settings-grid" id="settingsGrid"></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── 底部 Tab（手机） ────────────────────────────────────── -->
+  <nav class="tabbar glass" id="tabbar">
+    <button class="nav-btn" data-nav="today" type="button"><i class="ico ico-today"></i><span>今日</span></button>
+    <button class="nav-btn" data-nav="week" type="button"><i class="ico ico-week"></i><span>周表</span></button>
+    <button class="nav-btn" data-nav="import" type="button"><i class="ico ico-import"></i><span>导入</span></button>
+    <button class="nav-btn" data-nav="settings" type="button"><i class="ico ico-settings"></i><span>设置</span></button>
+  </nav>
+</div>
+
+<!-- 毛玻璃弹窗容器 -->
+<div class="modal-root" id="modalRoot" hidden>
+  <div class="modal-scrim" id="modalScrim"></div>
+  <div class="modal-card glass" id="modalCard" role="dialog" aria-modal="true"></div>
+</div>
+
+<!-- 首次启动引导 -->
+<div class="onboarding" id="onboarding" hidden>
+  <div class="ob-card glass" id="obCard"></div>
+</div>
+
+<div class="toast-host" id="toastHost"></div>
+
+<script src="js/core.js?v=0.4.2"></script>
+<script src="js/mdparse.js?v=0.4.2"></script>
+  <script src="js/bridge.js?v=0.4.2"></script>
+  <!-- 过渡动画注册表：ui.js 里的所有动效都从这里取参数（开发者模式可换样式） -->
+  <script src="js/motion.js?v=0.4.2"></script>
+  <!-- 课程配色：按文理/公共/体育/水课分色系（设置里可一键应用） -->
+  <script src="js/palette.js?v=0.4.2"></script>
+  <script src="js/ui.js?v=0.4.2"></script>
+<script src="js/widgetdata.js?v=0.4.2"></script>
+<script src="js/configio.js?v=0.4.2"></script>
+<script src="js/panels.js?v=0.4.2"></script>
+<script src="js/boot.js?v=0.4.2"></script>
+</body>
+</html>

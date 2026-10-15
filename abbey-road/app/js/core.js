@@ -1,0 +1,3140 @@
+/* ──────────────────────────────────────────────────────────────
+   Abbey Road · 核心逻辑（无 UI 依赖，可单独测试）
+   包含：工具函数 / 数据仓库 / 课表计算 / 地点解析 / 固定提示词
+   规则与《Abbey Road 产品与架构规划 v0.2.0》一致。
+   ────────────────────────────────────────────────────────────── */
+
+var AR = window.AR || (window.AR = {});
+
+(function () {
+  'use strict';
+
+var APP_VERSION = '0.4.2';
+  var SCHEMA_VERSION = 1;
+  var STORAGE_KEY = 'abbeyroad.state.v1';
+  var LAYOUT_KEY = 'abbeyroad.layout.v1';
+
+  /* ── 工具 ─────────────────────────────────────────────────── */
+
+  function uid() {
+    var t = Date.now().toString(36).toUpperCase();
+    var r = '';
+    var chars = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+    for (var i = 0; i < 10; i++) { r += chars.charAt(Math.floor(Math.random() * chars.length)); }
+    return t + r;
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+  function dateKey(d) { return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate()); }
+  function timeKey(d) { return pad2(d.getHours()) + ':' + pad2(d.getMinutes()); }
+
+  function parseDateKey(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || '');
+    if (!m) { return null; }
+    return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  }
+
+  function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+  function addDays(d, n) { var x = new Date(d.getTime()); x.setDate(x.getDate() + n); return x; }
+  function addMinutes(d, n) { return new Date(d.getTime() + n * 60000); }
+  function sameDay(a, b) { return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate(); }
+
+  /** 相差几天（只按自然日算，忽略时分秒；b 在未来为正数） */
+  function daysBetween(a, b) {
+    return Math.round((startOfDay(b).getTime() - startOfDay(a).getTime()) / 86400000);
+  }
+
+  /** 周一 = 1 … 周日 = 7 */
+  function weekdayOf(d) { return ((d.getDay() + 6) % 7) + 1; }
+
+  /** 取某天所在周的周一 */
+  function mondayOf(d) {
+    var x = startOfDay(d);
+    return addDays(x, 1 - weekdayOf(x));
+  }
+
+  function hmToMinutes(hm) {
+    var m = /^(\d{1,2}):(\d{2})$/.exec((hm || '').trim());
+    if (!m) { return null; }
+    return Number(m[1]) * 60 + Number(m[2]);
+  }
+
+  function minutesToHM(min) {
+    var m = ((min % 1440) + 1440) % 1440;
+    return pad2(Math.floor(m / 60)) + ':' + pad2(m % 60);
+  }
+
+  function clamp(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function deepCopy(o) { return JSON.parse(JSON.stringify(o)); }
+
+  function debounce(fn, ms) {
+    var t = null;
+    return function () {
+      var args = arguments, self = this;
+      if (t) { clearTimeout(t); }
+      t = setTimeout(function () { t = null; fn.apply(self, args); }, ms);
+    };
+  }
+
+  var WEEKDAY_NAMES = ['', '周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+
+  /* ── 常量 ─────────────────────────────────────────────────── */
+
+  var PALETTE = [
+    { key: 'blue',   hex: '#5B8DEF', name: '雾蓝' },
+    { key: 'green',  hex: '#2FB37A', name: '苔绿' },
+    { key: 'orange', hex: '#E8843C', name: '暖橙' },
+    { key: 'purple', hex: '#7C6EE6', name: '紫藤' },
+    { key: 'red',    hex: '#E5484D', name: '砖红' },
+    { key: 'teal',   hex: '#1FA8A0', name: '青碧' },
+    { key: 'amber',  hex: '#D9A22B', name: '琥珀' },
+    { key: 'pink',   hex: '#D9649B', name: '藕粉' },
+    { key: 'indigo', hex: '#4A6BE0', name: '靛蓝' },
+    { key: 'lime',   hex: '#6FA32B', name: '竹青' },
+    { key: 'brown',  hex: '#9A6B4F', name: '栗棕' },
+    { key: 'slate',  hex: '#5A6072', name: '石墨' }
+  ];
+
+  function colorHex(key) {
+    // 支持直接存自定义颜色（导入时由 AI 从原图识别出来的 #RRGGBB）
+    if (typeof key === 'string' && key.charAt(0) === '#') { return key; }
+    for (var i = 0; i < PALETTE.length; i++) { if (PALETTE[i].key === key) { return PALETTE[i].hex; } }
+    return PALETTE[0].hex;
+  }
+
+  /* ── 特殊事件（考试 / 讲座 / 活动）：不属于课表节次，单独一张表 ── */
+  var EVENT_TYPES = [
+    { key: 'exam', label: '考试', hex: '#E5484D', mark: '考' },
+    { key: 'lecture', label: '讲座', hex: '#7C6EE6', mark: '讲' },
+    { key: 'activity', label: '活动', hex: '#1FA8A0', mark: '活' },
+    { key: 'other', label: '其他', hex: '#D9A22B', mark: '事' }
+  ];
+
+  function eventType(key) {
+    var list = (state && Object.prototype.toString.call(state.types) === '[object Array]') ? state.types : [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].key === key && !list[i].deletedAt) { return list[i]; }
+    }
+    for (var j = 0; j < EVENT_TYPES.length; j++) { if (EVENT_TYPES[j].key === key) { return EVENT_TYPES[j]; } }
+    return EVENT_TYPES[EVENT_TYPES.length - 1];   // 无类型 / 未知 / 已删类型 → 「其他」
+  }
+
+  /**
+   * 日程类型（v0.4.0）：内置 考试/讲座/活动/其他 + 用户自建。
+   * state.types 每条与 EVENT_TYPES 同构 { key, label, hex, mark }，
+   * 所以老代码里 eventType(x).label / .hex 一行不用改。
+   */
+  function typeEnsure() {
+    if (!state) { return []; }
+    if (Object.prototype.toString.call(state.types) !== '[object Array]') { state.types = []; }
+    for (var i = 0; i < EVENT_TYPES.length; i++) {
+      var b = EVENT_TYPES[i], found = false;
+      for (var j = 0; j < state.types.length; j++) {
+        if (state.types[j].key === b.key) { found = true; break; }
+      }
+      if (!found) { state.types.push({ key: b.key, label: b.label, hex: b.hex, mark: b.mark, builtIn: true }); }
+    }
+    return state.types;
+  }
+  /** 还活着的类型（已删的进回收站，不参与显示；日程会自动退回「其他」） */
+  function typeList() { return liveOnly(typeEnsure()); }
+
+  /** 新建 / 改名 / 改色用户类型；key 不传 = 新建 */
+  function typeUpsert(patch) {
+    typeEnsure();
+    patch = patch || {};
+    var rec = null;
+    if (patch.key) {
+      for (var i = 0; i < state.types.length; i++) {
+        if (state.types[i].key === patch.key) { rec = state.types[i]; break; }
+      }
+    }
+    if (!rec) {
+      rec = { key: patch.key || uid(), label: '', hex: '#5B8DEF', mark: '事', custom: true };
+      state.types.push(rec);
+    }
+    if (patch.label != null) { rec.label = String(patch.label).slice(0, 12); rec.mark = rec.label.charAt(0) || '事'; }
+    if (patch.hex != null) { rec.hex = patch.hex; }
+    save(true);
+    return rec;
+  }
+
+  /**
+   * 删除用户类型（内置的删不掉）：软删除（进回收站）。
+   * 日程上的 type key **改成 'other' 之外一律不动** ——
+   * 这样恢复类型后，相关日程会自动回到这个类型（不用二次返工）。
+   */
+  function typeRemove(key) {
+    typeEnsure();
+    for (var i = 0; i < EVENT_TYPES.length; i++) { if (EVENT_TYPES[i].key === key) { return false; } }
+    var rec = null;
+    for (var j = 0; j < state.types.length; j++) {
+      if (state.types[j].key === key && !state.types[j].deletedAt) { rec = state.types[j]; }
+    }
+    if (!rec) { return false; }
+    softDelete('types', rec);
+    save(true);
+    return true;
+  }
+
+  /** 默认 12 节作息（可在设置里改） */
+  var OLD_PERIOD_TIMES = [
+    ['08:00', '08:45'], ['08:55', '09:40'], ['10:00', '10:45'], ['10:55', '11:40'],
+    ['14:00', '14:45'], ['14:55', '15:40'], ['16:00', '16:45'], ['16:55', '17:40'],
+    ['19:00', '19:45'], ['19:55', '20:40'], ['20:50', '21:35'], ['21:45', '22:30']
+  ];
+  function defaultPeriodTimes() {
+    return [
+      ['08:00', '08:45'], ['08:50', '09:35'], ['10:00', '10:45'], ['10:50', '11:35'],
+      ['13:30', '14:15'], ['14:20', '15:05'], ['15:30', '16:15'], ['16:20', '17:05'],
+      ['18:00', '18:45'], ['18:50', '19:35'], ['19:40', '20:25'], ['20:30', '22:00']
+    ];
+  }
+
+  function makePeriods(semesterId) {
+    var times = defaultPeriodTimes();
+    var out = [];
+    for (var i = 0; i < times.length; i++) {
+      out.push({
+        id: uid(), semesterId: semesterId, index: i + 1,
+        label: '第' + (i + 1) + '节', start: times[i][0], end: times[i][1],
+        updatedAt: new Date().toISOString()
+      });
+    }
+    return out;
+  }
+
+  /** 现有节次表是不是「上一版默认作息」（是的话升级时可以安全换成新默认） */
+  function isOldDefaultPeriods(periods) {
+    if (!periods || periods.length !== OLD_PERIOD_TIMES.length) { return false; }
+    var sorted = periods.slice().sort(function (a, b) { return a.index - b.index; });
+    for (var i = 0; i < sorted.length; i++) {
+      if (sorted[i].index !== i + 1) { return false; }
+      if (sorted[i].start !== OLD_PERIOD_TIMES[i][0]) { return false; }
+      if (sorted[i].end !== OLD_PERIOD_TIMES[i][1]) { return false; }
+    }
+    return true;
+  }
+
+  /* ── 固定提示词（与规划文档 §10 一致） ────────────────────── */
+
+  /* 自定义文本格式 AR-TXT v1：
+     一行一门课，字段用「全角竖线 ｜」分隔（半角 | 也认），
+     不依赖 Markdown 表格，复制粘贴时不会被对齐/换行搞坏。 */
+  var PROMPT_VERSION = 'ar-txt-1.1.0';
+  var FMT_SEP = '｜';
+  var FMT_HEADER = 'AbbeyRoad 课表 v1';
+  var PROMPT_TEXT = [
+    '把这张课表整理成下面的纯文本格式，直接输出文本，不要表格、不要解释。',
+    '',
+    FMT_HEADER,
+    '开学日期：2026-09-07',
+    '高等数学' + FMT_SEP + '周一' + FMT_SEP + '1-2' + FMT_SEP + '1-16' + FMT_SEP + 'XX大学 信息楼305' + FMT_SEP + '张三' + FMT_SEP + '需带教材' + FMT_SEP + '蓝',
+    '大学物理' + FMT_SEP + '周三' + FMT_SEP + '5-6' + FMT_SEP + '双周' + FMT_SEP + 'XX大学 物理楼101' + FMT_SEP + '李四' + FMT_SEP + '' + FMT_SEP + '橙',
+    '考试' + FMT_SEP + '高等数学 期中' + FMT_SEP + '2026-11-12' + FMT_SEP + '14:00-16:00' + FMT_SEP + 'XX大学 信息楼305' + FMT_SEP + '闭卷',
+    '',
+    '规则：',
+    '1. 第一行照抄「' + FMT_HEADER + '」，第二行写开学日期（不知道就写 ?）。',
+    '2. 每门课一行，字段顺序固定：课程名' + FMT_SEP + '星期' + FMT_SEP + '节次' + FMT_SEP + '周次' + FMT_SEP + '地点' + FMT_SEP + '老师' + FMT_SEP + '备注' + FMT_SEP + '颜色。',
+    '3. 字段之间用全角竖线 ' + FMT_SEP + ' 分隔（复制成半角 | 也没关系）；没有的字段留空，例如：英语' + FMT_SEP + '周五' + FMT_SEP + '3-4' + FMT_SEP + '1-16' + FMT_SEP + '文科楼401。',
+    '4. 星期写 周一…周日；节次写 1-2（连堂也这样写，两行相邻的 1-2 和 3-4 会自动合并）；周次写 1-16、单周、双周 或 全周。',
+    '5. 调课/停课另起一行：调课' + FMT_SEP + '课程名' + FMT_SEP + '2026-10-08' + FMT_SEP + '周四' + FMT_SEP + '1-2' + FMT_SEP + '新地点' + FMT_SEP + '原因；停课' + FMT_SEP + '课程名' + FMT_SEP + '2026-10-01。',
+    '6. 颜色：照着原图里这门课的颜色写（红/橙/黄/绿/青/蓝/紫/粉/棕/灰，或 #RRGGBB）。看不清就留空，App 会自动分配。',
+    '7. 考试、讲座、活动这类不在课表里的事件另起一行：类型（考试/讲座/活动）' + FMT_SEP + '标题' + FMT_SEP
+      + '日期(YYYY-MM-DD)' + FMT_SEP + '时间(14:00-16:00，可空)' + FMT_SEP + '地点' + FMT_SEP + '备注。',
+    '8. 不要输出表格、不要输出解释、不要编造看不清的内容（写 ? 即可）。'
+  ].join('\n');
+
+  /* ── 数据仓库 ─────────────────────────────────────────────── */
+
+  function defaultSettings(semesterId) {
+    return {
+      appearance: {
+        theme: 'system', accent: '#5B8DEF', glassLevel: 'medium',
+        animationSpeed: 1,
+        /** 流畅模式：full 关闭（全效果）/ lite 标准（砍光效）/ min 深度（再砍 3D 与错峰） */
+        perfMode: 'full'
+      },
+      /**
+       * leftHand：左手模式。「左右」布局下把两栏对调
+       * （「最近的课」挪到左边，本周概览 + 今日日程 挪到右边），
+       * 让常用的大卡片落在左手拇指够得到的那一侧。
+       */
+      layout: { preset: 'dual-horizontal', followDeviceSuggestion: true, leftHand: false },
+      schedule: { currentSemesterId: semesterId, weekStartDay: 1, autoMergeConsecutive: 'auto' },
+      /**
+       * 「最近的课」按离上课时间切状态色（全部可在设置里改）：
+       *   near = 距上课 ≤ nearMin 分钟（默认 15，红色 + 加粗边框）
+       *   soon = 距上课 ≤ soonMin 分钟（默认 30，黄色 + 加粗边框）
+       *   live = 正在上课（蓝色 + 加粗边框）
+       *   其它情况保持课程自己的颜色、边框不加粗
+       */
+      nextAlert: {
+        enabled: true, nearMin: 15, soonMin: 30, thickBorder: true,
+        colors: { near: '#E5484D', soon: '#D9A22B', live: '#5B8DEF' }
+      },
+      haptics: { enabled: true, intensity: 'medium' },
+      notifications: { enabled: false, defaultOffset: 15 },
+      /**
+       * 实验性功能（开关和设置都在 开发者模式 里，普通设置页看不到）。
+       * customTab：导入完课表后，把底栏 / 左侧栏的「导入」标签换成「模块」页 ——
+       * 作业、长期任务、作业统计… 按 modules 的顺序自由组合。
+       */
+      experimental: {
+        /**
+         * v0.4.0：默认开启 —— 导入过课表之后，底栏「导入」直接变成「我的」。
+         * 开关仍在 设置 → 我的页面 里，用户可以关掉换回「导入」。
+         */
+        customTab: { enabled: true, modules: ['homework', 'longterm', 'hwstats', 'weekgrid'] }
+      },
+      integration: {
+        university: '', campus: '', city: '', navApp: 'system',
+        trimRoom: true, keepCampus: true, autoPrependUniversity: true,
+        appendCityWhenAmbiguous: true, onlineTreatAsNoNav: true,
+        /**
+         * 闹钟 / 系统日历的提前量（分钟）：默认 15 —— 上课前十几分钟响，
+         * 才有时间从宿舍走到教室。0 = 就用上课时间本身。可在设置 → 系统集成 调整。
+         */
+        earlyMinutes: 15
+      },
+      onboardingCompletedAt: null
+    };
+  }
+
+  function defaultState() {
+    var semId = uid();
+    var now = new Date();
+    return {
+      schemaVersion: SCHEMA_VERSION,
+      kind: 'abbeyroad.sync',
+      exportedAt: null,
+      appVersion: APP_VERSION,
+      device: { id: uid(), name: '', platform: '' },
+      settings: defaultSettings(semId),
+      semesters: [{
+        id: semId, name: '我的学期', startDate: dateKey(mondayOf(now)),
+        weekCount: 20, isCurrent: true, holidays: [], keyDates: [],
+        updatedAt: now.toISOString()
+      }],
+      periods: makePeriods(semId),
+      teachers: [], locations: [], courses: [], blocks: [], overrides: [],
+      events: [],       // v0.4.0 起统一叫「日程」：{ title,date,start,end,place,type,star,showOnTimetable,note }
+      types: [],        // 日程类型（内置 + 用户自建），migrate 里补内置
+      tasks: [],                 // 作业条目（从「本次备注」里识别出来的，见 parseNoteTasks）
+      /**
+       * 长期任务（v0.3.7）：志愿时长、阅读量这类"一点点攒"的任务。
+       * 每条 { id, name, unit, target, colorKey, showInToday, entries:[{id,amount,at,note}] }
+       * 进度 = entries 里 amount 的合计（今日 / 本周 / 累计 分别算），不写死一个数字，
+       * 这样"记一笔"之后随时能改、能删，也不会和作业条目混在一起。
+       */
+      longTasks: [],
+      /**
+       * 倒计时（v0.3.8b）：自定义日期倒数，比如「四六级」「放假」。
+       * 每条 { id, title, date: 'YYYY-MM-DD' }。属于随手记的数据，
+       * 跨设备合并（MERGE_TABLES）暂不参与，本地跟着 localStorage 走。
+       */
+      countdowns: [],
+      /**
+       * 待办速记（v0.3.8b）：不进作业系统的临时小清单。
+       * 每条 { id, text, done, at }。同上，只存本地。
+       */
+      quickTodos: [],
+      reminders: [], promptTemplates: [{
+        id: 'default', version: PROMPT_VERSION, title: '默认课表整理提示词',
+        body: PROMPT_TEXT, isDefault: true
+      }],
+      tombstones: []
+    };
+  }
+
+  var state = null;
+  var saveTimer = null;
+
+  function load() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.kind === 'abbeyroad.sync') { state = migrate(parsed); }
+      }
+    } catch (e) {
+      console.warn('读取本地数据失败，改用新数据', e);
+    }
+    if (!state) { state = defaultState(); }
+    return state;
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     备注分层 + 作业条目（v0.3.4）
+
+     备注两层：
+       本次备注 = 单次记录 override(blockId,date).newNote —— 只影响那一天
+       本课备注 = course.note                             —— 这门课所有时段
+     作业条目从「本次备注」里识别，单独存一张 tasks 表（可选同步），
+     划掉状态因此不会污染备注原文。
+     ══════════════════════════════════════════════════════════════ */
+
+  /** 作业识别：带列表符号的行（- * • 1. ① [ ] ✓ 之类） */
+  var TASK_PREFIX = /^\s*(?:[-*•·‣▪–—]+|\(\d+\)|\d+[.、)]|[①②③④⑤⑥⑦⑧⑨⑩]|\[\s?\]|\[[xX✓]\]|□|√|✓|☐)\s*/;
+  /** 作业关键词：只在「智能识别」模式下用来兜住没写列表符号的行 */
+  var TASK_KEYWORDS = /(作业|练习|习题|实验|报告|论文|复习|预习|提交|截止|背诵|抄写|阅读|听力|上机|编程|画图|做完|改写|总结)/;
+
+  /** 作业设置（设置 → 课程与课表）：总开关 + 识别方式 */
+  function homeworkSettings(s) {
+    var src = (s || state) || {};
+    var hw = (src.settings && src.settings.schedule && src.settings.schedule.homework) || {};
+    return {
+      on: hw.on !== false,
+      mode: hw.mode === 'smart' ? 'smart' : 'line',
+      groupByCourse: hw.groupByCourse !== false   // v0.3.7：作业按课程分组（默认开，可在设置里关）
+    };
+  }
+
+  function normTaskText(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+
+  /**
+   * 把一段「本次备注」拆成作业条目。
+   *   mode = 'line'  → 一行算一条（默认，所见即所得）
+   *   mode = 'smart' → 只收"带列表符号"或"命中作业关键词"的行
+   * `[x]` / `√` 开头的行直接算已完成。
+   */
+  function parseNoteTasks(text, mode) {
+    var lines = String(text || '').split(/\r?\n/);
+    var out = [];
+    for (var i = 0; i < lines.length; i++) {
+      var raw = lines[i];
+      if (!raw || !raw.trim()) { continue; }
+      var m = raw.match(TASK_PREFIX);
+      var body = (m ? raw.slice(m[0].length) : raw).trim();
+      if (!body) { continue; }
+      var done = !!(m && (/\[[xX✓]\]/.test(m[0]) || /[√✓]/.test(m[0])));
+      if (mode === 'smart' && !m && !TASK_KEYWORDS.test(body)) { continue; }
+      out.push({ text: body, done: done });
+    }
+    return out;
+  }
+
+  /**
+   * v0.4.1c：任务归属的学期。
+   * 作业条目本身不带 semesterId（syncTasksFor 只写 courseId/blockId），
+   * 所以优先取自己的 semesterId，其次取它那门课的学期；取不到就返回 null（视为"不分学期"，照常显示）。
+   */
+  function semesterOfTask(t) {
+    if (!t) { return null; }
+    if (t.semesterId) { return t.semesterId; }
+    var c = t.courseId ? courseById(t.courseId) : null;
+    return c && c.semesterId ? c.semesterId : null;
+  }
+
+  /**
+   * 当前学期的作业条目（界面一律用这个）。
+   * v0.4.1c 修复：之前完全不分学期 —— 切到别的学期后，旧学期的作业仍然显示在列表里。
+   * 传 semId 可显式指定学期；不传用当前学期。
+   */
+  function taskList(semId) {
+    var cur = currentSemester();
+    var sid = semId || (cur && cur.id);
+    var out = [], all = (state.tasks || (state.tasks = []));
+    for (var i = 0; i < all.length; i++) {
+      var t = all[i];
+      if (t.deletedAt) { continue; }
+      if (sid) {
+        var ts = semesterOfTask(t);
+        if (ts && ts !== sid) { continue; }
+      }
+      out.push(t);
+    }
+    return out;
+  }
+  /** 原始数组（内部写用；界面一律用 taskList） */
+  function taskRaw() { return (state.tasks || (state.tasks = [])); }
+
+  /* ── 待办速记（v0.4.1：删除改为软删除，可恢复）───────────── */
+  function quickTodoRaw() { return (state.quickTodos || (state.quickTodos = [])); }
+  function quickTodoList() { return liveOnly(quickTodoRaw()); }
+  function quickTodoRemove(id) {
+    var all = quickTodoRaw();
+    for (var i = 0; i < all.length; i++) {
+      if (all[i].id === id && !all[i].deletedAt) { softDelete('quickTodos', all[i]); save(true); return true; }
+    }
+    return false;
+  }
+
+  function findTask(blockId, dateK, text) {
+    var key = normTaskText(text);
+    /**
+     * 这里必须扫**原始数组**：taskList() 现在按当前学期过滤，
+     * 而 rebuildTasks() 会遍历所有学期的备注 —— 用过滤后的列表会找不到已有条目、建出重复作业。
+     */
+    var list = taskRaw();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].deletedAt) { continue; }
+      if (list[i].blockId === blockId && list[i].date === dateK && normTaskText(list[i].text) === key) { return list[i]; }
+    }
+    return null;
+  }
+
+  /**
+   * 备注保存之后同步作业条目：按 (blockId, date, 文字) 复用旧记录，
+   * 已经划掉的状态不会因为重新解析而丢失；备注里删掉的行才真的删掉。
+   */
+  function syncTasksFor(blockId, courseId, dateK, text) {
+    var hw = homeworkSettings(state);
+    /**
+     * v0.4.1b 修复：这里必须写**原始数组**。
+     * v0.4.1 把 taskList() 改成"过滤掉已删除"的新数组之后，
+     * 这个函数往 list.push() 的结果就写进了副本 —— 备注里写的作业永远进不了 tasks，
+     * 「作业记录」「完成率」全是 0（用户报的"备注写作业不显示"就是这个）。
+     */
+    var raw = taskRaw();
+    if (!hw.on) { return []; }
+    var parsed = parseNoteTasks(text, hw.mode);
+    var keep = {};
+    var out = [];
+    for (var i = 0; i < parsed.length; i++) {
+      var p = parsed[i];
+      var key = normTaskText(p.text);
+      if (!key || keep[key]) { continue; }
+      keep[key] = true;
+      var rec = findTask(blockId, dateK, p.text);
+      if (!rec) {
+        rec = {
+          id: uid(), courseId: courseId || '', blockId: blockId || '', date: dateK || '',
+          text: p.text, done: !!p.done, doneAt: p.done ? new Date().toISOString() : '',
+          updatedAt: new Date().toISOString()
+        };
+        raw.push(rec);
+      } else if (p.done && !rec.done) {
+        rec.done = true; rec.doneAt = new Date().toISOString();
+      }
+      out.push(rec);
+    }
+    // 备注里已经删掉的行：软删除（进回收站，5 秒内可撤销）
+    for (var j = raw.length - 1; j >= 0; j--) {
+      var t = raw[j];
+      if (t.deletedAt) { continue; }
+      if (t.blockId === blockId && t.date === dateK && !keep[normTaskText(t.text)]) {
+        softDelete('tasks', t);
+      }
+    }
+    save(true);
+    return out;
+  }
+
+  /**
+   * v0.4.1b：按现有备注重建作业条目（「刷新作业」）。
+   * 扫描所有「本次备注」（单次记录上的 newNote），用当前识别规则重新生成条目：
+   *   · 已经存在的条目按 (blockId, 日期, 文字) 复用，划掉的状态不丢；
+   *   · 之前因为 bug 没生成的条目会被补上；
+   *   · 备注里已经删掉的行不会复活（syncTasksFor 会把它软删除）。
+   */
+  function rebuildTasks() {
+    var ovs = state.overrides || [];
+    var scanned = 0, before = taskList().length;
+    for (var i = 0; i < ovs.length; i++) {
+      var ov = ovs[i];
+      if (ov.deletedAt || !ov.newNote) { continue; }
+      scanned++;
+      syncTasksFor(ov.blockId, ov.courseId, ov.date, ov.newNote);
+    }
+    var after = taskList().length;
+    return { scanned: scanned, created: Math.max(0, after - before), total: after };
+  }
+
+  /** 某一天那节课的作业 */
+  function tasksOf(dateK) {
+    var list = taskList();
+    var out = [];
+    for (var i = 0; i < list.length; i++) { if (list[i].date === dateK) { out.push(list[i]); } }
+    return out;
+  }
+
+  /**
+   * 今日作业面板要显示的条目：
+   *   · 今天课上识别出来的全部条目；
+   *   · 之前没划掉的（跨天挂账，带日期标签）；
+   *   · 今天划掉的（进「已完成」区）。
+   * 更早划掉的会自动隐藏，但记录还在（点「已完成」区可以翻出来恢复）。
+   */
+  function taskBoard(todayK) {
+    var list = taskList();
+    var open = [], doneToday = [], doneWeek = [];
+    var t0 = parseDateKey(todayK);
+    for (var i = 0; i < list.length; i++) {
+      var t = list[i];
+      // 划掉是哪一天要按**本地日期**算：doneAt 是 ISO（UTC），
+      // 直接切前 10 位在晚上 8 点后会偏成前一天，今天划掉的会被算成"更早"。
+      var doneDay = taskDoneDay(t);
+      if (!t.done) {
+        if (!t.date || t.date <= todayK) { open.push(t); }
+      } else if (doneDay === todayK) { doneToday.push(t); }
+      else {
+        /**
+         * 已完成的时间规矩（用户定的）：
+         *   今天划掉的 → 就按现在这样显示；
+         *   过一天 → 折进「更早的已完成」，默认收起；
+         *   过一周 → 不在已完成界面里显示（记录还留着，不删数据）。
+         */
+        var dd = parseDateKey(doneDay);
+        var days = (dd && t0) ? Math.round((t0.getTime() - dd.getTime()) / 86400000) : 99;
+        if (days >= 1 && days <= 7) { doneWeek.push(t); }
+      }
+    }
+    open.sort(function (a, b) { return String(a.date).localeCompare(String(b.date)); });
+    doneToday.sort(function (a, b) { return String(b.doneAt).localeCompare(String(a.doneAt)); });
+    doneWeek.sort(function (a, b) { return String(b.doneAt).localeCompare(String(a.doneAt)); });
+    return { open: open, done: doneToday, doneWeek: doneWeek, todayK: todayK };
+  }
+
+  /** 作业是本地哪一天划掉的（用于「保留今天一天、第二天自动隐藏」） */
+  function taskDoneDay(t) {
+    if (!t || !t.doneAt) { return ''; }
+    var d = new Date(t.doneAt);
+    return isNaN(d.getTime()) ? '' : dateKey(d);
+  }
+
+  function setTaskDone(id, done) {
+    var t = null;
+    var list = taskList();
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { t = list[i]; break; } }
+    if (!t) { return null; }
+    t.done = !!done;
+    t.doneAt = t.done ? new Date().toISOString() : '';
+    t.updatedAt = new Date().toISOString();
+    save(true);
+    return t;
+  }
+
+  function removeTask(id) {
+    var list = taskList();
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) { softDelete('tasks', list[i]); save(true); return true; }
+    }
+    return false;
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     长期任务（v0.3.7）
+
+     志愿时长、跑步里程、阅读量这种"攒进度"的目标：
+       · 每条自带单位和目标值，**各自统计**（各自算进度、完成率）；
+       · 每一笔记录单独存（entries），所以"今日 / 本周 / 累计"都能算出来，
+         记错了可以删掉某一笔，不会像"直接改总数"那样说不清；
+       · 每条一个 showInToday：要不要在今日页和普通作业一起出现，用户自己定。
+     和「作业」是两张表，互不影响：作业的条数 / 完成率里不会混进长期任务。
+     ══════════════════════════════════════════════════════════════ */
+
+  /* ══════════════════════════════════════════════════════════════
+     任务（v0.4.2：把「每日任务」与「长期任务」合并成一张表）
+
+     一条任务 = 节奏（选填）+ 累计目标（选填）
+       cadence：{ type:'daily|weekly|weekdays|everyN|unlimited', times, weekdays, intervalDays }
+                null / unlimited = 每天不限次（想记就记，永不自动收起）
+       goal   ：{ target, unit } 或 null（只打卡、不攒进度条）
+
+     唯一事实来源是 entries（每一笔完成）：
+       · 节奏的"今天/本周做了几次" = 数落在这个周期里的 entries
+       · 累计进度               = 所有 entries 的 amount 求和
+     所以不存在两份数据要对账，"联动"这个词也就不需要了。
+
+     老数据（longTasks 表）在 migrate 里无损并过来，老表只归档不删除，
+     便于回退；并过的条目带 migratedFrom 标记，可追溯。
+     ══════════════════════════════════════════════════════════════ */
+
+  var TASK_UNLIMITED = { type: 'unlimited' };
+
+  function todoRaw() { return (state.tasks2 || (state.tasks2 = [])); }
+  function todoList() { return liveOnly(todoRaw()); }
+  function todoById(id) {
+    var list = todoRaw();
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id && !list[i].deletedAt) { return list[i]; } }
+    return null;
+  }
+/**
+ * 显示口径（v0.4.3 简化）：不再分「每日/长期」两张卡，只剩显示 / 不显示。
+ * 仍返回 {daily,long} 两个键（老调用方与老配置还在读），两者恒等。
+ * 老字段兼容：showInToday === false 视为两处都不显示。
+ */
+function todoDisplay(t) {
+  if (!t) { return { daily: false, long: false }; }
+  var show = t.showInToday !== false;
+  return { daily: show, long: show };
+}
+
+/**
+ * 今日任务卡的数据源（v0.4.3：不再分「每日/长期」两张卡，统一为一处）。
+ * 兼容老字段：showInToday === false 视为不显示；其余都显示。
+ */
+function todoDailyList() {
+  var list = todoList(), out = [];
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].archived) { continue; }
+    if (list[i].showInToday === false) { continue; }
+    out.push(list[i]);
+  }
+  return out;
+}
+/** 保留这个名字给老调用方（升级期兼容），语义与 todoDailyList 相同 */
+function todoLongList() { return todoDailyList(); }
+  /** 在今日页出现过的任务（两张卡合并的视图） */
+  function todoTodayList() { return todoDailyList(); }
+  /** 一笔记录落在本地哪一天（老数据只有 at，新数据带 k） */
+  function todoEntryDay(e) {
+    if (!e) { return ''; }
+    if (e.k) { return e.k; }
+    if (!e.at) { return ''; }
+    var d = new Date(e.at);
+    return isNaN(d.getTime()) ? '' : dateKey(d);
+  }
+  function todoLiveEntries(t) {
+    var es = (t && t.entries) || [], out = [];
+    for (var i = 0; i < es.length; i++) { if (!es[i].deletedAt) { out.push(es[i]); } }
+    return out;
+  }
+  /** 某天完成几次（一笔算一次；amount 只用于累计量） */
+  function todoDayCount(t, dayKey) {
+    var es = todoLiveEntries(t), n = 0;
+    for (var i = 0; i < es.length; i++) { if (todoEntryDay(es[i]) === dayKey) { n++; } }
+    return n;
+  }
+  /** 今天/本周 应当做几次；Infinity = 不限次 */
+  function todoRequired(t, date) {
+    var c = (t && t.cadence) || TASK_UNLIMITED;
+    if (c.type === 'unlimited' || !c.type) { return Infinity; }
+    var d0 = new Date(date || new Date()); d0.setHours(0, 0, 0, 0);
+    var anchor = new Date(); anchor.setHours(0, 0, 0, 0);
+    var diffDays = Math.floor((anchor - d0) / 86400000);
+    var interval = Math.max(1, Number(c.intervalDays) || 1);
+    if (c.type === 'daily') { return c.times || 1; }
+    if (c.type === 'weekly') { return c.times || 1; }
+    if (c.type === 'everyN') { return (diffDays % interval === 0) ? (c.times || 1) : 0; }
+    if (c.type === 'weekdays') {
+      var wd = weekdayOf(d0);
+      return (c.weekdays || []).indexOf(wd) >= 0 ? (c.times || 1) : 0;
+    }
+    if (c.type === 'everyNDow') {
+      var wd2 = weekdayOf(d0);
+      if ((c.weekdays || []).indexOf(wd2) < 0) { return 0; }
+      return (Math.floor(diffDays / 7) % interval === 0) ? (c.times || 1) : 0;
+    }
+    return 1;
+  }
+  /** 当期目标（0 = 没有节奏，永不自动收起） */
+  function todoPeriodGoal(t) {
+    var c = (t && t.cadence) || TASK_UNLIMITED;
+    if (c.type === 'unlimited' || !c.type) { return 0; }
+    if (c.type === 'weekly') { return c.times || 1; }
+    if (c.type === 'weekdays' || c.type === 'everyNDow') {
+      return (c.weekdays || []).length * (c.times || 1);
+    }
+    return c.times || 1;
+  }
+  function todoIsWeekly(t) {
+    var c = (t && t.cadence) || TASK_UNLIMITED;
+    return c.type === 'weekly' || c.type === 'weekdays' || c.type === 'everyNDow';
+  }
+  /** 周期标识：用来判断"本期是否已收起"（跨周期自动失效） */
+  function todoPeriodKey(t, date) {
+    if (todoIsWeekly(t)) {
+      var d = date ? new Date(date) : new Date();
+      return 'W' + dateKey(mondayOf(d));
+    }
+    return dateKey(date || new Date());
+  }
+  /** 当期已完成几次 */
+  function todoPeriodDone(t, date) {
+    var dayKey = dateKey(date || new Date());
+    if (todoIsWeekly(t)) {
+      var monday = mondayOf(date || new Date());
+      var sum = 0;
+      for (var i = 0; i < 7; i++) { sum += todoDayCount(t, dateKey(addDays(monday, i))); }
+      return sum;
+    }
+    return todoDayCount(t, dayKey);
+  }
+  /** 累计（所有 entries 的 amount 之和） */
+  function todoTotal(t) {
+    var es = todoLiveEntries(t), sum = 0;
+    for (var i = 0; i < es.length; i++) { sum += Number(es[i].amount) || 0; }
+    return Math.round(sum * 100) / 100;
+  }
+  /** 一条任务的完整进度快照（界面直接用，避免各处各算） */
+  function todoProgress(t, date) {
+    var goal = (t && t.goal) || null;
+    var total = todoTotal(t);
+    var target = goal ? (Number(goal.target) || 0) : 0;
+    return {
+      today: todoDayCount(t, dateKey(date || new Date())),
+      periodDone: todoPeriodDone(t, date),
+      periodGoal: todoPeriodGoal(t),
+      periodUnit: todoIsWeekly(t) ? '本周' : '今天',
+      required: todoRequired(t, date),
+      total: total,
+      target: target,
+      rate: target > 0 ? Math.min(1, total / target) : 0,
+      percent: target > 0 ? Math.round(Math.min(1, total / target) * 100) : 0,
+      hasGoal: !!goal,
+      done: todoPeriodGoal(t) > 0 && todoPeriodDone(t, date) >= todoPeriodGoal(t)
+    };
+  }
+  /**
+   * 本期是否"收起"（→ 折进「已完成」）：
+   *   有节奏且本期做满 → 收起；但用户点过「继续做」（aside === 本期标识）就不再收起。
+   *   周期一换，aside 自动失效（标识不同），于是回到待办。
+   */
+  function todoSettled(t, date) {
+    if (todoPeriodGoal(t) <= 0) { return false; }
+    if (t.aside && t.aside === todoPeriodKey(t, date)) { return false; }
+    return todoPeriodDone(t, date) >= todoPeriodGoal(t);
+  }
+  /** 「继续做」：只取消收起，计数/记录/累计一条不动。收 id（与 todoAddEntry 一致） */
+  function todoContinue(id, date) {
+    var t = (id && typeof id === 'object') ? id : todoById(id);
+    if (!t) { return false; }
+    t.aside = todoPeriodKey(t, date);
+    t.updatedAt = new Date().toISOString();
+    save(true);
+    return true;
+  }
+  /** 打卡一次（确认即 +1，无论完成状态） */
+  function todoAddEntry(id, amount, note, opts) {
+    var t = todoById(id);
+    if (!t) { return null; }
+    var amt = Number(amount);
+    if (!isFinite(amt) || !amt) { amt = 1; }          // 打卡默认 1
+    if (!t.entries) { t.entries = []; }
+    var now = new Date();
+    var e = {
+      id: uid(), k: dateKey(now), at: now.toISOString(),
+      amount: amt, note: String(note || '').slice(0, 120)
+    };
+    if (opts && opts.src) { e.src = opts.src; }
+    t.entries.push(e);
+    t.updatedAt = e.at;
+    if (!t.createdAt) { t.createdAt = e.at; }
+    save(true);
+    return e;
+  }
+  function todoRemoveEntry(id, entryId) {
+    var t = todoById(id);
+    if (!t || !t.entries) { return false; }
+    for (var i = 0; i < t.entries.length; i++) {
+      if (t.entries[i].id === entryId && !t.entries[i].deletedAt) {
+        t.entries[i].deletedAt = new Date().toISOString();   // 软删除，回收站可恢复
+        t.updatedAt = t.entries[i].deletedAt;
+        save(true);
+        return true;
+      }
+    }
+    return false;
+  }
+  /** 撤销"某一天/某一期"最近的一笔（「已完成」里的撤销按一次算） */
+  function todoUndoLast(id) {
+    var t = todoById(id);
+    if (!t || !t.entries) { return false; }
+    for (var i = t.entries.length - 1; i >= 0; i--) {
+      if (!t.entries[i].deletedAt) {
+        t.entries[i].deletedAt = new Date().toISOString();
+        t.updatedAt = t.entries[i].deletedAt;
+        save(true);
+        return true;
+      }
+    }
+    return false;
+  }
+  function todoUpsert(patch) {
+    patch = patch || {};
+    var t = patch.id ? todoById(patch.id) : null;
+    var nowIso = new Date().toISOString();
+    if (!t) {
+      t = {
+        id: uid(), text: '', colorKey: '#5B8DEF',
+        cadence: TASK_UNLIMITED, goal: null,
+        showInToday: true, entries: [], createdAt: nowIso, updatedAt: nowIso
+      };
+      todoRaw().push(t);
+    }
+    var keys = ['text', 'colorKey', 'showInToday', 'archived', 'note', 'aside', 'showDaily', 'showLong'];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (Object.prototype.hasOwnProperty.call(patch, k)) { t[k] = patch[k]; }
+    }
+    /* v0.4.3：显式设过 showDaily/showLong 就把老的 showInToday 归位，
+       否则 todoDisplay() 里的 showInToday===false 兜底会把两条卡都关掉。 */
+    if (Object.prototype.hasOwnProperty.call(patch, 'showDaily') ||
+        Object.prototype.hasOwnProperty.call(patch, 'showLong')) {
+      if (!Object.prototype.hasOwnProperty.call(patch, 'showInToday')) { t.showInToday = true; }
+      if (!Object.prototype.hasOwnProperty.call(patch, 'showDaily')) { t.showDaily = !!t.showDaily; }
+      if (!Object.prototype.hasOwnProperty.call(patch, 'showLong')) { t.showLong = !!t.showLong; }
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'cadence')) {
+      var c = patch.cadence;
+      t.cadence = (!c || c.type === 'unlimited') ? TASK_UNLIMITED : {
+        type: c.type, times: Math.max(1, Number(c.times) || 1),
+        intervalDays: Math.max(1, Number(c.intervalDays) || 1),
+        weekdays: (c.weekdays || [1, 2, 3, 4, 5]).slice()
+      };
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, 'goal')) {
+      var g = patch.goal;
+      t.goal = (!g || !(Number(g.target) > 0)) ? null : {
+        target: Number(g.target), unit: String(g.unit || '').slice(0, 12)
+      };
+    }
+    t.updatedAt = nowIso;
+    save(true);
+    return t;
+  }
+  function todoRemove(id) {
+    var t = todoById(id);
+    if (!t) { return false; }
+    softDelete('tasks2', t);
+    save(true);
+    return true;
+  }
+
+  /**
+   * 迁移（v0.4.2）：把老的「长期任务」无损并进新表。
+   *
+   * 老模型 { name, unit, target, entries[{amount, at}] } → 新模型
+   *   { text: name, cadence: unlimited, goal: {target, unit}, entries: 原样保留 }
+   * 老条目没有日期键 k，补一个由 at 推出来的 k（不改 amount，进度一分不差）。
+   *
+   * 幂等：全部并完把老表条目标记 archived，第二次进来就没有可并的了。
+   * 老表**不删除**，留在数据里可回退。
+   */
+  function migrateLongTasksIntoToDos(target) {
+    var st = target || state;
+    if (!st) { return 0; }
+    var old = st.longTasks || [];
+    if (!st.tasks2) { st.tasks2 = []; }
+    var moved = 0;
+    for (var i = 0; i < old.length; i++) {
+      var o = old[i];
+      if (!o || o.archived || o.deletedAt) { continue; }
+      var entries = [];
+      var es = o.entries || [];
+      for (var j = 0; j < es.length; j++) {
+        var e = es[j];
+        if (!e) { continue; }
+        entries.push({
+          id: e.id || uid(), k: todoEntryDay(e), at: e.at || '',
+          amount: Number(e.amount) || 0,
+          note: e.note || '',
+          migratedFrom: 'longTasks',
+          deletedAt: e.deletedAt || null
+        });
+      }
+      st.tasks2.push({
+        id: o.id || uid(),
+        text: o.name || '未命名',
+        colorKey: o.colorKey || '#5B8DEF',
+        cadence: TASK_UNLIMITED,
+        goal: (Number(o.target) > 0) ? { target: Number(o.target), unit: String(o.unit || '') } : null,
+        showInToday: o.showInToday !== false,
+        archived: false,
+        entries: entries,
+        migratedFrom: 'longTasks',
+        createdAt: o.createdAt || (entries.length ? entries[0].at : new Date().toISOString()),
+        updatedAt: o.updatedAt || new Date().toISOString()
+      });
+      o.archived = true;                       // 幂等：不再重复并
+      o.migratedTo = 'tasks2';
+      moved++;
+    }
+    return moved;
+  }
+
+
+  function longTaskRaw() { return (state.longTasks || (state.longTasks = [])); }
+  /** 还活着的长期任务（界面显示用） */
+  /** 还活着的长期任务（**不含已归档的** —— 迁移后的老记录要藏起来，不能在旧界面复活） */
+  function longTaskList() {
+    var raw = longTaskRaw(), out = [];
+    for (var i = 0; i < raw.length; i++) {
+      if (!raw[i] || raw[i].deletedAt || raw[i].archived) { continue; }
+      out.push(raw[i]);
+    }
+    return out;
+  }
+
+  function longTaskById(id) {
+    var list = longTaskRaw();
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id && !list[i].deletedAt) { return list[i]; } }
+    return null;
+  }
+
+  /** 一笔记录落在本地哪一天（at 是 ISO，跨时区直接切前 10 位会偏） */
+  function longTaskEntryDay(e) {
+    if (!e || !e.at) { return ''; }
+    var d = new Date(e.at);
+    return isNaN(d.getTime()) ? '' : dateKey(d);
+  }
+
+  /** 某条长期任务的进度：今日 / 近 7 天 / 累计（都从 entries 现算） */
+  function longTaskStats(t, todayK) {
+    var entries = (t && t.entries) || [];
+    var total = 0, today = 0, week = 0;
+    var weekFrom = todayK ? dateKey(addDays(parseDateKey(todayK), -6)) : '';
+    for (var i = 0; i < entries.length; i++) {
+      if (entries[i].deletedAt) { continue; }   // v0.4.1：删掉的那一笔不算进度
+      var amt = Number(entries[i].amount) || 0;
+      total += amt;
+      var day = longTaskEntryDay(entries[i]);
+      if (todayK && day === todayK) { today += amt; }
+      if (weekFrom && day && day >= weekFrom) { week += amt; }
+    }
+    var target = Number((t && t.target) || 0);
+    var round2 = function (n) { return Math.round(n * 100) / 100; };
+    return {
+      total: round2(total), today: round2(today), week: round2(week),
+      target: target,
+      rate: target > 0 ? Math.min(1, total / target) : 0,
+      percent: target > 0 ? Math.round(Math.min(1, total / target) * 100) : 0,
+      done: target > 0 && total >= target
+    };
+  }
+
+  /** 今日页要显示的那些（按列表顺序） */
+  function longTaskTodayList() {
+    var list = longTaskList();
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].showInToday !== false && !list[i].archived) { out.push(list[i]); }
+    }
+    return out;
+  }
+
+  /** 新建或更新一条（没有 id 就新建） */
+  function longTaskUpsert(patch) {
+    patch = patch || {};
+    var t = patch.id ? longTaskById(patch.id) : null;
+    var nowIso = new Date().toISOString();
+    if (!t) {
+      t = {
+        id: uid(), name: '', unit: '小时', target: 0,
+        colorKey: '#5B8DEF', showInToday: true, entries: [], updatedAt: nowIso
+      };
+      longTaskRaw().push(t);
+    }
+    var keys = ['name', 'unit', 'target', 'colorKey', 'showInToday', 'archived'];
+    for (var i = 0; i < keys.length; i++) {
+      var k = keys[i];
+      if (Object.prototype.hasOwnProperty.call(patch, k)) { t[k] = patch[k]; }
+    }
+    t.target = Number(t.target) || 0;
+    t.updatedAt = nowIso;
+    save(true);
+    return t;
+  }
+
+  function longTaskRemove(id) {
+    var t = null, list = longTaskList();
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { t = list[i]; } }
+    if (!t) { return false; }
+    softDelete('longTasks', t);
+    save(true);
+    return true;
+  }
+
+  /** 记一笔（数量可正可负，方便手滑改回来） */
+  function longTaskAddEntry(id, amount, note) {
+    var t = longTaskById(id);
+    if (!t) { return null; }
+    var amt = Number(amount);
+    if (!isFinite(amt) || !amt) { return null; }
+    if (!t.entries) { t.entries = []; }
+    var e = {
+      id: uid(), amount: amt, note: String(note || '').slice(0, 120),
+      at: new Date().toISOString()
+    };
+    t.entries.push(e);
+    t.updatedAt = e.at;
+    save(true);
+    return e;
+  }
+
+  function longTaskRemoveEntry(id, entryId) {
+    var t = longTaskById(id);
+    if (!t || !t.entries) { return false; }
+    for (var i = 0; i < t.entries.length; i++) {
+      if (t.entries[i].id === entryId && !t.entries[i].deletedAt) {
+        /* v0.4.1：删掉的这一笔也进回收站（可恢复） */
+        t.entries[i].deletedAt = new Date().toISOString();
+        t.updatedAt = t.entries[i].deletedAt;
+        save(true);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** 最近的几笔（弹窗里列出来，可删） */
+  function longTaskRecentEntries(t, limit) {
+    var arr = [];
+    var all = ((t && t.entries) || []);
+    for (var i = 0; i < all.length; i++) { if (!all[i].deletedAt) { arr.push(all[i]); } }
+    arr.sort(function (a, b) { return String(b.at).localeCompare(String(a.at)); });
+    return arr.slice(0, limit || 8);
+  }
+
+  /** 迁移用：拿"最后改过的时间"算出这一时段落在哪一天 */
+  function occurrenceDateFor(block, sem, when) {
+    var start = sem && sem.startDate ? parseDateKey(sem.startDate) : null;
+    var base = start ? mondayOf(start) : mondayOf(new Date());
+    var day = when && !isNaN(when.getTime()) ? when : new Date();
+    var week = Math.floor((mondayOf(day).getTime() - base.getTime()) / (7 * 86400000)) + 1;
+    var maxWeek = (sem && sem.weekCount) || 20;
+    week = Math.max(1, Math.min(maxWeek, week));
+    return addDays(base, (week - 1) * 7 + (Math.max(1, block.weekday || 1) - 1));
+  }
+
+  /** v0.3.4 迁移：把老数据里写在 block 上的备注按「只在那一周」搬到单次记录上 */
+  function splitLegacyBlockNotes(s) {
+    var blocks = s.blocks || [], courses = s.courses || [], sems = s.semesters || [];
+    var overrides = (s.overrides || (s.overrides = []));
+    var byCourse = {};
+    for (var c = 0; c < courses.length; c++) { byCourse[courses[c].id] = courses[c]; }
+    for (var b = 0; b < blocks.length; b++) {
+      var block = blocks[b];
+      if (typeof block.note !== 'string' || !block.note.trim()) { continue; }
+      var text = block.note;
+      var course = byCourse[block.courseId];
+      // 导入时同一段备注会同时写进 course 和 block：只清掉 block 那份，课程级保留
+      if (course && typeof course.note === 'string' && course.note === text) { delete block.note; continue; }
+      var sem = null;
+      for (var k = 0; k < sems.length; k++) {
+        if (sems[k].id === (course && course.semesterId)) { sem = sems[k]; break; }
+      }
+      if (!sem) { sem = sems[0] || null; }
+      var when = parseDateKey(block.updatedAt ? String(block.updatedAt).slice(0, 10) : '');
+      var dateK = dateKey(occurrenceDateFor(block, sem, when));
+      var ov = null;
+      for (var o = 0; o < overrides.length; o++) {
+        if (overrides[o].blockId === block.id && overrides[o].date === dateK) { ov = overrides[o]; break; }
+      }
+      if (!ov) {
+        overrides.push({
+          id: uid(), courseId: block.courseId, blockId: block.id, date: dateK, type: 'edit',
+          newWeekday: null, newDate: null, newPeriodStart: null, newPeriodEnd: null,
+          newStartTime: '', newEndTime: '', newLocationIds: null, newTeacherIds: null,
+          newNote: text, reason: '备注迁移', updatedAt: new Date().toISOString()
+        });
+      } else if (!ov.newNote) {
+        ov.newNote = text;
+        ov.updatedAt = new Date().toISOString();
+      }
+      delete block.note;
+    }
+  }
+
+  /** 版本迁移入口：目前只有 v1，保留结构方便以后加字段 */
+  /**
+   * 对当前内存里的 state 立刻跑一次迁移并保存。
+   * 用途：导入配置后（applyMerge）需要马上完成 longTasks → tasks2，
+   * 因为迁移原先只挂在 load() 上，导入后不重启 App 就永远不迁移。
+   * 返回这次迁进来的条数（0 表示没有可迁的）。
+   */
+  function migrateNow() {
+    if (!state) { return 0; }
+    var moved = migrateLongTasksIntoToDos(state);
+    state = migrate(state);
+    if (moved) { save(true); }
+    return moved;
+  }
+
+  function migrate(s) {
+    if (!s.settings) { s.settings = defaultSettings((s.semesters && s.semesters[0] && s.semesters[0].id) || uid()); }
+    if (!s.settings.layout) { s.settings.layout = { preset: 'dual-horizontal', followDeviceSuggestion: true }; }
+    // v0.1.8：布局只保留「左右 / 上中下」，旧的「自动」「左中右」统一折算成「左右」
+    s.settings.layout.preset = (s.settings.layout.preset === 'stacked-vertical') ? 'stacked-vertical' : 'dual-horizontal';
+    // 左手模式：老数据补默认值（关），布尔值原样保留
+    if (typeof s.settings.layout.leftHand !== 'boolean') { s.settings.layout.leftHand = false; }
+    // 闹钟 / 系统日历提前量：老数据补默认值（15 分钟）
+    if (s.settings.integration && !(Number(s.settings.integration.earlyMinutes) >= 0)) {
+      s.settings.integration.earlyMinutes = 15;
+    }
+    // v0.1.8：「减少动效」入口已删除，旧数据里的开关一并清掉，避免"动画不动"的残留状态
+    if (s.settings.appearance) { delete s.settings.appearance.reduceMotion; }
+    else { s.settings.appearance = defaultSettings(uid()).appearance; }
+    // v0.3.8：流畅模式（关闭 / 标准 / 深度），老数据补默认「关闭」
+    if (!{ full: 1, lite: 1, min: 1 }[s.settings.appearance.perfMode]) {
+      s.settings.appearance.perfMode = 'full';
+    }
+    // v0.1.9：「最近的课」状态色（老数据补默认值，阈值与颜色都保留用户改过的）
+    var def = defaultSettings((s.semesters && s.semesters[0] && s.semesters[0].id) || uid()).nextAlert;
+    if (!s.settings.nextAlert) { s.settings.nextAlert = def; }
+    else {
+      var na = s.settings.nextAlert;
+      if (typeof na.enabled !== 'boolean') { na.enabled = def.enabled; }
+      if (!(Number(na.nearMin) > 0)) { na.nearMin = def.nearMin; }
+      if (!(Number(na.soonMin) > 0)) { na.soonMin = def.soonMin; }
+      if (typeof na.thickBorder !== 'boolean') { na.thickBorder = def.thickBorder; }
+      na.colors = na.colors || {};
+      for (var ck in def.colors) {
+        if (Object.prototype.hasOwnProperty.call(def.colors, ck) && !na.colors[ck]) { na.colors[ck] = def.colors[ck]; }
+      }
+    }
+    if (!s.periods || !s.periods.length) {
+      var sid = (s.semesters && s.semesters[0] && s.semesters[0].id) || uid();
+      s.periods = makePeriods(sid);
+    }
+    /**
+     * v0.2.1：默认作息换成新表。
+     * 只有「还是老默认作息」的数据才会被换掉；用户自己改过节次时间就保持原样，
+     * 免得把别人的作息覆盖掉。课程只记节次号，所以换时间不影响任何一节课的位置。
+     */
+    else if (isOldDefaultPeriods(s.periods)) {
+      s.periods = makePeriods((s.semesters && s.semesters[0] && s.semesters[0].id) || uid());
+    }
+    /**
+     * v0.2.2 数据清理：删掉指向「不存在的课程」的孤儿时段 / 变动。
+     * 这些记录界面上永远画不出来（找不到课程直接跳过），但会一直占着文件体积，
+     * 大多是早期版本重复导入同一份课表留下的。
+     */
+    if (Array.isArray(s.blocks) && Array.isArray(s.courses)) {
+      var aliveIds = {};
+      for (var ci = 0; ci < s.courses.length; ci++) { aliveIds[s.courses[ci].id] = true; }
+      var keptBlocks = [];
+      for (var bi = 0; bi < s.blocks.length; bi++) {
+        if (aliveIds[s.blocks[bi].courseId]) { keptBlocks.push(s.blocks[bi]); }
+      }
+      if (keptBlocks.length !== s.blocks.length) { s.blocks = keptBlocks; }
+      if (Array.isArray(s.overrides)) {
+        s.overrides = s.overrides.filter(function (ov) { return aliveIds[ov.courseId]; });
+      }
+    }
+    /**
+     * v0.2.3：节次表如果挂在「已经不存在的学期」上，认领给当前学期。
+     * 否则一旦要补课次，就会出现「只有新补的那几节」的怪现象。
+     */
+    if (Array.isArray(s.periods) && Array.isArray(s.semesters) && s.semesters.length) {
+      var semIds = {};
+      for (var si = 0; si < s.semesters.length; si++) { semIds[s.semesters[si].id] = true; }
+      var curSemId = (s.settings && s.settings.schedule && s.settings.schedule.currentSemesterId) || s.semesters[0].id;
+      var hasOwnPeriods = false;
+      for (var pi = 0; pi < s.periods.length; pi++) {
+        if (s.periods[pi].semesterId === curSemId) { hasOwnPeriods = true; break; }
+      }
+      if (!hasOwnPeriods) {
+        for (var pk = 0; pk < s.periods.length; pk++) {
+          if (!semIds[s.periods[pk].semesterId]) { s.periods[pk].semesterId = curSemId; }
+        }
+      }
+    }
+    if (!s.promptTemplates || !s.promptTemplates.length) {
+      s.promptTemplates = [{ id: 'default', version: PROMPT_VERSION, title: '默认课表整理提示词', body: PROMPT_TEXT, isDefault: true }];
+    }
+    var lists = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events',
+      'tasks', 'tasks2', 'longTasks', 'countdowns', 'quickTodos', 'reminders', 'tombstones'];
+    for (var i = 0; i < lists.length; i++) { if (!Array.isArray(s[lists[i]])) { s[lists[i]] = []; } }
+
+    /* ── v0.4.0：日程统一 ──────────────────────────────────────
+       ① 类型表补内置种子（用户自建类型保留）；
+       ② 老事件补 star / showOnTimetable：默认上周表（本来就是周表来的）、考试自动星标；
+       ③ 倒计时并入日程：自动星标、不上周表。旧 countdowns 字段只读保留
+          一个版本周期（meta.countdownsMigrated 记账），回滚旧版数据不丢。 */
+    if (!s.meta) { s.meta = {}; }
+    if (Object.prototype.toString.call(s.types) !== '[object Array]') { s.types = []; }
+    for (var ti = 0; ti < EVENT_TYPES.length; ti++) {
+      var bt = EVENT_TYPES[ti], bf = false;
+      for (var tj = 0; tj < s.types.length; tj++) { if (s.types[tj].key === bt.key) { bf = true; break; } }
+      if (!bf) { s.types.push({ key: bt.key, label: bt.label, hex: bt.hex, mark: bt.mark, builtIn: true }); }
+    }
+    for (var ei = 0; ei < s.events.length; ei++) {
+      if (s.events[ei].star == null) { s.events[ei].star = (s.events[ei].type === 'exam'); }
+      if (s.events[ei].showOnTimetable == null) { s.events[ei].showOnTimetable = true; }
+      if (s.events[ei].archived == null) { s.events[ei].archived = false; }
+    }
+    /**
+     * v0.4.0：「我的」页默认开启（导入过课表后「导入」直接变「我的」）。
+     * 只翻转一次（meta.customTabDefaultOn 记账），之后用户手动关掉就尊重用户选择。
+     */
+    if (!s.meta.customTabDefaultOn) {
+      if (s.settings && s.settings.experimental && s.settings.experimental.customTab) {
+        s.settings.experimental.customTab.enabled = true;
+      }
+      s.meta.customTabDefaultOn = APP_VERSION;
+    }
+    if (!s.meta.countdownsMigrated) {
+      for (var ci = 0; ci < s.countdowns.length; ci++) {
+        var cd = s.countdowns[ci];
+        if (!cd || !cd.date) { continue; }
+        s.events.push({
+          id: 'cdm-' + (cd.id || uid()), title: String(cd.title || '未命名').trim(),
+          type: 'other', date: cd.date, start: '', end: '', place: '', note: '',
+          star: true, showOnTimetable: false, updatedAt: new Date().toISOString()
+        });
+      }
+      s.meta.countdownsMigrated = APP_VERSION;
+    }
+    /* v0.4.1：回收站 / 墓碑 的保留期限（默认 90 天自动清理；0 = 不自动，纯手动） */
+    if (!s.settings.trash) { s.settings.trash = { keepDays: 90 }; }
+    if (s.settings.trash.keepDays == null) { s.settings.trash.keepDays = 90; }
+    /* v0.4.1：检查更新（默认不自动检查） */
+    if (!s.settings.update) { s.settings.update = { auto: false, every: 'week', lastAt: '' }; }
+    /**
+     * v0.3.4：备注分层。
+     *
+     * 以前备注只有一层（时段 block），于是"这一次课的作业"写完会在每一周都冒出来。
+     * 现在拆成：
+     *   · 本次备注 = 单次记录 override(blockId,date).newNote，只影响那一天；
+     *   · 本课备注 = course.note，这门课所有时段共用。
+     * 老数据里写在 block.note 上的备注按"只在那一周"迁移：
+     * 用 block.updatedAt 定位写入那一周，落到那一天的 override 上；
+     * 如果它和 course.note 一模一样（导入时双写的那种），只清掉 block 上那份。
+     */
+    if (!s.meta || !s.meta.notesSplitAt) {
+      splitLegacyBlockNotes(s);
+      if (!s.meta) { s.meta = {}; }
+      s.meta.notesSplitAt = APP_VERSION;
+    }
+    /* 老「长期任务」并进统一任务表（无损、幂等、可回退）。
+       不设一次性闸门：导入老配置后可能又冒出 longTasks，每次都跑一遍，
+       函数自身靠 archived 幂等（已迁的不再重复迁）。 */
+    var movedN = migrateLongTasksIntoToDos(s);
+    if (!s.meta) { s.meta = {}; }
+    if (movedN) {
+      s.meta.tasksMergedAt = APP_VERSION;
+      s.meta.tasksMergedFrom = (s.meta.tasksMergedFrom || 0) + movedN;
+    }
+    s.schemaVersion = SCHEMA_VERSION;
+    return s;
+  }
+
+  function save(immediate) {
+    if (saveTimer) { clearTimeout(saveTimer); saveTimer = null; }
+    var write = function () {
+      try {
+        state.exportedAt = state.exportedAt; // 保持用户上次导出时间
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      } catch (e) {
+        console.error('保存失败', e);
+      }
+    };
+    if (immediate) { write(); } else { saveTimer = setTimeout(write, 220); }
+  }
+
+  function get() { return state; }
+
+  /**
+   * 把 state 的内容换成 next 的内容，但**保留 state 这个对象本身**。
+   *
+   * ui.js / panels.js 在初始化时把 state 存进了自己的 S 变量，
+   * 一旦这里 `state = 新对象`，那些模块就会继续读旧对象 —— 表现是
+   * 「清空数据后主题 / 毛玻璃 / 布局设置没跟着恢复」「改了设置界面不动」。
+   * 所以重置一律走"原地换内容"。
+   */
+  function replaceState(next) {
+    var k;
+    for (k in state) { if (Object.prototype.hasOwnProperty.call(state, k)) { delete state[k]; } }
+    for (k in next) { if (Object.prototype.hasOwnProperty.call(next, k)) { state[k] = next[k]; } }
+    return state;
+  }
+
+  function reset(keepDevice) {
+    var dev = state.device;
+    var ob = state.settings && state.settings.onboardingCompletedAt;
+    var fresh = defaultState();
+    if (keepDevice && dev) { fresh.device = dev; }
+    if (ob) { fresh.settings.onboardingCompletedAt = ob; }
+    replaceState(fresh);
+    save(true);
+    return state;
+  }
+
+  /** 从 localStorage 重新读一份（同样是原地替换，界面缓存的引用继续有效） */
+  function reload() {
+    var fresh = null;
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        var parsed = JSON.parse(raw);
+        if (parsed && parsed.kind === 'abbeyroad.sync') { fresh = migrate(parsed); }
+      }
+    } catch (e) { fresh = null; }
+    if (fresh) { replaceState(fresh); }
+    return state;
+  }
+
+  /** 当前学期 */
+  function currentSemester() {
+    var list = state.semesters || [];
+    var id = state.settings.schedule.currentSemesterId;
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { return list[i]; } }
+    return list[0] || null;
+  }
+
+  function periodsOf(semesterId) {
+    var out = [];
+    for (var i = 0; i < state.periods.length; i++) {
+      if (state.periods[i].semesterId === semesterId) { out.push(state.periods[i]); }
+    }
+    out.sort(function (a, b) { return a.index - b.index; });
+    if (!out.length) { out = state.periods.slice().sort(function (a, b) { return a.index - b.index; }); }
+    return out;
+  }
+
+  function courseById(id) {
+    for (var i = 0; i < state.courses.length; i++) {
+      if (state.courses[i].id === id && !state.courses[i].deletedAt) { return state.courses[i]; }
+    }
+    return null;
+  }
+
+  /* ── 特殊事件（考试 / 讲座 / 活动）───────────────────────── */
+
+  /** 某一天的事件，按开始时间排序（v0.4.0：归档的不出现） */
+  function eventsOf(date) {
+    var key = (typeof date === 'string') ? date : dateKey(date);
+    var out = [];
+    var list = state.events || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].date === key && !list[i].archived && !list[i].deletedAt) { out.push(list[i]); }
+    }
+    out.sort(function (a, b) { return String(a.start || '99:99').localeCompare(String(b.start || '99:99')); });
+    return out;
+  }
+
+  /** 日期区间（含两端）内的事件；归档的不出现 */
+  function eventsBetween(fromKey, toKey) {
+    var out = [];
+    var list = state.events || [];
+    for (var i = 0; i < list.length; i++) {
+      var d = list[i].date || '';
+      if (d >= fromKey && d <= toKey && !list[i].archived && !list[i].deletedAt) { out.push(list[i]); }
+    }
+    out.sort(function (a, b) {
+      var c = String(a.date).localeCompare(String(b.date));
+      return c !== 0 ? c : String(a.start || '99:99').localeCompare(String(b.start || '99:99'));
+    });
+    return out;
+  }
+
+  /** 已归档的日程（按日期倒序）——「已归档」区里找回或删除 */
+  function archivedEvents() {
+    var out = [];
+    var list = state.events || [];
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].archived && !list[i].deletedAt) { out.push(list[i]); }
+    }
+    out.sort(function (a, b) { return String(b.date).localeCompare(String(a.date)); });
+    return out;
+  }
+
+  /** 某一周（周一到周日）的事件 */
+  function eventsInWeek(weekNo, sem) {
+    sem = sem || currentSemester();
+    if (!sem || !sem.startDate) { return []; }
+    var monday = addDays(mondayOf(parseDateKey(sem.startDate)), (Math.max(1, weekNo) - 1) * 7);
+    return eventsBetween(dateKey(monday), dateKey(addDays(monday, 6)));
+  }
+
+  /** 新增 / 更新一个日程（v0.4.0：事件统一叫日程，star=星标、showOnTimetable=是否上周表） */
+  function saveEvent(ev) {
+    state.events = state.events || [];
+    var rec = {
+      id: ev.id || uid(),
+      title: String(ev.title || '').trim(),
+      type: eventType(ev.type).key,
+      date: ev.date || '',
+      start: ev.start || '',
+      end: ev.end || '',
+      place: ev.place || '',
+      note: ev.note || '',
+      star: !!ev.star,
+      showOnTimetable: ev.showOnTimetable == null ? false : !!ev.showOnTimetable,
+      archived: !!ev.archived,
+      updatedAt: new Date().toISOString()
+    };
+    var replaced = false;
+    for (var i = 0; i < state.events.length; i++) {
+      if (state.events[i].id === rec.id) { state.events[i] = rec; replaced = true; break; }
+    }
+    if (!replaced) { state.events.push(rec); }
+    save(true);
+    return rec;
+  }
+
+  /** 删除日程（v0.4.1：软删除，进回收站，可恢复） */
+  function removeEvent(id) {
+    state.events = state.events || [];
+    for (var i = 0; i < state.events.length; i++) {
+      if (state.events[i].id === id && !state.events[i].deletedAt) {
+        softDelete('events', state.events[i]);
+        save(true);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * 改课程名：同名课程会被认成同一门，并统一颜色。
+   * 如果改成一个已存在的课程名，就把这门课的时段并过去，删掉空壳课程。
+   */
+  function renameCourse(courseId, newName) {
+    var name = String(newName || '').trim();
+    if (!name) { return { ok: false, message: '课程名不能为空' }; }
+    var self = courseById(courseId);
+    if (!self) { return { ok: false, message: '找不到这门课' }; }
+    if (self.name === name) { return { ok: true, merged: false, course: self }; }
+
+    var target = null;
+    for (var i = 0; i < state.courses.length; i++) {
+      if (state.courses[i].id !== courseId && state.courses[i].name === name && !state.courses[i].deletedAt) { target = state.courses[i]; break; }
+    }
+    var nowIso = new Date().toISOString();
+    var merged = false;
+    if (target) {
+      /**
+       * 合并：把时段 + 变动记录改挂到目标课程上，然后删掉这门课。
+       * v0.4.1b：只动**没被删**的时段/记录；被合并掉的那门课走软删除
+       * （进回收站，可恢复），不再直接从 courses 里剪掉。
+       */
+      for (var b = 0; b < state.blocks.length; b++) {
+        if (state.blocks[b].courseId === courseId && !state.blocks[b].deletedAt) {
+          state.blocks[b].courseId = target.id;
+          state.blocks[b].courseName = name;
+          state.blocks[b].updatedAt = nowIso;
+        }
+      }
+      for (var b3 = 0; b3 < state.blocks.length; b3++) {
+        if (state.blocks[b3].courseId === target.id && !state.blocks[b3].deletedAt) { state.blocks[b3].courseName = name; }
+      }
+      for (var o = 0; o < state.overrides.length; o++) {
+        if (state.overrides[o].courseId === courseId && !state.overrides[o].deletedAt) { state.overrides[o].courseId = target.id; }
+      }
+      softDelete('courses', self);
+      merged = true;
+    } else {
+      self.name = name;
+      self.updatedAt = nowIso;
+      for (var b2 = 0; b2 < state.blocks.length; b2++) {
+        if (state.blocks[b2].courseId === courseId) { state.blocks[b2].courseName = name; state.blocks[b2].updatedAt = nowIso; }
+      }
+    }
+
+    // 同名 → 同色：把该名字下所有课程的颜色统一成同一个
+    var group = [];
+    for (var g = 0; g < state.courses.length; g++) {
+      if (state.courses[g].name === name) { group.push(state.courses[g]); }
+    }
+    if (group.length > 1) {
+      var keep = group[0].colorKey;
+      for (var k = 1; k < group.length; k++) { group[k].colorKey = keep; group[k].updatedAt = nowIso; }
+    }
+    save(true);
+    return { ok: true, merged: merged, course: target || self, colorKey: group.length ? group[0].colorKey : (target || self).colorKey };
+  }
+
+  /** 同名课程统一颜色（导入后调用，保证「同名同色」） */
+  function unifyColorsByName() {
+    var byName = {};
+    var changed = false;
+    for (var i = 0; i < state.courses.length; i++) {
+      var c = state.courses[i];
+      if (!byName[c.name]) { byName[c.name] = c.colorKey; continue; }
+      if (c.colorKey !== byName[c.name]) { c.colorKey = byName[c.name]; changed = true; }
+    }
+    if (changed) { save(true); }
+    return changed;
+  }
+  function teacherById(id) {
+    for (var i = 0; i < state.teachers.length; i++) { if (state.teachers[i].id === id) { return state.teachers[i]; } }
+    return null;
+  }
+  function locationById(id) {
+    for (var i = 0; i < state.locations.length; i++) { if (state.locations[i].id === id) { return state.locations[i]; } }
+    return null;
+  }
+  function blocksOfCourse(id) {
+    var out = [];
+    for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].courseId === id && !state.blocks[i].deletedAt) { out.push(state.blocks[i]); }
+    }
+    return out;
+  }
+  function overridesOfBlock(id) {
+    var out = [];
+    for (var i = 0; i < state.overrides.length; i++) {
+      if (state.overrides[i].blockId === id && !state.overrides[i].deletedAt) { out.push(state.overrides[i]); }
+    }
+    return out;
+  }
+
+  /* ── 编辑入口（v0.2.0：今日页条目 / 周表单节课程都能直接改）───── */
+
+  function blockById(id) {
+    for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].id === id && !state.blocks[i].deletedAt) { return state.blocks[i]; }
+    }
+    return null;
+  }
+
+  function overrideById(id) {
+    for (var i = 0; i < state.overrides.length; i++) {
+      if (state.overrides[i].id === id && !state.overrides[i].deletedAt) { return state.overrides[i]; }
+    }
+    return null;
+  }
+
+  /** 按名字找老师；没有就现建一个（周表里直接改老师名时用） */
+  function ensureTeacherByName(name) {
+    var n = String(name == null ? '' : name).trim();
+    if (!n) { return null; }
+    for (var i = 0; i < state.teachers.length; i++) {
+      if (String(state.teachers[i].name || '').trim() === n) { return state.teachers[i]; }
+    }
+    var t = { id: uid(), name: n, note: '', contact: '', updatedAt: new Date().toISOString() };
+    state.teachers.push(t);
+    return t;
+  }
+
+  /** 按原始文本找地点；没有就按地点解析规则新建（和导入时的处理完全一致） */
+  function ensureLocationByRaw(raw) {
+    var v = String(raw == null ? '' : raw).trim();
+    if (!v) { return null; }
+    for (var i = 0; i < state.locations.length; i++) {
+      if (String(state.locations[i].raw || '').trim() === v) { return state.locations[i]; }
+    }
+    var parts = { building: '', campus: '', university: '', city: '', room: '' };
+    if (AR.MdParse && AR.MdParse.parsePlaceParts) {
+      parts = AR.MdParse.parsePlaceParts(v, state.settings.integration) || parts;
+    }
+    var loc = {
+      id: uid(), raw: v, building: parts.building, campus: parts.campus,
+      university: parts.university, city: parts.city, room: parts.room,
+      navQueryOverride: '', updatedAt: new Date().toISOString()
+    };
+    state.locations.push(loc);
+    return loc;
+  }
+
+  /** 把 [1,2,3,5,7,8] 压成 "1-3,5,7-8" */
+  function compressWeeks(list) {
+    var w = (list || []).slice().sort(function (a, b) { return a - b; });
+    if (!w.length) { return ''; }
+    var parts = [], s = w[0], prev = w[0];
+    for (var i = 1; i <= w.length; i++) {
+      var cur = w[i];
+      if (cur !== prev + 1) {
+        parts.push(s === prev ? ('' + s) : (s + '-' + prev));
+        s = cur;
+      }
+      prev = cur;
+    }
+    return parts.join(',');
+  }
+
+  /** block 的周次 → 可直接编辑的文本：全周 / 单周 / 双周 / 1-8,10 */
+  function weeksText(block, weekCount) {
+    if (!block) { return '全周'; }
+    if (block.weekMode === 'odd') { return '单周'; }
+    if (block.weekMode === 'even') { return '双周'; }
+    if (block.weekMode === 'custom' && block.weeks && block.weeks.length) {
+      return compressWeeks(block.weeks);
+    }
+    return '全周';
+  }
+
+  /**
+   * 解析周次文本（和提示词规范里的写法一致）：
+   *   全周 / 每周 / 空     → { weekMode:'all',   weeks:[] }
+   *   单周 / 双周          → { weekMode:'odd'|'even', weeks:[] }
+   *   1-8,10,12           → { weekMode:'custom', weeks:[1..8,10,12] }
+   */
+  function parseWeeksText(text, weekCount) {
+    var n = weekCount || 20;
+    var s = String(text == null ? '' : text).trim().replace(/[，、;；]/g, ',');
+    if (!s) { return { weekMode: 'all', weeks: [] }; }
+    if (/^(全周|每周|全部|all)$/i.test(s)) { return { weekMode: 'all', weeks: [] }; }
+    if (/^(单周|单数周|单)$/.test(s)) { return { weekMode: 'odd', weeks: [] }; }
+    if (/^(双周|双数周|双)$/.test(s)) { return { weekMode: 'even', weeks: [] }; }
+    var out = [];
+    var parts = s.split(',');
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i].trim();
+      if (!p) { continue; }
+      var m = /^(\d{1,2})\s*[-~－—至]\s*(\d{1,2})$/.exec(p);
+      if (m) {
+        var a = Number(m[1]), b = Number(m[2]);
+        if (a > b) { var t = a; a = b; b = t; }
+        for (var w = a; w <= b; w++) { if (w >= 1 && w <= n && out.indexOf(w) < 0) { out.push(w); } }
+        continue;
+      }
+      var one = Number(p);
+      if (!isNaN(one) && one >= 1 && one <= n && out.indexOf(one) < 0) { out.push(one); }
+    }
+    out.sort(function (x, y) { return x - y; });
+    if (!out.length) { return { weekMode: 'all', weeks: [] }; }
+    return { weekMode: 'custom', weeks: out };
+  }
+
+  /** 只改一个时段（block）：字段直接合并进去，未传的字段保持原样 */
+  function updateBlock(blockId, patch) {
+    var b = blockById(blockId);
+    if (!b) { return { ok: false, message: '找不到这个时段' }; }
+    var nowIso = new Date().toISOString();
+    for (var k in patch) {
+      if (Object.prototype.hasOwnProperty.call(patch, k)) { b[k] = patch[k]; }
+    }
+    b.updatedAt = nowIso;
+    save(true);
+    return { ok: true, block: b };
+  }
+
+  /** 删掉一个时段（软删除，进回收站；挂着的单次调整一起） */
+  function removeBlock(blockId) {
+    var b = blockById(blockId);
+    if (!b) { return { ok: false }; }
+    softDelete('blocks', b);
+    for (var i = 0; i < state.overrides.length; i++) {
+      var o = state.overrides[i];
+      if (o.blockId === blockId && !o.deletedAt) { softDelete('overrides', o); }
+    }
+    save(true);
+    return { ok: true };
+  }
+
+  /**
+   * 删掉整门课（v0.4.1）：课程 + 它的所有时段 + 这门课的单次调整，**全部软删除**
+   * （都进回收站，能一键恢复）。墓碑照留，导入/合并时不会被旧存档复活。
+   */
+  function removeCourse(courseId) {
+    var n = 0;
+    for (var c = 0; c < state.courses.length; c++) {
+      if (state.courses[c].id === courseId && !state.courses[c].deletedAt) {
+        softDelete('courses', state.courses[c]);
+        n++;
+      }
+    }
+    for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].courseId === courseId && !state.blocks[i].deletedAt) { softDelete('blocks', state.blocks[i]); }
+    }
+    for (var o = 0; o < state.overrides.length; o++) {
+      if (state.overrides[o].courseId === courseId && !state.overrides[o].deletedAt) { softDelete('overrides', state.overrides[o]); }
+    }
+    save(true);
+    return { ok: n > 0, blocks: n };
+  }
+
+  /**
+   * 给「某一天的这一次课」写一条变动记录（仅这一次模式）。
+   * 已存在同一天同 block 的记录就直接合并，不会越改越多条。
+   */
+  function upsertOverride(blockId, courseId, dateKey, patch) {
+    var ov = null;
+    for (var i = 0; i < state.overrides.length; i++) {
+      var o = state.overrides[i];
+      if (o.blockId === blockId && o.date === dateKey) {
+        ov = o;   // 已删的也复用：下面的写入会把它从回收站里"复活"
+        break;
+      }
+    }
+    var nowIso = new Date().toISOString();
+    if (ov && ov.deletedAt) {
+      // 这一天的记录之前被删过（在回收站里）：现在又要写它 → 从回收站复活
+      delete ov.deletedAt;
+      clearTomb('overrides', ov.id);
+      ov.updatedAt = nowIso;
+    }
+    if (!ov) {
+      ov = {
+        id: uid(), courseId: courseId, blockId: blockId, date: dateKey, type: 'edit',
+        newWeekday: null, newDate: null, newPeriodStart: null, newPeriodEnd: null,
+        newStartTime: '', newEndTime: '', newLocationIds: null, newTeacherIds: null,
+        newNote: null, reason: '', updatedAt: nowIso
+      };
+      state.overrides.push(ov);
+    }
+    for (var k in patch) {
+      if (Object.prototype.hasOwnProperty.call(patch, k)) { ov[k] = patch[k]; }
+    }
+    ov.updatedAt = nowIso;
+    save(true);
+    return ov;
+  }
+
+  /** 删掉一条单次调整（软删除，进回收站） */
+  function removeOverride(id) {
+    var ov = overrideById(id);
+    if (!ov) { return { ok: false }; }
+    softDelete('overrides', ov);
+    save(true);
+    return { ok: true };
+  }
+
+  /* ── 节次表自动扩展（v0.2.2：第 13 节及以后的课也要能显示）───── */
+
+  function semesterExists(id) {
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === id) { return true; }
+    }
+    return false;
+  }
+
+  /**
+   * 确保某个学期「拥有自己的节次表」，返回这张表。
+   *
+   * 为什么需要它：历史数据里出现过「节次挂在已经不存在的学期上」的情况，
+   * 平时靠 periodsOf() 的兜底（没找到就用全部节次）勉强显示；
+   * 一旦要补课次，就会凭空多出几条「只属于当前学期」的节次，
+   * 兜底失效 → 课表只剩那几条，作息全乱。
+   */
+  function claimPeriodsFor(semId) {
+    var own = [];
+    for (var i = 0; i < state.periods.length; i++) {
+      if (state.periods[i].semesterId === semId) { own.push(state.periods[i]); }
+    }
+    if (own.length) { return own; }
+    // 先认领「没有归属（学期已不存在）」的节次
+    var loose = [];
+    for (i = 0; i < state.periods.length; i++) {
+      if (!semesterExists(state.periods[i].semesterId)) { loose.push(state.periods[i]); }
+    }
+    if (loose.length) {
+      for (i = 0; i < loose.length; i++) {
+        loose[i].semesterId = semId;
+        loose[i].updatedAt = new Date().toISOString();
+      }
+      return loose;
+    }
+    // 一条都没有（清空 / 新设备）：按默认作息铺一张
+    var fresh = makePeriods(semId);
+    state.periods = state.periods.concat(fresh);
+    return fresh;
+  }
+
+  /**
+   * 课表用到了第 needIndex 节、但节次表不够 → 自动补课次。
+   * 新补的时间接着最后一节往下排（间隔 10 分钟、每节 45 分钟，最晚到 23:59），
+   * 用户可以随时在 设置 → 课程与课表 → 节次时间 里改。
+   * 返回新增的节数（0 = 没动）。
+   */
+  function ensurePeriodsFor(semesterId, needIndex) {
+    var sid = semesterId || (currentSemester() || {}).id;
+    var periods = claimPeriodsFor(sid);      // 先保证这张表真的属于这个学期
+    var max = 0, last = null, i;
+    for (i = 0; i < periods.length; i++) {
+      if (periods[i].index > max) { max = periods[i].index; last = periods[i]; }
+    }
+    if (!needIndex || needIndex <= max) { return 0; }
+    var nowIso = new Date().toISOString();
+    if (!last) { return 0; }
+    var added = 0;
+    var cursor = last.end;
+    for (var idx = max + 1; idx <= needIndex; idx++) {
+      var sMin = hmToMinutes(cursor);
+      var start = sMin == null ? '' : minutesToHM(Math.min(sMin + 10, 23 * 60 + 50));
+      var end = sMin == null ? '' : minutesToHM(Math.min(sMin + 10 + 45, 23 * 60 + 59));
+      state.periods.push({
+        id: uid(), semesterId: sid, index: idx, label: '第' + idx + '节',
+        start: start, end: end, updatedAt: nowIso, autoAdded: true
+      });
+      if (end) { cursor = end; }
+      added++;
+    }
+    if (added) { save(true); }
+    return added;
+  }
+
+  /** 按现有课表实际用到的最大节次补齐节次表（导入 / 合并配置后调用） */
+  function syncPeriodsToUsage(semesterId) {
+    var need = 0, i;
+    for (i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }   // 回收站里的不算
+      var b = state.blocks[i];
+      var e = b.periodEnd || b.periodStart || 0;
+      if (e > need) { need = e; }
+    }
+    for (i = 0; i < state.overrides.length; i++) {
+      var ov = state.overrides[i];
+      var oe = ov.newPeriodEnd || ov.newPeriodStart || 0;
+      if (oe > need) { need = oe; }
+    }
+    return ensurePeriodsFor(semesterId, need);
+  }
+
+  /* ── 合并后的「当前学期」纠偏（v0.2.3）──────────────────────── */
+
+  /** 某个学期下有多少条时段（用来判断这个学期是不是空的） */
+  function blockCountOfSemester(semId) {
+    if (!semId) { return 0; }
+    var n = 0;
+    for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }
+      var c = courseById(state.blocks[i].courseId);
+      if (c && c.semesterId === semId) { n++; }
+    }
+    return n;
+  }
+
+  /** 课最多的那个学期（导入别人配置后，用它兜底） */
+  function busiestSemesterId() {
+    var counts = {}, best = null, bestN = 0, k;
+    for (var i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }
+      var c = courseById(state.blocks[i].courseId);
+      if (!c || !c.semesterId) { continue; }
+      counts[c.semesterId] = (counts[c.semesterId] || 0) + 1;
+    }
+    for (k in counts) {
+      if (Object.prototype.hasOwnProperty.call(counts, k) && counts[k] > bestN) {
+        best = k; bestN = counts[k];
+      }
+    }
+    return best;
+  }
+
+  /**
+   * 导入/合并之后调用：如果「当前学期」一门课都没有、而数据挂在别的学期上，
+   * 就把当前学期切过去。
+   *
+   * 这是「清空数据 → 导入原来的配置文件 → 界面还是空的」的根因：
+   * 清空会新建一个空学期，导入的数据落在文件里那个学期上，
+   * 界面按「当前学期」过滤 → 什么都看不到。
+   *
+   * preferId 一般传配置文件里记录的「对方当前学期」，对得上就优先用它。
+   * 返回是否切换了学期。
+   */
+  function ensureCurrentSemesterHasData(preferId) {
+    var cur = currentSemester();
+    if (cur && blockCountOfSemester(cur.id) > 0) { return false; }
+    var target = null;
+    if (preferId) {
+      var mapped = semesterById(preferId) ? preferId : null;
+      if (mapped && blockCountOfSemester(mapped) > 0) { target = mapped; }
+    }
+    if (!target) { target = busiestSemesterId(); }
+    if (!target || (cur && cur.id === target)) { return false; }
+    state.settings.schedule.currentSemesterId = target;
+    claimPeriodsFor(target);      // 切学期时把节次表也带过去，别留下空作息
+    save(true);
+    return true;
+  }
+
+  function semesterById(id) {
+    for (var i = 0; i < state.semesters.length; i++) {
+      if (state.semesters[i].id === id) { return state.semesters[i]; }
+    }
+    return null;
+  }
+
+  /** 全部学期（按开学日期从新到旧），周表上的「切换学期」用 */
+  function semesterList() {
+    var list = (state.semesters || []).slice();
+    list.sort(function (a, b) { return String(b.startDate || '').localeCompare(String(a.startDate || '')); });
+    return list;
+  }
+
+  /**
+   * 切换到某个学期（周表右上角的学期按钮用）。
+   * 顺便把节次表认领到这个学期，避免切过去发现作息是空的。
+   */
+  function setCurrentSemester(id) {
+    if (!semesterById(id)) { return { ok: false, message: '找不到这个学期' }; }
+    state.settings.schedule.currentSemesterId = id;
+    claimPeriodsFor(id);
+    save(true);
+    return { ok: true, semester: semesterById(id) };
+  }
+
+  /** 这个学期有多少门课（切换学期时给用户看的） */
+  function courseCountOfSemester(semId) {
+    var n = 0;
+    for (var i = 0; i < state.courses.length; i++) {
+      if (state.courses[i].semesterId === semId && !state.courses[i].deletedAt) { n++; }
+    }
+    return n;
+  }
+
+  /** 新建一个学期并切过去（周表右上角「切换学期 → 新建学期」） */
+  function addSemester(info) {
+    var name = String((info && info.name) || '').trim();
+    if (!name) { return { ok: false, message: '学期名称不能为空' }; }
+    var start = (info && info.startDate) || dateKey(mondayOf(new Date()));
+    var weeks = Math.max(1, Math.min(30, Number(info && info.weekCount) || 20));
+    var id = uid();
+    var sem = {
+      id: id, name: name, startDate: start, weekCount: weeks,
+      isCurrent: true, holidays: [], updatedAt: new Date().toISOString()
+    };
+    state.semesters.push(sem);
+    state.periods = state.periods.concat(makePeriods(id));   // 新学期的作息用默认表
+    state.settings.schedule.currentSemesterId = id;
+    save(true);
+    return { ok: true, semester: sem };
+  }
+
+  /* ── 课表计算 ─────────────────────────────────────────────── */
+
+  /** 第几周（1 起）；学期未开始返回 0，超出总周数返回 >weekCount */
+  function weekNumber(date, semester) {
+    var sem = semester || currentSemester();
+    if (!sem) { return 0; }
+    var start = parseDateKey(sem.startDate);
+    if (!start) { return 0; }
+    var base = mondayOf(start);
+    var diff = startOfDay(date).getTime() - base.getTime();
+    return Math.floor(diff / (7 * 86400000)) + 1;
+  }
+
+  /** 展开周次集合：all / odd / even / custom */
+  function expandWeeks(block, weekCount) {
+    var n = weekCount || 20;
+    var out = [];
+    var i;
+    if (block.weekMode === 'odd') {
+      for (i = 1; i <= n; i += 2) { out.push(i); }
+    } else if (block.weekMode === 'even') {
+      for (i = 2; i <= n; i += 2) { out.push(i); }
+    } else if (block.weekMode === 'custom' && block.weeks && block.weeks.length) {
+      out = block.weeks.slice();
+    } else {
+      for (i = 1; i <= n; i++) { out.push(i); }
+    }
+    return out;
+  }
+
+  function weeksLabel(block, weekCount) {
+    var w = expandWeeks(block, weekCount);
+    if (!w.length) { return '未设置周次'; }
+    if (w.length === (weekCount || 20)) { return '1-' + (weekCount || 20) + ' 全周'; }
+    var mode = block.weekMode;
+    if (mode === 'odd') { return '1-' + (weekCount || 20) + ' 单周'; }
+    if (mode === 'even') { return '1-' + (weekCount || 20) + ' 双周'; }
+    // 连续区间压缩显示
+    var parts = [], s = w[0], prev = w[0];
+    for (var i = 1; i <= w.length; i++) {
+      var cur = w[i];
+      if (cur !== prev + 1) {
+        parts.push(s === prev ? ('' + s) : (s + '-' + prev));
+        s = cur;
+      }
+      prev = cur;
+    }
+    return parts.join(',') + ' 周';
+  }
+
+  function periodRange(block, periods) {
+    var start = block.periodStart, end = block.periodEnd || block.periodStart;
+    var p1 = null, p2 = null;
+    for (var i = 0; i < periods.length; i++) {
+      if (periods[i].index === start) { p1 = periods[i]; }
+      if (periods[i].index === end) { p2 = periods[i]; }
+    }
+    // v0.2.0：单个时段可以自己写死一个时间（block.startTime / endTime），
+    // 这样「这门课这学期就是 07:50 开始」不用去改整张节次表。
+    var st = block.startTime || (p1 ? p1.start : '');
+    var en = block.endTime || (p2 ? p2.end : (p1 ? p1.end : ''));
+    if (!st && !p1) { return null; }
+    var label = start
+      ? (start === end ? ('第' + start + '节') : (start + '-' + end + '节'))
+      : '单次课';
+    return {
+      start: st, end: en,
+      label: block.startTime ? (label + ' · 自定义时间') : label
+    };
+  }
+
+  /**
+   * 把某个 block 在指定日期的实际发生（含调课/停课/换教室）算出来。
+   * 返回 item 或 null。
+   */
+  function blockOccurrence(block, date, semester, periods) {
+    var sem = semester || currentSemester();
+    var week = weekNumber(date, sem);
+    var wd = weekdayOf(date);
+    var item = {
+      blockId: block.id, courseId: block.courseId, date: date, weekday: wd,
+      override: null, kind: 'normal'
+    };
+
+    // 1) 单次覆盖：停课 / 调课（改到别的日期）
+    var ovs = overridesOfBlock(block.id);
+    /**
+     * "模板上这一天本来就该上课吗"（星期 + 周次）。
+     *
+     * 下面这几类单次记录（仅这次改的备注 / 地点 / 时间 / 换教室）只对
+     * **真正排了课的这一天**生效 —— 否则把课程星期从周一改到周三之后，
+     * 周一那条"本次备注"记录还会把课重新拉回周一，
+     * 用户看到的就是"我明明把课改到周三了，周一怎么还挂着这门课"。
+     *
+     * 停课（cancel）不受影响，照旧立即生效；搬课（move）的目标日
+     * 由下面读 newDate 的那一段认领，所以调休 / 借课一行都没动。
+     * 只有存在单次记录的课才算（大多数时段 ovs 是空的，不额外开销量量周次）。
+     */
+    var weeks = null;
+    if (ovs.length) { weeks = expandWeeks(block, sem ? sem.weekCount : 20); }
+    var onTemplate = ovs.length ? ((block.weekday === wd) && (weeks.indexOf(week) >= 0)) : false;
+    for (var i = 0; i < ovs.length; i++) {
+      var ov = ovs[i];
+      var ovDate = parseDateKey(ov.date);
+      if (!ovDate || !sameDay(ovDate, date)) { continue; }
+      if (ov.type === 'cancel') { return null; }
+      /**
+       * 本次修复（v0.3.0 补丁）：把 'edit'（编辑窗口里选「仅这次」保存）也算成「这一次课的覆盖」。
+       * 以前这里只认 move / time / room，于是「仅这次」改完备注、地点、时间之后
+       * blockOccurrence 根本不认这条记录 —— 界面上一点变化都没有，
+       * 用户看到的就是「备注改了但没用」。
+       */
+      if (ov.type === 'move' || ov.type === 'time' || ov.type === 'room' || ov.type === 'edit') {
+        if (!onTemplate) { continue; }
+        item.override = ov;
+        item.kind = ov.type;
+        return item;
+      }
+    }
+    if (ovs.length) {
+      for (var j = 0; j < ovs.length; j++) {
+        if (ovs[j].type === 'move' && ovs[j].newDate) {
+          var nd = parseDateKey(ovs[j].newDate);
+          if (nd && sameDay(nd, date)) {
+            item.override = ovs[j];
+            item.kind = 'moved-in';
+            return item;
+          }
+        }
+      }
+    }
+
+    // 2) 常规模板
+    if (block.weekday !== wd) { return null; }
+    if (!weeks) { weeks = expandWeeks(block, sem ? sem.weekCount : 20); }
+    if (weeks.indexOf(week) < 0) { return null; }
+    return item;
+  }
+
+  /**
+   * 组装一天的完整日程（含补课/加课），按开始时间排序。
+   */
+  function dayItems(date, semester) {
+    var sem = semester || currentSemester();
+    var periods = periodsOf(sem && sem.id);
+    var out = [];
+    var i, item, block, course, pr;
+
+    for (i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }
+      block = state.blocks[i];
+      course = courseById(block.courseId);
+      if (!course) { continue; }
+      if (sem && course.semesterId && course.semesterId !== sem.id) { continue; }
+      item = blockOccurrence(block, date, sem, periods);
+      if (!item) { continue; }
+      out.push(decorate(item, block, course, periods));
+    }
+
+    // 补课 / 加课：直接在 overrides 上挂着的单次课
+    for (i = 0; i < state.overrides.length; i++) {
+      var ov = state.overrides[i];
+      if (ov.deletedAt) { continue; }
+      if (ov.type !== 'makeup' && ov.type !== 'add') { continue; }
+      var od = parseDateKey(ov.date);
+      if (!od || !sameDay(od, date)) { continue; }
+      course = courseById(ov.courseId);
+      if (!course) { continue; }
+      block = {
+        id: ov.blockId || ('ov_' + ov.id), courseId: ov.courseId,
+        weekday: weekdayOf(od), periodStart: ov.newPeriodStart || 1,
+        periodEnd: ov.newPeriodEnd || ov.newPeriodStart || 1,
+        startTime: ov.newStartTime || '', endTime: ov.newEndTime || '',
+        weekMode: 'custom', weeks: [], locationIds: ov.newLocationIds || [],
+        note: ov.newNote || ''
+      };
+      item = { blockId: block.id, courseId: course.id, date: date, weekday: weekdayOf(od), override: ov, kind: ov.type };
+      out.push(decorate(item, block, course, periods));
+    }
+
+    out.sort(function (a, b) {
+      return (a.startMin == null ? 99999 : a.startMin) - (b.startMin == null ? 99999 : b.startMin);
+    });
+    return out;
+  }
+
+  /** 给 item 补上课程、时间、地点、老师等展示字段 */
+  function decorate(item, block, course, periods) {
+    var periodList = periods || periodsOf(course.semesterId);
+    var pr = periodRange(block, periodList);
+    var ov = item.override;
+    var locationIds = block.locationIds || [];
+    var teacherIds = block.teacherIds || (course.teacherIds || []);
+    /**
+     * 备注取值：以前是 block.note || course.note。
+     * 导入时同一行的备注会同时写进 course 和 block 两处，于是在备注窗口里
+     * 清空只清掉了 block 那一份，界面又用 course 里的兜底显示回来 ——
+     * 表现就是「备注删不掉 / 改完没反应」。
+     * 现在只要 block 上带着这个字段就以它为准，course 只在老数据缺字段时兜底。
+     *
+     * src 记录每个字段到底来自哪一层，编辑窗口据此把改动写回正确的位置
+     * （override = 只影响这一天；block = 这门课所有时段）。
+     */
+    /**
+     * v0.3.4 备注分层（这是"备注会重复出现在每一周"的根治）：
+     *   note       = 本次备注，只属于这一天 —— 存在单次记录 override.newNote 上；
+     *   courseNote = 本课备注，这门课所有时段共用 —— 存在 course.note 上。
+     * block.note 只作为老数据的兜底（迁移时已经把它搬到单次记录里）。
+     * src.note 固定为 override：点备注永远写"这一次"，长按才写课程级。
+     */
+    var note = (typeof block.note === 'string') ? block.note : '';
+    var courseNote = course.note || '';
+    var src = {
+      note: 'override',
+      teacher: (block.teacherIds && block.teacherIds.length) ? 'block'
+        : ((course.teacherIds && course.teacherIds.length) ? 'course' : 'block'),
+      location: (block.locationIds && block.locationIds.length) ? 'block'
+        : (course.defaultLocationId ? 'course' : 'block')
+    };
+
+    if (ov) {
+      if (ov.newPeriodStart) {
+        pr = periodRange({
+          periodStart: ov.newPeriodStart, periodEnd: ov.newPeriodEnd || ov.newPeriodStart,
+          startTime: ov.newStartTime, endTime: ov.newEndTime
+        }, periodList) || pr;
+      }
+      if (ov.newLocationIds && ov.newLocationIds.length) { locationIds = ov.newLocationIds; src.location = 'override'; }
+      else if (ov.newLocationCleared) { locationIds = []; src.location = 'override'; }
+      // v0.2.0：单次课也能单独换老师 / 清空备注（编辑窗口写入这些字段）
+      if (ov.newTeacherIds) { teacherIds = ov.newTeacherIds; src.teacher = 'override'; }
+      if (typeof ov.newNote === 'string' && ov.newNote !== '') { note = ov.newNote; src.note = 'override'; }
+      else if (ov.newNoteCleared) { note = ''; src.note = 'override'; }
+    }
+    if ((!locationIds || !locationIds.length) && course.defaultLocationId) {
+      locationIds = [course.defaultLocationId];
+    }
+
+    var loc = locationIds && locationIds.length ? locationById(locationIds[0]) : null;
+    var teachers = [];
+    for (var i = 0; i < teacherIds.length; i++) {
+      var t = teacherById(teacherIds[i]);
+      if (t) { teachers.push(t); }
+    }
+
+    var startMin = pr ? hmToMinutes(pr.start) : null;
+    var endMin = pr ? hmToMinutes(pr.end) : null;
+
+    return {
+      blockId: item.blockId, courseId: course.id, course: course, block: block,
+      override: ov, kind: item.kind, date: item.date,
+      periodLabel: pr ? pr.label : '',
+      start: pr ? pr.start : '', end: pr ? pr.end : '',
+      startMin: startMin, endMin: endMin,
+      location: loc, teachers: teachers, note: note, src: src,
+      courseNote: courseNote,      // 本课备注（所有时段共用），空字符串表示没写
+      color: colorHex(course.colorKey),
+      isConsecutive: !!block.isConsecutive,
+      segments: block.segments || null
+    };
+  }
+
+  /** 找到离现在最近的一节课（今天剩下的，否则往后 14 天） */
+  function nextItem(now) {
+    now = now || new Date();
+    var today = startOfDay(now);
+    var nowMin = now.getHours() * 60 + now.getMinutes();
+    var i, items, item;
+
+    items = dayItems(today);
+    for (i = 0; i < items.length; i++) {
+      if (items[i].endMin == null || items[i].endMin >= nowMin) {
+        return { item: items[i], day: today, offsetDays: 0 };
+      }
+    }
+    for (var d = 1; d <= 14; d++) {
+      var day = addDays(today, d);
+      items = dayItems(day);
+      if (items.length) { return { item: items[0], day: day, offsetDays: d }; }
+    }
+    return null;
+  }
+
+  /** 当前正在进行的课（若有） */
+  function ongoingItem(now) {
+    now = now || new Date();
+    var items = dayItems(startOfDay(now));
+    var nowMin = now.getHours() * 60 + now.getMinutes();
+    for (var i = 0; i < items.length; i++) {
+      if (items[i].startMin != null && items[i].endMin != null &&
+          nowMin >= items[i].startMin && nowMin <= items[i].endMin) {
+        return items[i];
+      }
+    }
+    return null;
+  }
+
+  /** 某周某天的课表（周表用） */
+  function weekItems(weekNo, weekday) {
+    var sem = currentSemester();
+    if (!sem) { return []; }
+    var start = parseDateKey(sem.startDate);
+    if (!start) { return []; }
+    var monday = addDays(mondayOf(start), (weekNo - 1) * 7);
+    var date = addDays(monday, weekday - 1);
+    return dayItems(date, sem);
+  }
+
+  /**
+   * 冲突检测：按 (周, 星期, 节次) 建占用表。
+   * C200 同一天同一节次两门不同课；C220 同一门课同一时段不同地点。
+   */
+  function conflicts() {
+    var sem = currentSemester();
+    var weekCount = sem ? sem.weekCount : 20;
+    var occupancy = {};
+    var out = [];
+    var i, j, k, block;
+
+    for (i = 0; i < state.blocks.length; i++) {
+      if (state.blocks[i].deletedAt) { continue; }
+      block = state.blocks[i];
+      var course = courseById(block.courseId);
+      if (!course) { continue; }
+      var weeks = expandWeeks(block, weekCount);
+      var pStart = block.periodStart;
+      var pEnd = block.periodEnd || block.periodStart;
+      for (j = 0; j < weeks.length; j++) {
+        for (k = pStart; k <= pEnd; k++) {
+          var key = weeks[j] + '|' + block.weekday + '|' + k;
+          if (!occupancy[key]) { occupancy[key] = []; }
+          occupancy[key].push(block);
+        }
+      }
+    }
+
+    var seen = {};
+    for (var key2 in occupancy) {
+      if (!Object.prototype.hasOwnProperty.call(occupancy, key2)) { continue; }
+      var list = occupancy[key2];
+      if (list.length < 2) { continue; }
+      var a = list[0], b = list[1];
+      var ca = courseById(a.courseId), cb = courseById(b.courseId);
+      if (!ca || !cb) { continue; }
+      var sig = (ca.id < cb.id ? ca.id + '_' + cb.id : cb.id + '_' + ca.id) + '_' + key2.split('|')[1] + '_' + key2.split('|')[2];
+      if (seen[sig]) { continue; }
+      seen[sig] = true;
+      var parts = key2.split('|');
+      if (ca.id !== cb.id) {
+        out.push({
+          code: 'C200', level: 'danger',
+          message: '第 ' + parts[0] + ' 周 ' + WEEKDAY_NAMES[Number(parts[1])] + ' 第 ' + parts[2] + ' 节：'
+            + ca.name + ' 与 ' + cb.name + ' 时间冲突'
+        });
+      } else {
+        var la = (a.locationIds && a.locationIds[0]) || ca.defaultLocationId;
+        var lb = (b.locationIds && b.locationIds[0]) || cb.defaultLocationId;
+        if (la && lb && la !== lb) {
+          var l1 = locationById(la), l2 = locationById(lb);
+          out.push({
+            code: 'C220', level: 'warn',
+            message: ca.name + ' 在同一时段有两个地点：' + (l1 ? l1.raw : la) + ' / ' + (l2 ? l2.raw : lb)
+          });
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 连堂课自动识别（规划文档 §6.8）
+   * 判定：同课程 + 同一天 + 相邻节次 + 周次集合完全一致 → 合并
+   * 返回 { merged: [block], suggestions: [...] }
+   */
+  function mergeConsecutive(blocks, weekCount) {
+    var groups = {};
+    var i, b;
+    for (i = 0; i < blocks.length; i++) {
+      b = blocks[i];
+      var key = b.courseId + '|' + b.weekday;
+      if (!groups[key]) { groups[key] = []; }
+      groups[key].push(b);
+    }
+    var merged = [], suggestions = [];
+
+    for (var g in groups) {
+      if (!Object.prototype.hasOwnProperty.call(groups, g)) { continue; }
+      var list = groups[g].slice().sort(function (x, y) { return x.periodStart - y.periodStart; });
+      var chain = [];
+      for (i = 0; i < list.length; i++) {
+        b = list[i];
+        if (!chain.length) { chain.push(b); continue; }
+        var prev = chain[chain.length - 1];
+        var prevEnd = prev.periodEnd || prev.periodStart;
+        var sameWeeks = sameWeekSet(prev, b, weekCount);
+        if (b.periodStart === prevEnd + 1) {
+          if (sameWeeks) {
+            prev.periodEnd = b.periodEnd || b.periodStart;
+            prev.isConsecutive = true;
+            prev.segments = (prev.segments || [[prev.periodStart, prevEnd]]).concat([[b.periodStart, b.periodEnd || b.periodStart]]);
+            prev.mergedIds = (prev.mergedIds || [prev.id]).concat([b.id]);
+          } else {
+            suggestions.push({
+              a: prev, b: b,
+              message: '「' + (prev.courseName || (courseById(prev.courseId) || {}).name || '该课程') + '」第 '
+                + prev.periodStart + '-' + prevEnd + ' 节与第 '
+                + b.periodStart + '-' + (b.periodEnd || b.periodStart) + ' 节相邻，但周次/单双周不同，是否合并为连堂？'
+            });
+            chain.push(b);
+          }
+        } else {
+          chain.push(b);
+        }
+      }
+      for (i = 0; i < chain.length; i++) { merged.push(chain[i]); }
+    }
+    return { merged: merged, suggestions: suggestions };
+  }
+
+  function sameWeekSet(a, b, weekCount) {
+    var wa = expandWeeks(a, weekCount).slice().sort(function (x, y) { return x - y; }).join(',');
+    var wb = expandWeeks(b, weekCount).slice().sort(function (x, y) { return x - y; }).join(',');
+    return wa === wb;
+  }
+
+  /* ── 地点解析与导航（规划文档 §11） ──────────────────────── */
+
+  function normalizePlace(raw) {
+    var s = String(raw || '');
+    // 全角 → 半角
+    s = s.replace(/[\uFF01-\uFF5E]/g, function (ch) { return String.fromCharCode(ch.charCodeAt(0) - 0xFEE0); });
+    s = s.replace(/[\u3000]/g, ' ');
+    s = s.replace(/[（(][^）)]*[）)]\s*$/, '');       // 去掉结尾括注
+    s = s.replace(/\s+/g, ' ').trim();
+    return s;
+  }
+
+  var ONLINE_RE = /(腾讯会议|钉钉|飞书|Zoom|zoom|直播|线上|网课|腾讯课堂|B站|bilibili|雨课堂|学习通|微信群|QQ群)/;
+  var ROOM_RE = /(教室|课室|机房|实验室|报告厅|阶梯教室|智慧教室|多媒体\d*|[A-Za-z]?\d{3,4}|[东西南北]?\d-\d{2,3}|[A-Z]-\d{3})/;
+  var FLOOR_RE = /\d+\s*楼|\d+\s*层|[一二三四五六七八九十]+\s*楼|[一二三四五六七八九十]+\s*层/;
+
+  /**
+   * 生成导航查询词。
+   * 例：'XX大学 信息楼 305教室' → 'XX大学 信息楼'
+   */
+  function navQuery(rawText, settings) {
+    var st = (settings || state.settings).integration;
+    var raw = String(rawText || '').trim();
+    var norm = normalizePlace(raw);
+    var result = {
+      raw: raw, normalized: norm, trimmed: '', query: '',
+      online: false, usable: true, steps: []
+    };
+    if (!norm || norm === '?' || norm === '-' || norm === '待定') {
+      result.usable = false;
+      result.query = '';
+      result.steps.push('地点为空或未确认');
+      return result;
+    }
+    if (st.onlineTreatAsNoNav && ONLINE_RE.test(norm)) {
+      result.online = true;
+      result.usable = false;
+      result.query = norm;
+      result.steps.push('识别为线上课程 → 不导航，改为复制链接/会议号');
+      return result;
+    }
+
+    var work = norm;
+    if (st.trimRoom) {
+      var before = work;
+      var trimmed = trimToBuilding(work);
+      // 兜底：如果裁完只剩"学校名/城市"这类其实不是地点的词，说明连楼栋名一起删掉了
+      // （例如「XX大学 机房 302」），此时退回只删除纯数字的版本。
+      var uni0 = (st.university || '').trim();
+      var city0 = (st.city || '').trim();
+      var residue = trimmed.split(/\s+/).filter(function (t) {
+        return t && t !== uni0 && t !== city0;
+      });
+      if (!residue.length) {
+        var mild = norm.split(/\s+/).filter(function (t) {
+          return t && !/^[A-Za-z]?\d{1,4}$/.test(t);
+        }).join(' ').trim();
+        if (mild) { trimmed = mild; }
+      }
+      work = trimmed;
+      if (work !== before) { result.steps.push('裁剪教室号/楼层'); }
+    }
+    // 去掉残留的连接符
+    work = work.replace(/[-–—·・,，、]+$/g, '').replace(/\s+/g, ' ').trim();
+
+    var university = (st.university || '').trim();
+    var campus = (st.campus || '').trim();
+    var city = (st.city || '').trim();
+
+    if (st.keepCampus && campus && work.indexOf(campus) < 0 && norm.indexOf(campus) >= 0) {
+      work = work.replace(/\s+/g, ' ').trim();
+      if (work.indexOf(campus) < 0) { work = campus + ' ' + work; }
+    }
+    // 已经是完整地址（带门牌号，或本身就含城市）时不要再加学校名
+    var fullAddress = (city && work.indexOf(city) >= 0)
+      || /\d+\s*号/.test(work)
+      || /(?:路|街|道|大道|巷)\s*\d*\s*号/.test(work);
+    if (university && work.indexOf(university) < 0) {
+      if (st.autoPrependUniversity && !fullAddress) {
+        work = university + ' ' + work;
+        result.steps.push('补全大学名称');
+      } else if (fullAddress) {
+        result.steps.push('已是完整地址，不补学校名');
+      }
+    }
+    // 只在"没写学校名、且信息明显不足"时才追加城市，避免把完整查询词写坏
+    var tooShort = work.replace(/\s/g, '').length <= 6;
+    if (st.appendCityWhenAmbiguous && city && tooShort && work.indexOf(city) < 0
+        && (!university || work.indexOf(university) < 0)) {
+      work = work + ' ' + city;
+      result.steps.push('追加城市');
+    }
+    // 去掉与城市重复的前缀
+    if (city && work.indexOf(city) >= 0) {
+      var dupe = new RegExp(city + '\\s+' + city, 'g');
+      work = work.replace(dupe, city);
+    }
+    // 完整地址：去掉开头的城市名，保留区/街道等有效信息
+    if (city && fullAddress && work.indexOf(city) === 0 && work.length > city.length + 1) {
+      work = work.slice(city.length).replace(/^[\s,，]+/, '');
+      result.steps.push('去掉重复的城市前缀');
+    }
+
+    result.trimmed = work;
+    result.query = work;
+    return result;
+  }
+
+  /**
+   * 只保留到「楼栋/校区」层级：
+   *   'XX大学 信息楼 305教室'      → 'XX大学 信息楼'
+   *   '实验楼B座 5楼 智慧教室3'     → '实验楼B座'
+   *   '南苑食堂门口'               → '南苑食堂'
+   */
+  function trimToBuilding(s) {
+    var work = String(s || '');
+    var ROOM_TAIL = new RegExp(
+      '\\s*(?:'
+      + '(?:教室|课室|机房|实验室|报告厅|阶梯教室|智慧教室|多媒体教室|多媒体|实验)\\s*\\d{0,4}'
+      + '|[A-Za-z]?\\d{1,4}\\s*(?:教室|课室|室)?'
+      + '|(?:实验|机房|教室)?\\s*[东西南北]?\\d{1,2}\\s*[-－]\\s*\\d{1,3}'
+      + ')\\s*$');
+    var FLOOR_TAIL = /\s*(?:\d{1,3}\s*(?:楼|层)|[一二三四五六七八九十]{1,3}\s*(?:楼|层))\s*$/;
+    var PLACE_SUFFIX = /\s*(?:门口|门前|楼下|侧门|正门|大门口|集合点)\s*$/;
+    var changed = true;
+    var guard = 0;
+    while (changed && guard++ < 8) {
+      changed = false;
+      var before = work;
+      work = work.replace(PLACE_SUFFIX, '');
+      work = work.replace(FLOOR_TAIL, '');
+      work = work.replace(ROOM_TAIL, '');
+      work = work.replace(/[-–—·・,，、]+$/g, '');
+      work = work.replace(/\s+/g, ' ').trim();
+      if (work !== before) { changed = true; }
+    }
+    return work;
+  }
+
+  /** 生成地图 App 的兜底链接（Windows / 浏览器） */
+  function navWebUrl(query, pref) {
+    var q = encodeURIComponent(query);
+    if (pref === 'baidu') { return 'https://map.baidu.com/search/' + q; }
+    if (pref === 'google') { return 'https://maps.google.com/?q=' + q; }
+    return 'https://uri.amap.com/search?keyword=' + q;
+  }
+
+  /* ── JSON 导入合并（规划文档 §5.5） ──────────────────────── */
+
+  function exportPayload() {
+    var copy = deepCopy(state);
+    copy.exportedAt = new Date().toISOString();
+    copy.appVersion = APP_VERSION;
+    copy.device = copy.device || {};
+    if (AR.Bridge && AR.Bridge.deviceName) { copy.device.name = AR.Bridge.deviceName(); }
+    if (AR.Bridge && AR.Bridge.platform) { copy.device.platform = AR.Bridge.platform(); }
+    return copy;
+  }
+
+  function exportFileName() {
+    var d = new Date();
+    var name = (state.device && state.device.name) ? state.device.name.replace(/[\\/:*?"<>|\s]/g, '') : 'device';
+    return 'AbbeyRoad-backup-' + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate())
+      + '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + '-' + name + '.json';
+  }
+
+  /**
+   * 计算合并预览：新增 / 更新 / 冲突 / 删除。
+   * 采用「字段级新者胜 + 冲突清单」策略。
+   */
+  var MERGE_TABLES = ['semesters', 'teachers', 'locations', 'courses', 'blocks', 'overrides', 'events',
+    'tasks', 'tasks2', 'longTasks', 'reminders'];
+  var REF_MAP_NAME = {
+    semesters: 'semester', teachers: 'teacher', locations: 'location',
+    courses: 'course', blocks: 'block', overrides: 'override'
+  };
+
+  function labelOfRecord(rec) {
+    if (!rec) { return ''; }
+    if (rec.name) { return rec.name; }
+    if (rec.raw) { return rec.raw; }
+    if (rec.title) { return rec.title; }
+    if (rec.date) { return rec.date + (rec.start ? ' ' + rec.start : ''); }
+    return rec.id || '';
+  }
+
+  /**
+   * 跨设备合并的关键（v0.2.1）：两台设备各自生成过 id，同一门课 id 对不上，
+   * 只按 id 合并就会「导出再导入 = 两份一模一样的课」。
+   * 所以先按内容找同一条记录（学期看开学日期、老师看姓名、地点看原文、
+   * 课程看课程名、时段看 课程+星期+节次+周次），找不到才算新增。
+   */
+  function naturalKeyOf(table, rec, maps) {
+    if (!rec) { return null; }
+    var cid, sem, bid;
+    if (table === 'semesters') { return rec.startDate ? ('date:' + rec.startDate) : null; }
+    if (table === 'teachers') { return rec.name ? ('name:' + String(rec.name).trim()) : null; }
+    if (table === 'locations') { return rec.raw ? ('raw:' + String(rec.raw).trim()) : null; }
+    if (table === 'courses') {
+      sem = rec.semesterId && maps.semester ? (maps.semester[rec.semesterId] || rec.semesterId) : rec.semesterId;
+      return rec.name ? ('name:' + String(rec.name).trim() + '|' + (sem || '')) : null;
+    }
+    if (table === 'blocks') {
+      cid = rec.courseId && maps.course ? (maps.course[rec.courseId] || rec.courseId) : rec.courseId;
+      return ['b', cid, rec.weekday, rec.periodStart, rec.periodEnd,
+        rec.weekMode || 'all', (rec.weeks || []).join('.')].join('|');
+    }
+    if (table === 'overrides') {
+      bid = rec.blockId && maps.block ? (maps.block[rec.blockId] || rec.blockId) : rec.blockId;
+      return ['o', bid || rec.courseId, rec.date, rec.type].join('|');
+    }
+    if (table === 'events') { return ['e', rec.date, rec.type || '', rec.title || ''].join('|'); }
+    // 作业条目：跨设备按「哪天的哪节课 + 文字」配对，划掉状态才能对上
+    if (table === 'tasks') {
+      bid = rec.blockId && maps.block ? (maps.block[rec.blockId] || rec.blockId) : rec.blockId;
+      return ['t', bid || rec.courseId || '', rec.date || '', normTaskText(rec.text)].join('|');
+    }
+      /* 统一任务：按「文字 + 创建日」配对 —— 跨设备不会把两条同名任务并成一条，
+         同一条任务也不会因为本地改了颜色/计划而重复导入。 */
+      if (table === 'tasks2') {
+        var t2day = '';
+        if (rec.createdAt) { t2day = String(rec.createdAt).slice(0, 10); }
+        return ['t2', normTaskText(rec.text), t2day].join('|');
+      }
+    return null;
+  }
+
+  /** 把外来记录里的关联 id 换成本地 id（跨设备这些 id 是不一样的） */
+  function remapRecordRefs(table, rec, maps, keepId) {
+    var out = {}, k;
+    for (k in rec) { if (Object.prototype.hasOwnProperty.call(rec, k)) { out[k] = rec[k]; } }
+    if (keepId) { out.id = keepId; }
+    if (out.semesterId && maps.semester[out.semesterId]) { out.semesterId = maps.semester[out.semesterId]; }
+    if (out.courseId && maps.course[out.courseId]) { out.courseId = maps.course[out.courseId]; }
+    if (out.blockId && maps.block && maps.block[out.blockId]) { out.blockId = maps.block[out.blockId]; }
+    if (Array.isArray(out.teacherIds)) {
+      out.teacherIds = out.teacherIds.map(function (id) { return maps.teacher[id] || id; });
+    }
+    if (Array.isArray(out.locationIds)) {
+      out.locationIds = out.locationIds.map(function (id) { return maps.location[id] || id; });
+    }
+    if (Array.isArray(out.newLocationIds)) {
+      out.newLocationIds = out.newLocationIds.map(function (id) { return maps.location[id] || id; });
+    }
+    if (Array.isArray(out.newTeacherIds)) {
+      out.newTeacherIds = out.newTeacherIds.map(function (id) { return maps.teacher[id] || id; });
+    }
+    return out;
+  }
+
+  /** 先算「要新增什么、要更新什么」，预览和真正合并共用同一份逻辑 */
+  function planMerge(incoming) {
+    var plan = { additions: [], updates: [], unknown: [], matched: 0, tombstones: [] };
+    /**
+     * 墓碑（删除记录）只统计「真的会删掉本机某条数据」的那些。
+     * 导入自己刚导出的文件时，墓碑对应的记录早就删掉了，
+     * 全算进来的话预览会写「删除 2」，看着像要误删东西。
+     */
+    var tombs = (incoming && incoming.tombstones) || [];
+    for (var ti = 0; ti < tombs.length; ti++) {
+      var tb = tombs[ti];
+      var live = tb && tb.entity && Array.isArray(state[tb.entity]) ? state[tb.entity] : [];
+      for (var li = 0; li < live.length; li++) {
+        // 已经软删除（在回收站里）的不算"还会删掉本机数据"
+        if (live[li].id === tb.id && !live[li].deletedAt) { plan.tombstones.push(tb); break; }
+      }
+    }
+    if (typeof incoming.schemaVersion === 'number' && incoming.schemaVersion > SCHEMA_VERSION) {
+      plan.unknown.push('文件版本 ' + incoming.schemaVersion + ' 高于当前 App 支持的 ' + SCHEMA_VERSION + '，可能有字段被忽略');
+    }
+    var maps = plan.maps = { semester: {}, teacher: {}, location: {}, course: {}, block: {}, override: {} };
+    for (var t = 0; t < MERGE_TABLES.length; t++) {
+      var table = MERGE_TABLES[t];
+      var mine = state[table] || [];
+      var theirs = incoming[table] || [];
+      var byId = {}, byKey = {}, i;
+      for (i = 0; i < mine.length; i++) {
+        byId[mine[i].id] = mine[i];
+        var mk = naturalKeyOf(table, mine[i], maps);
+        if (mk && !byKey[mk]) { byKey[mk] = mine[i]; }
+      }
+      var mapName = REF_MAP_NAME[table];
+      for (i = 0; i < theirs.length; i++) {
+        var rec = theirs[i];
+        if (!rec || !rec.id) { continue; }
+        var key = naturalKeyOf(table, rec, maps);
+        var local = byId[rec.id];
+        var target = local || ((!local && key && byKey[key]) ? byKey[key] : null);
+        if (target) {
+          if (mapName) { maps[mapName][rec.id] = target.id; }
+          if (!local) { plan.matched++; }
+          var lt = Date.parse(target.updatedAt || 0) || 0;
+          var rt = Date.parse(rec.updatedAt || 0) || 0;
+          if (rt > lt && JSON.stringify(rec) !== JSON.stringify(target)) {
+            plan.updates.push({ table: table, id: target.id, rec: rec });
+          }
+        } else {
+          if (mapName) { maps[mapName][rec.id] = rec.id; }
+          if (key) { byKey[key] = rec; }
+          plan.additions.push({ table: table, rec: rec });
+        }
+      }
+    }
+    collectNewTemplates(incoming, plan);
+    return plan;
+  }
+
+  /** 提示词模板：按 id 去重，本地没见过的才加进来 */
+  function collectNewTemplates(incoming, plan) {
+    var theirs = incoming.promptTemplates;
+    if (!Array.isArray(theirs) || !theirs.length) { return; }
+    for (var i = 0; i < theirs.length; i++) {
+      var rec = theirs[i];
+      if (!rec || !rec.id) { continue; }
+      var found = false;
+      for (var j = 0; j < (state.promptTemplates || []).length; j++) {
+        if (state.promptTemplates[j].id === rec.id) { found = true; break; }
+      }
+      if (!found) { plan.additions.push({ table: 'promptTemplates', rec: rec }); }
+    }
+  }
+
+  function previewMerge(incoming) {
+    if (!incoming || incoming.kind !== 'abbeyroad.sync') {
+      throw new Error('文件不是 Abbey Road 同步文件（缺少 kind=abbeyroad.sync）');
+    }
+    var plan = planMerge(incoming);
+    var report = {
+      added: 0, updated: 0, conflicts: 0, removed: 0,
+      unknown: plan.unknown, details: [], matched: plan.matched
+    };
+    var i;
+    for (i = 0; i < plan.additions.length; i++) {
+      if (plan.additions[i].table === 'promptTemplates') { continue; }
+      report.added++;
+      if (report.details.length < 40) {
+        report.details.push({
+          table: plan.additions[i].table, id: plan.additions[i].rec.id,
+          action: 'add', label: labelOfRecord(plan.additions[i].rec)
+        });
+      }
+    }
+    for (i = 0; i < plan.updates.length; i++) {
+      report.updated++;
+      if (report.details.length < 40) {
+        report.details.push({
+          table: plan.updates[i].table, id: plan.updates[i].id,
+          action: 'update', label: labelOfRecord(plan.updates[i].rec)
+        });
+      }
+    }
+    for (i = 0; i < plan.tombstones.length; i++) { report.removed++; }
+    return report;
+  }
+
+  /** 应用合并（在预览后调用） */
+  function applyMerge(incoming, options) {
+    options = options || {};
+    var plan = planMerge(incoming);
+    var i, j;
+    for (i = 0; i < plan.additions.length; i++) {
+      var add = plan.additions[i];
+      if (!Array.isArray(state[add.table])) { state[add.table] = []; }
+      state[add.table].push(remapRecordRefs(add.table, add.rec, plan.maps, null));
+    }
+    for (i = 0; i < plan.updates.length; i++) {
+      var up = plan.updates[i];
+      var list = state[up.table] || [];
+      for (j = 0; j < list.length; j++) {
+        if (list[j].id === up.id) {
+          list[j] = remapRecordRefs(up.table, up.rec, plan.maps, up.id);
+          break;
+        }
+      }
+    }
+    if (options.preferIncoming) {
+      // 「以对方为准」：同一条记录（含按内容匹配上的）全部用对方的字段覆盖
+      for (i = 0; i < MERGE_TABLES.length; i++) {
+        var table = MERGE_TABLES[i];
+        var theirs = incoming[table];
+        if (!Array.isArray(theirs)) { continue; }
+        var mapName = REF_MAP_NAME[table];
+        for (j = 0; j < theirs.length; j++) {
+          var rec = theirs[j];
+          if (!rec || !rec.id) { continue; }
+          var mappedId = (mapName && plan.maps[mapName] && plan.maps[mapName][rec.id]) || rec.id;
+          for (var m = 0; m < (state[table] || []).length; m++) {
+            if (state[table][m].id === mappedId) {
+              state[table][m] = remapRecordRefs(table, rec, plan.maps, mappedId);
+              break;
+            }
+          }
+        }
+      }
+    }
+    /**
+     * 设置：把"个性化设置"整份带过来（v0.4.1a）。
+     *
+     * 老逻辑是「只填空缺」（target[f] === undefined 才写）。但 defaultSettings()
+     * 一开始就把每个字段都填满了，所以 `undefined` 几乎不成立 —— 结果**导入方的
+     * 个性化设置永远进不来**，跨设备"换台手机接着用"时主题/布局/课表偏好全丢。
+     *
+     * 现在的规则（兼顾老版本配置）：
+     *   · 逐个命名空间独立处理：incoming 里**没有**这个命名空间 → 完全不动本机
+     *     （老版本配置里没有 widgets / nextAlert 这些，自然不会误清）；
+     *   · incoming 里**有**这个命名空间 → 按字段覆盖（数组、子对象整体替换），
+     *     它没写的字段保留本机值，不会被 undefined 冲掉；
+     *   · 设备相关的 device / onboardingCompletedAt / update 不在清单里，永不导入。
+     */
+    if (incoming.settings && options.mergeSettings !== false) {
+      var PERSONALIZE_KEYS = [
+        'appearance', 'layout', 'schedule', 'nextAlert', 'haptics',
+        'notifications', 'widgets', 'trash', 'integration',
+        'experimental', 'course_list', 'homework'
+      ];
+      for (var s = 0; s < PERSONALIZE_KEYS.length; s++) {
+        var kk = PERSONALIZE_KEYS[s];
+        var inc = incoming.settings[kk];
+        if (inc === undefined || inc === null) { continue; }
+        if (typeof inc !== 'object' || Array.isArray(inc)) {
+          state.settings[kk] = inc;          // 标量直接套用
+          continue;
+        }
+        var target = state.settings[kk];
+        if (!target || typeof target !== 'object' || Array.isArray(target)) {
+          state.settings[kk] = deepCopy(inc);
+          continue;
+        }
+        for (var f in inc) {
+          if (!Object.prototype.hasOwnProperty.call(inc, f)) { continue; }
+          if (inc[f] === undefined) { continue; }
+          target[f] = deepCopy(inc[f]);      // 数组 / 子对象整体替换，不逐项纠结
+        }
+      }
+      // 「当前学期」只做纠偏：对方没有可用的学期时不要动本机
+      if (!state.settings.schedule) { state.settings.schedule = {}; }
+      if (!state.settings.schedule.currentSemesterId) {
+        delete state.settings.schedule.currentSemesterId;
+      }
+    }
+    if (Array.isArray(incoming.tombstones)) {
+      for (var t = 0; t < plan.tombstones.length; t++) { applyTombstone(plan.tombstones[t]); }
+      state.tombstones = (state.tombstones || []).concat(incoming.tombstones);
+    }
+    // 对方的课表用到第 13 节甚至更晚：直接把节次表补齐，别让这些课「没有时间」
+    syncPeriodsToUsage();
+    // 合并完把「当前学期」纠偏：清空后再导入别人的配置时，别让界面继续空着
+    var prefer = null;
+    if (incoming.settings && incoming.settings.schedule) {
+      prefer = incoming.settings.schedule.currentSemesterId || null;
+      if (prefer && plan.maps && plan.maps.semester && plan.maps.semester[prefer]) {
+        prefer = plan.maps.semester[prefer];
+      }
+    }
+    ensureCurrentSemesterHasData(prefer);
+    save(true);
+    return state;
+  }
+
+  function applyTombstone(tomb) {
+    if (!tomb || !tomb.entity) { return; }
+    var list = state[tomb.entity];
+    if (!Array.isArray(list)) { return; }
+    /* v0.4.1：对方删掉的东西也在本机「软删除」——进回收站、可恢复，
+       而不是直接从本机抹掉（否则两台设备的回收站内容不一致）。 */
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === tomb.id && !list[i].deletedAt) {
+        list[i].deletedAt = tomb.deletedAt || new Date().toISOString();
+        list[i].updatedAt = list[i].deletedAt;
+      }
+    }
+  }
+
+  function markDeleted(entity, id) {
+    state.tombstones = state.tombstones || [];
+    for (var i = 0; i < state.tombstones.length; i++) {
+      if (state.tombstones[i].entity === entity && state.tombstones[i].id === id) { return; }
+    }
+    state.tombstones.push({ id: id, entity: entity, deletedAt: new Date().toISOString() });
+  }
+
+  /* ══════════════════════════════════════════════════════════════
+     v0.4.1 软删除 + 回收站
+
+     删除不再把记录从数组里拿掉，而是打一个 deletedAt 标记：
+       · 读的地方一律过滤（界面看不到）；
+       · 墓碑照旧记（导入 / 合并时不会被旧存档复活）；
+       · 「设置 → 数据与同步 → 回收站」能原样恢复，还有 5 秒撤销兜底。
+     ══════════════════════════════════════════════════════════════ */
+
+  function isDeleted(rec) { return !!(rec && rec.deletedAt); }
+
+  function liveOnly(list) {
+    var out = [];
+    if (!list || !list.length) { return out; }
+    for (var i = 0; i < list.length; i++) { if (!isDeleted(list[i])) { out.push(list[i]); } }
+    return out;
+  }
+
+  /** 记录的新鲜度：改过的时间与删除时间取较晚的那个（合并时比大小用） */
+  function stampOf(rec) {
+    if (!rec) { return ''; }
+    var a = rec.updatedAt || '', b = rec.deletedAt || '';
+    return a > b ? a : b;
+  }
+
+  /** 打删除标记（不物理移除）+ 记墓碑 */
+  function softDelete(entity, rec) {
+    if (!rec) { return null; }
+    var now = new Date().toISOString();
+    rec.deletedAt = now;
+    rec.updatedAt = now;
+    markDeleted(entity, rec.id);
+    return rec;
+  }
+
+  function clearTomb(entity, id) {
+    state.tombstones = (state.tombstones || []).filter(function (tb) {
+      return !(tb.entity === entity && tb.id === id);
+    });
+  }
+
+  /** 恢复一条：课程会连带恢复它的时段与单次调整 */
+  function restore(entity, id, parentId) {
+    var rec = null, list;
+    if (entity === 'longTaskEntries') {
+      var t = longTaskById(parentId);
+      list = (t && t.entries) || [];
+    } else {
+      list = state[entity] || [];
+    }
+    for (var i = 0; i < list.length; i++) { if (list[i].id === id) { rec = list[i]; } }
+    if (!rec) { return false; }
+    var now = new Date().toISOString();
+    delete rec.deletedAt;
+    rec.updatedAt = now;
+    clearTomb(entity, id);
+    if (entity === 'courses') {
+      for (var b = 0; b < state.blocks.length; b++) {
+        var blk = state.blocks[b];
+        if (blk.courseId === id && isDeleted(blk)) {
+          delete blk.deletedAt;
+          blk.updatedAt = now;
+          clearTomb('blocks', blk.id);
+        }
+      }
+      for (var o = 0; o < state.overrides.length; o++) {
+        var ov = state.overrides[o];
+        if (ov.courseId === id && isDeleted(ov)) {
+          delete ov.deletedAt;
+          ov.updatedAt = now;
+          clearTomb('overrides', ov.id);
+        }
+      }
+    }
+    save(true);
+    return true;
+  }
+
+  /** 清空回收站：把已删记录真正从文件里拿掉（墓碑留着，避免被旧存档复活） */
+  function emptyTrash() {
+    var ents = ['events', 'courses', 'blocks', 'overrides', 'tasks', 'longTasks', 'quickTodos', 'types'];
+    for (var e = 0; e < ents.length; e++) {
+      var k = ents[e];
+      if (Array.isArray(state[k])) {
+        state[k] = state[k].filter(function (r) { return !isDeleted(r); });
+      }
+    }
+    var lt = state.longTasks || [];
+    for (var i = 0; i < lt.length; i++) {
+      if (Array.isArray(lt[i].entries)) {
+        lt[i].entries = lt[i].entries.filter(function (x) { return !isDeleted(x); });
+      }
+    }
+    save(true);
+  }
+
+  /** 回收站清单（按删除时间倒序） */
+  function trashList() {
+    var out = [];
+    var collect = function (entity, label, titleOf, subOf, list) {
+      var arr = list || state[entity] || [];
+      for (var i = 0; i < arr.length; i++) {
+        if (!isDeleted(arr[i])) { continue; }
+        out.push({
+          entity: entity, id: arr[i].id, label: label,
+          title: titleOf ? titleOf(arr[i]) : '', sub: subOf ? subOf(arr[i]) : '',
+          deletedAt: arr[i].deletedAt || '', rec: arr[i]
+        });
+      }
+    };
+    collect('events', '日程', function (r) { return r.title || '未命名日程'; }, function (r) { return r.date || ''; });
+    collect('courses', '课程', function (r) { return r.name || '未命名课程'; }, function () { return '整门课 · 含所有时段'; });
+    collect('blocks', '每周时段', function (r) { return r.courseName || '时段'; },
+      function (r) { return '周' + (WEEKDAY_NAMES[r.weekday] || '?') + ' 第 ' + (r.periodStart || '?') + '-' + (r.periodEnd || '?') + ' 节'; });
+    collect('overrides', '单次调整', function (r) { return r.type === 'cancel' ? '取消了一次课' : '单次调整'; },
+      function (r) { return r.date || ''; });
+    collect('tasks', '作业条目', function (r) { return r.text || ''; }, function (r) { return r.date || ''; });
+    collect('longTasks', '长期任务', function (r) { return r.name || ''; }, function () { return '连同全部进度记录'; });
+    collect('quickTodos', '待办速记', function (r) { return r.text || ''; }, null);
+    collect('types', '日程类型', function (r) { return r.label || ''; }, function () { return '恢复后相关日程会跟着回来'; });
+    var lt = state.longTasks || [];
+    for (var i = 0; i < lt.length; i++) {
+      var entries = lt[i].entries || [];
+      for (var j = 0; j < entries.length; j++) {
+        if (!isDeleted(entries[j])) { continue; }
+        out.push({
+          entity: 'longTaskEntries', id: entries[j].id, parentId: lt[i].id, label: '长期任务记录',
+          title: (lt[i].name || '长期任务') + ' +' + (entries[j].amount != null ? entries[j].amount : ''),
+          sub: longTaskEntryDay(entries[j]), deletedAt: entries[j].deletedAt || '', rec: entries[j]
+        });
+      }
+    }
+    out.sort(function (a, b) { return String(b.deletedAt).localeCompare(String(a.deletedAt)); });
+    return out;
+  }
+
+  /**
+   * v0.4.1：按保留期限清理回收站与墓碑（默认 90 天，可在设置里改成 30/90/180/不自动）。
+   * 只清理"过期"的：回收站里超过期限的记录真删，墓碑超过期限的也一起清掉；
+   * 期限设 0 = 不自动清理，只能手动点「立即清理」。
+   */
+  function pruneTrash(days) {
+    var keep = (days == null)
+      ? ((state.settings && state.settings.trash && state.settings.trash.keepDays) || 0)
+      : Number(days) || 0;
+    if (!keep || keep <= 0) { return { records: 0, tombstones: 0, skipped: true }; }
+    var cut = new Date(Date.now() - keep * 86400000).toISOString();
+    var removed = 0;
+    var ents = ['events', 'courses', 'blocks', 'overrides', 'tasks', 'longTasks', 'quickTodos', 'types'];
+    for (var e = 0; e < ents.length; e++) {
+      var k = ents[e];
+      if (!Array.isArray(state[k])) { continue; }
+      state[k] = state[k].filter(function (r) {
+        if (r && r.deletedAt && r.deletedAt < cut) { removed++; return false; }
+        return true;
+      });
+    }
+    var lt = state.longTasks || [];
+    for (var i = 0; i < lt.length; i++) {
+      if (!Array.isArray(lt[i].entries)) { continue; }
+      lt[i].entries = lt[i].entries.filter(function (x) {
+        if (x && x.deletedAt && x.deletedAt < cut) { removed++; return false; }
+        return true;
+      });
+    }
+    var before = (state.tombstones || []).length;
+    state.tombstones = (state.tombstones || []).filter(function (tb) {
+      var d = (tb && tb.deletedAt) || '';
+      return !(d && d < cut);
+    });
+    save(true);
+    return { records: removed, tombstones: before - state.tombstones.length, skipped: false };
+  }
+
+  /** 还活着的课程（界面显示 / 计数都用这个） */
+  function courseList() { return liveOnly(state.courses); }
+
+  /* ── 输出 ─────────────────────────────────────────────────── */
+
+  AR.Util = {
+    uid: uid, pad2: pad2, dateKey: dateKey, timeKey: timeKey, parseDateKey: parseDateKey,
+    startOfDay: startOfDay, addDays: addDays, addMinutes: addMinutes, sameDay: sameDay,
+    daysBetween: daysBetween,
+    weekdayOf: weekdayOf, mondayOf: mondayOf, hmToMinutes: hmToMinutes,
+    minutesToHM: minutesToHM, clamp: clamp, escapeHtml: escapeHtml, deepCopy: deepCopy,
+    debounce: debounce, WEEKDAY_NAMES: WEEKDAY_NAMES, PALETTE: PALETTE, colorHex: colorHex
+  };
+
+  AR.Const = {
+    APP_VERSION: APP_VERSION, SCHEMA_VERSION: SCHEMA_VERSION,
+    STORAGE_KEY: STORAGE_KEY, LAYOUT_KEY: LAYOUT_KEY,
+    FMT_SEP: FMT_SEP, FMT_HEADER: FMT_HEADER
+  };
+
+  AR.Store = {
+    load: load, save: save, get: get, reset: reset, reload: reload, migrate: migrate,
+    currentSemester: currentSemester, periodsOf: periodsOf,
+    courseById: courseById, teacherById: teacherById, locationById: locationById,
+    blocksOfCourse: blocksOfCourse, overridesOfBlock: overridesOfBlock,
+    blockById: blockById, overrideById: overrideById,
+    ensureTeacherByName: ensureTeacherByName, ensureLocationByRaw: ensureLocationByRaw,
+    parseWeeksText: parseWeeksText, weeksText: weeksText, compressWeeks: compressWeeks,
+    updateBlock: updateBlock, removeBlock: removeBlock, removeCourse: removeCourse,
+    upsertOverride: upsertOverride, removeOverride: removeOverride,
+    ensurePeriodsFor: ensurePeriodsFor, syncPeriodsToUsage: syncPeriodsToUsage,
+    ensureCurrentSemesterHasData: ensureCurrentSemesterHasData,
+    blockCountOfSemester: blockCountOfSemester, semesterById: semesterById,
+    claimPeriodsFor: claimPeriodsFor,
+    semesterList: semesterList, setCurrentSemester: setCurrentSemester,
+    courseCountOfSemester: courseCountOfSemester,
+    addSemester: addSemester,
+    eventsOf: eventsOf, eventsBetween: eventsBetween, eventsInWeek: eventsInWeek,
+    archivedEvents: archivedEvents,
+    saveEvent: saveEvent, removeEvent: removeEvent,
+    tasksOf: tasksOf, taskBoard: taskBoard, syncTasksFor: syncTasksFor, rebuildTasks: rebuildTasks,
+    taskList: taskList, taskRaw: taskRaw,
+    parseNoteTasks: parseNoteTasks, setTaskDone: setTaskDone, removeTask: removeTask,
+    homeworkSettings: homeworkSettings, taskDoneDay: taskDoneDay,
+    longTaskList: longTaskList, longTaskById: longTaskById, longTaskStats: longTaskStats,
+    longTaskTodayList: longTaskTodayList, longTaskUpsert: longTaskUpsert, longTaskRemove: longTaskRemove,
+    longTaskAddEntry: longTaskAddEntry, longTaskRemoveEntry: longTaskRemoveEntry,
+    /* ── 任务（统一模型） ── */
+    TASK_UNLIMITED: TASK_UNLIMITED,
+    todoList: todoList, todoById: todoById, todoTodayList: todoTodayList, todoDailyList: todoDailyList,
+    todoUpsert: todoUpsert, todoRemove: todoRemove,
+    todoAddEntry: todoAddEntry, todoRemoveEntry: todoRemoveEntry, todoUndoLast: todoUndoLast,
+    todoContinue: todoContinue,
+    todoRequired: todoRequired, todoPeriodGoal: todoPeriodGoal, todoPeriodDone: todoPeriodDone,
+    todoPeriodKey: todoPeriodKey, todoDayCount: todoDayCount, todoTotal: todoTotal,
+    todoProgress: todoProgress, todoSettled: todoSettled, todoEntryDay: todoEntryDay,
+    todoLiveEntries: todoLiveEntries, todoIsWeekly: todoIsWeekly,
+    migrateLongTasksIntoToDos: migrateLongTasksIntoToDos,
+    /* 导入配置后立刻跑一次迁移（导入不走 load()，否则老 longTasks 不会被并进来） */
+    migrateNow: migrateNow,
+    longTaskRecentEntries: longTaskRecentEntries, longTaskEntryDay: longTaskEntryDay,
+    renameCourse: renameCourse, unifyColorsByName: unifyColorsByName,
+    EVENT_TYPES: EVENT_TYPES, eventType: eventType,
+    typeList: typeList, typeUpsert: typeUpsert, typeRemove: typeRemove,
+    exportPayload: exportPayload, exportFileName: exportFileName,
+    previewMerge: previewMerge, applyMerge: applyMerge, markDeleted: markDeleted,
+    /* v0.4.1 软删除 + 回收站 */
+    isDeleted: isDeleted, softDelete: softDelete, restore: restore, trashList: trashList,
+    emptyTrash: emptyTrash, liveOnly: liveOnly, courseList: courseList, stampOf: stampOf,
+    pruneTrash: pruneTrash,
+    quickTodoList: quickTodoList, quickTodoRemove: quickTodoRemove, quickTodoRaw: quickTodoRaw,
+    defaultPeriodTimes: defaultPeriodTimes, makePeriods: makePeriods
+  };
+
+  AR.Schedule = {
+    weekNumber: weekNumber, expandWeeks: expandWeeks, weeksLabel: weeksLabel,
+    periodRange: periodRange, dayItems: dayItems, nextItem: nextItem,
+    ongoingItem: ongoingItem, weekItems: weekItems, conflicts: conflicts,
+    mergeConsecutive: mergeConsecutive, sameWeekSet: sameWeekSet, decorate: decorate
+  };
+
+  AR.Location = { navQuery: navQuery, navWebUrl: navWebUrl, normalizePlace: normalizePlace, trimToBuilding: trimToBuilding };
+  AR.Prompt = { version: PROMPT_VERSION, text: PROMPT_TEXT };
+})();

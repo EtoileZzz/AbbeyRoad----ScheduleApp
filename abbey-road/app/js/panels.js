@@ -1,0 +1,3297 @@
+/* ──────────────────────────────────────────────────────────────
+   Abbey Road · 面板
+   导入页（提示词 / Markdown 解析与修正 / JSON 同步）、
+   设置页（8 个分类，含布局滑块实时预览）、首次启动引导
+   ────────────────────────────────────────────────────────────── */
+
+var AR = window.AR || (window.AR = {});
+
+(function () {
+  'use strict';
+
+  var U = null;
+  var S = null;
+  var lastParsed = null;
+  var boundOnce = false;
+
+  function $(id) { return document.getElementById(id); }
+  function el(html) { var d = document.createElement('div'); d.innerHTML = html.trim(); return d.firstChild; }
+  function esc(s) { return AR.Util.escapeHtml(s); }
+
+  /** 所有对外的入口都先调它：保证 U（工具）与 S（状态）已就绪 */
+  function ensure() {
+    if (!U) { U = AR.Util; }
+    S = AR.Store.get();
+    return S;
+  }
+
+  /* ══════════════════════════ 导入页 ══════════════════════════ */
+
+  function renderImport() {
+    ensure();
+    $('promptPreview').textContent = AR.Prompt.text;
+    $('promptVersion').textContent = '提示词版本 ' + AR.Prompt.version;
+    // 导入选项默认值 = 当前学期
+    var sem = AR.Store.currentSemester();
+    if (sem) {
+      if ($('optSemName') && !$('optSemName').value) { $('optSemName').value = sem.name || ''; }
+      if ($('optSemStart') && !$('optSemStart').value) { $('optSemStart').value = sem.startDate || ''; }
+      if ($('optSemWeeks')) { $('optSemWeeks').value = sem.weekCount || 20; }
+    }
+    if (!boundOnce) { bindImport(); boundOnce = true; }
+    renderManualTab();
+  }
+
+  /* ── 手动添加：课程 / 特殊事件 ───────────────────────────── */
+
+  /**
+   * 把 HTML 里的 <span class="pick-slot" data-pick="id"> 填成一个自绘下拉。
+   * 原生 <select> 在手机上弹的是系统窗口（各家 ROM 长得都不一样），
+   * 这里统一换成应用自己的毛玻璃选择器；触发器自带 .value 与 change。
+   */
+  function fillPick(name, cfg) {
+    var slot = document.querySelector('[data-pick="' + name + '"]');
+    if (!slot || !AR.UI.pickerTrigger || slot.getAttribute('data-made')) { return $(name); }
+    slot.appendChild(AR.UI.pickerTrigger(cfg));
+    slot.setAttribute('data-made', '1');
+    return $(name);
+  }
+
+  /** 导入页 / 手动添加页里那几个固定选项的下拉（只在第一次建，之后复用） */
+  function buildPickers() {
+    fillPick('optParity', {
+      id: 'optParity', value: 'all', title: '文本没写单双周时按',
+      sub: '课表文本里没写周次规则的行，按这里的选择导入',
+      options: [{ v: 'all', t: '全周' }, { v: 'odd', t: '单周' }, { v: 'even', t: '双周' }]
+    });
+    var wdOpts = [];
+    for (var w = 1; w <= 7; w++) { wdOpts.push({ v: U.WEEKDAY_NAMES[w], t: U.WEEKDAY_NAMES[w] }); }
+    fillPick('manWeekday', { id: 'manWeekday', value: '周一', title: '星期', options: wdOpts });
+    fillPick('evType', {
+      id: 'evType', value: 'exam', title: '事件类型',
+      options: [{ v: 'exam', t: '考试' }, { v: 'lecture', t: '讲座' },
+        { v: 'activity', t: '活动' }, { v: 'other', t: '其他' }]
+    });
+    fillPick('manColor', {
+      id: 'manColor', value: '', title: '课程颜色',
+      sub: '留「自动分配」就按配色方案和课程类型分色',
+      options: [{ v: '', t: '自动分配' }]
+    });
+  }
+
+  /** 渲染手动添加页：节次下拉、颜色下拉、已添加事件列表 */
+  function renderManualTab() {
+    var sem = AR.Store.currentSemester();
+    var periods = sem ? AR.Store.periodsOf(sem.id) : [];
+    buildPickers();
+    // 节次表可能被用户在设置里改过，每次进来都重填一遍（保留已选值）
+    fillPick('manPeriodStart', {
+      id: 'manPeriodStart', value: '1', title: '开始节次', options: []
+    });
+    fillPick('manPeriodEnd', {
+      id: 'manPeriodEnd', value: '2', title: '结束节次', options: []
+    });
+    var startEl = $('manPeriodStart'), endEl = $('manPeriodEnd');
+    if (startEl && endEl && AR.UI.setPickerOptions) {
+      var pops = [];
+      for (var i = 0; i < periods.length; i++) {
+        var p = periods[i];
+        pops.push({ v: String(p.index), t: '第 ' + p.index + ' 节', sub: p.start + '-' + p.end });
+      }
+      if (pops.length) {
+        var had = !!(startEl.__opts && startEl.__opts.length);
+        AR.UI.setPickerOptions(startEl, pops, had);
+        AR.UI.setPickerOptions(endEl, pops, had);
+        // 默认"第一节 到 第二节"，和以前的下拉一致
+        if (!had && pops.length > 1) { AR.UI.setPickerValue(endEl, pops[1].v, true); }
+      }
+    }
+    var colorEl = $('manColor');
+    if (colorEl && AR.UI.setPickerOptions) {
+      var pal = AR.Util.PALETTE, cOpts = [{ v: '', t: '自动分配' }];
+      for (var c = 0; c < pal.length; c++) { cOpts.push({ v: pal[c].key, t: pal[c].name }); }
+      AR.UI.setPickerOptions(colorEl, cOpts, true);
+    }
+    renderEventList();
+  }
+
+  /** 已经添加过的事件（按日期排序，可删除） */
+  function renderEventList() {
+    var box = $('eventList');
+    if (!box) { return; }
+    var st = AR.Store.get();
+    var list = (st.events || []).slice().sort(function (a, b) {
+      return String(a.date).localeCompare(String(b.date));
+    });
+    box.innerHTML = '';
+    if (!list.length) {
+      box.appendChild(el('<div class="muted">还没有特殊事件。考试、讲座、活动都可以加在这里，'
+        + '它们会在「本周概览」里用专属颜色标出来。</div>'));
+      return;
+    }
+    for (var i = 0; i < list.length; i++) {
+      (function (ev) {
+        var t = AR.Store.eventType(ev.type);
+        var when = ev.date + (ev.start ? (' ' + ev.start + (ev.end ? '-' + ev.end : '')) : '');
+        var row = el('<div class="list-item"><span class="code-badge" style="background:' + t.hex
+          + ';color:#fff">' + t.label + '</span><span class="msg"><b>' + esc(ev.title) + '</b> · '
+          + esc(when) + (ev.place ? (' · ' + esc(ev.place)) : '') + '</span>'
+          + '<button class="chip-btn" type="button">删除</button></div>');
+        row.querySelector('button').addEventListener('click', function () {
+          AR.Store.removeEvent(ev.id);
+          AR.Bridge.haptic('warn', row);
+          renderEventList();
+          refreshAll();
+          AR.UI.toast('已删除事件');
+        });
+        box.appendChild(row);
+      })(list[i]);
+    }
+  }
+
+  /** 手动添加一门课：拼成 AR-TXT 一行，走和粘贴导入完全相同的解析/写入流程 */
+  function addManualCourse() {
+    var name = ($('manName').value || '').trim();
+    var issues = $('manIssues');
+    if (issues) { issues.innerHTML = ''; }
+    if (!name) {
+      AR.UI.toast('请先填课程名');
+      if (issues) { issues.appendChild(el('<div class="issue error"><span class="msg">课程名不能为空</span></div>')); }
+      return;
+    }
+    var start = $('manPeriodStart').value || '1';
+    var end = $('manPeriodEnd').value || start;
+    if (Number(end) < Number(start)) { var tmp = start; start = end; end = tmp; }
+    var sem = AR.Store.currentSemester();
+    var lines = ['AbbeyRoad 课表 v1', '开学日期：' + ((sem && sem.startDate) || '?')];
+    lines.push([name, $('manWeekday').value || '周一', start + '-' + end,
+      ($('manWeeks').value || '全周'), ($('manPlace').value || ''), ($('manTeacher').value || ''),
+      ($('manNote').value || ''), ($('manColor').value || '')].join('｜'));
+    var opts = importOptions();
+    var parsed = AR.MdParse.parse(lines.join('\n'), opts);
+    if (parsed.summary.errors) {
+      var shown = 0;
+      for (var i = 0; i < parsed.issues.length && shown < 5; i++) {
+        if (parsed.issues[i].level === 'error') {
+          if (issues) { issues.appendChild(el('<div class="issue error"><span class="code-badge">'
+            + parsed.issues[i].code + '</span><span class="msg">' + esc(parsed.issues[i].message) + '</span></div>')); }
+          shown++;
+        }
+      }
+      AR.UI.toast('还有 ' + parsed.summary.errors + ' 处需要修正');
+      return;
+    }
+    var mode = S.settings.schedule.autoMergeConsecutive === 'never' ? 'never' : 'auto';
+    var entities = AR.MdParse.toEntities(parsed, S, { mergeMode: mode });
+    var res = AR.MdParse.applyEntities(entities, S);
+    AR.Bridge.haptic('medium', $('btnManualAdd'));
+    AR.UI.toast('已添加：' + name + '（' + (parsed.issues.length ? '已按规则对齐字段' : 'OK') + '）');
+    if (res && res.periodsAdded) { toastPeriodsAdded(res.periodsAdded); }
+    $('manName').value = '';
+    $('manPlace').value = '';
+    $('manNote').value = '';
+    refreshAll();
+  }
+
+  /** 手动添加一个特殊事件 */
+  function addManualEvent() {
+    var title = ($('evTitle').value || '').trim();
+    var date = $('evDate').value || '';
+    if (!title) { AR.UI.toast('请先填事件标题'); return; }
+    if (!date) { AR.UI.toast('请选择事件日期'); return; }
+    AR.Store.saveEvent({
+      title: title, type: $('evType').value || 'other', date: date,
+      start: $('evStart').value || '', end: $('evEnd').value || '',
+      place: ($('evPlace').value || '').trim(), note: ($('evNote').value || '').trim()
+    });
+    AR.Bridge.haptic('medium', $('btnAddEvent'));
+    AR.UI.toast('已添加事件：' + title);
+    $('evTitle').value = '';
+    $('evPlace').value = '';
+    $('evNote').value = '';
+    renderEventList();
+    refreshAll();
+  }
+
+  /**
+   * 快速新增（周表长按空白处用）：字段对象进来，走和"粘贴导入 / 手动添加"
+   * 完全相同的一条链路（AR-TXT 解析 → toEntities → applyEntities），
+   * 所以连堂合并、节次自动补全、同名同色这些规则一个都不会漏。
+   */
+  function quickAddCourse(f) {
+    ensure();
+    var sem = AR.Store.currentSemester();
+    var p1 = Math.max(1, Number(f.p1) || 1);
+    var p2 = Math.max(p1, Number(f.p2) || p1);
+    var lines = ['AbbeyRoad 课表 v1', '开学日期：' + ((sem && sem.startDate) || '?')];
+    lines.push([String(f.name || '').trim(), U.WEEKDAY_NAMES[f.weekday] || '周一', p1 + '-' + p2,
+      (f.weeks || '全周'), f.place || '', f.teacher || '', f.note || '', f.color || ''].join('｜'));
+    var parsed = AR.MdParse.parse(lines.join('\n'), importOptions());
+    // 解析结果里课程在 rows / summary.courses（不是 courses 数组）
+    if (!parsed || !parsed.summary || !parsed.summary.courses) {
+      return { ok: false, message: '没解析出课程，检查一下课程名' };
+    }
+    if (parsed.summary && parsed.summary.errors) {
+      return { ok: false, message: '还有 ' + parsed.summary.errors + ' 处需要修正' };
+    }
+    var mode = S.settings.schedule.autoMergeConsecutive === 'never' ? 'never' : 'auto';
+    var entities = AR.MdParse.toEntities(parsed, S, { mergeMode: mode });
+    var res = AR.MdParse.applyEntities(entities, S);
+    refreshAll();
+    return { ok: true, periodsAdded: res && res.periodsAdded };
+  }
+
+  /** 快速新增特殊事件（考试 / 讲座 / 活动） */
+  function quickAddEvent(f) {
+    ensure();
+    if (!f || !f.title || !f.date) { return { ok: false, message: '标题和日期都要填' }; }
+    AR.Store.saveEvent({
+      title: String(f.title), type: f.type || 'other', date: f.date,
+      start: f.start || '', end: f.end || '', place: f.place || '', note: f.note || ''
+    });
+    refreshAll();
+    return { ok: true };
+  }
+
+  function bindImport() {
+    tabwires(document.querySelector('#view-import .tabs-panel'));
+
+    $('btnCopyPrompt').addEventListener('click', function () {
+      AR.Bridge.haptic('medium', $('btnCopyPrompt'));
+      AR.Bridge.copy(AR.Prompt.text);
+      // v0.2.2：复制完直接把用户带到下一步（「2 课表文本」），并在那里给一句明确引导
+      goToTextStep();
+    });
+    $('btnSharePrompt').addEventListener('click', function () {
+      AR.Bridge.haptic('medium', $('btnSharePrompt'));
+      AR.Bridge.share('Abbey Road 课表整理提示词', AR.Prompt.text);
+    });
+
+    var mdInput = $('mdInput');
+    var live = AR.Util.debounce(function () { parseMd(); }, 280);
+    mdInput.addEventListener('input', live);
+
+    // 改动导入选项（学期 / 总周数 / 默认单双周）立即重新解析
+    var optIds = ['optSemName', 'optSemStart', 'optSemWeeks', 'optParity'];
+    for (var oi = 0; oi < optIds.length; oi++) {
+      var optNode = $(optIds[oi]);
+      if (optNode) { optNode.addEventListener('change', function () { parseMd(); }); }
+    }
+
+    $('btnDemoMd').addEventListener('click', function () {
+      mdInput.value = AR.MdParse.sample;
+      parseMd();
+      AR.Bridge.haptic('light', $('btnDemoMd'));
+    });
+    $('btnClearMd').addEventListener('click', function () {
+      mdInput.value = '';
+      parseMd();
+    });
+    $('btnPickMd').addEventListener('click', function () { AR.Bridge.importText(); });
+    $('btnApplyMd').addEventListener('click', applyMd);
+
+    // 手动添加：课程 / 特殊事件
+    if ($('btnManualAdd')) { $('btnManualAdd').addEventListener('click', addManualCourse); }
+    if ($('btnAddEvent')) { $('btnAddEvent').addEventListener('click', addManualEvent); }
+
+    /* 配置文件：整块交给 AR.ConfigIO（见 js/configio.js） */
+    $('btnExportJson').addEventListener('click', function () { AR.ConfigIO.exportFile($('btnExportJson')); });
+    if ($('btnExportWechat')) {
+      $('btnExportWechat').addEventListener('click', function () { AR.ConfigIO.exportToApp($('btnExportWechat')); });
+    }
+    $('btnImportJson').addEventListener('click', function () { AR.ConfigIO.openFromFile(); });
+    if ($('btnImportFromExports')) {
+      $('btnImportFromExports').addEventListener('click', function () { AR.ConfigIO.openFromExports($('btnImportFromExports')); });
+    }
+    $('btnCopyJson').addEventListener('click', function () { AR.ConfigIO.copyText($('btnCopyJson')); });
+
+    // 粘贴完自动解析出预览（写成文本也一样，都在 ConfigIO 里处理）
+    var jsonLive = AR.Util.debounce(function () {
+      var txt = $('jsonInput').value;
+      if (!String(txt || '').trim()) { return; }
+      AR.ConfigIO.previewText(txt, '粘贴的配置文本');
+    }, 400);
+    $('jsonInput').addEventListener('input', jsonLive);
+    $('btnApplyJsonText').addEventListener('click', function () {
+      var txt = $('jsonInput').value;
+      if (!String(txt || '').trim()) { AR.UI.toast('请先粘贴配置文本'); return; }
+      AR.Bridge.haptic('light', $('btnApplyJsonText'));
+      AR.ConfigIO.previewText(txt, '粘贴的配置文本');
+    });
+    if ($('btnClearJson')) {
+      $('btnClearJson').addEventListener('click', function () {
+        $('jsonInput').value = '';
+        $('jsonSummary').innerHTML = '';
+        $('jsonIssues').innerHTML = '';
+        AR.ConfigIO.reset();
+      });
+    }
+    $('btnApplyJson').addEventListener('click', function () { AR.ConfigIO.apply($('btnApplyJson')); });
+  }
+
+  /**
+   * Tab 绑定。
+   * 导入面板里有两组 .segmented：第一行是带序号的「1 提示词 / 2 课表文本」，
+   * 第二行是「手动添加 / 配置文件」；它们共用同一套内容区切换逻辑与胶囊动效，
+   * 所以这里一次性把面板内所有 .seg[data-tab] 都接上。
+   */
+  function tabwires(container) {
+    var segs = container.querySelectorAll('.seg[data-tab]');
+    var groups = container.querySelectorAll('.segmented');
+    var subNav = $('importSubNav');
+    var subMenu = $('importSubMenu');
+    var subBtn = $('btnSubNav');
+    var subLabel = $('subNavLabel');
+
+    /** 「手动导入」子菜单：开合走 opacity + transform 过渡，不做生硬显隐 */
+    function setSubMenu(open) {
+      if (!subNav) { return; }
+      subNav.classList.toggle('open', !!open);
+      if (subBtn) { subBtn.setAttribute('aria-expanded', open ? 'true' : 'false'); }
+      if (!subMenu) { return; }
+      if (subMenu.__hideTimer) { clearTimeout(subMenu.__hideTimer); subMenu.__hideTimer = null; }
+      if (open) {
+        subMenu.hidden = false;
+      } else {
+        subMenu.__hideTimer = setTimeout(function () { subMenu.hidden = true; subMenu.__hideTimer = null; }, 200);
+      }
+    }
+
+    function showTab(name, fromNode) {
+      for (var j = 0; j < segs.length; j++) {
+        segs[j].classList.toggle('active', segs[j].getAttribute('data-tab') === name);
+      }
+      for (var g = 0; g < groups.length; g++) {
+        if (AR.UI.syncSegPill) { AR.UI.syncSegPill(groups[g], true); }   // 胶囊滑动 420ms
+      }
+      var bodies = document.querySelectorAll('[data-tab-body]');
+      for (var b = 0; b < bodies.length; b++) {
+        bodies[b].hidden = (bodies[b].getAttribute('data-tab-body') !== name);
+      }
+      // 右下角悬浮按钮：「应用到课表」只在课表文本页出现，「合并导入」只在配置文件页出现
+      var fabMd = $('btnApplyMd');
+      if (fabMd) { fabMd.hidden = (name !== 'md'); }
+      var fabJson = $('btnApplyJson');
+      if (fabJson) { fabJson.hidden = (name !== 'json'); }
+      if (fromNode) { AR.Bridge.haptic('light', fromNode); }
+    }
+
+    for (var i = 0; i < segs.length; i++) {
+      segs[i].addEventListener('click', function (ev) {
+        var name = ev.currentTarget.getAttribute('data-tab');
+        showTab(name, ev.currentTarget);
+        // 选中子菜单里的项以后，菜单保持展开，并在按钮上标出当前子页
+        if (name === 'manual' || name === 'json') {
+          if (subLabel) { subLabel.textContent = (name === 'manual') ? '手动导入 · 手动添加' : '手动导入 · 配置文件'; }
+          setSubMenu(true);
+        } else if (subLabel) {
+          subLabel.textContent = '手动导入';
+          setSubMenu(false);
+        }
+      });
+    }
+    if (subBtn) {
+      subBtn.addEventListener('click', function () {
+        var open = !(subNav && subNav.classList.contains('open'));
+        setSubMenu(open);
+        AR.Bridge.haptic('light', subBtn);
+      });
+    }
+    // 点到面板以外的地方，子菜单自动收起
+    document.addEventListener('click', function (ev) {
+      if (subNav && !subNav.contains(ev.target)) { setSubMenu(false); }
+    });
+    showTab('prompt', null);   // 默认停在第一步
+  }
+
+  /* ── Markdown 解析与预览 ─────────────────────────────────── */
+
+  function parseMd() {
+    ensure();
+    var text = $('mdInput').value || '';
+    lastParsed = AR.MdParse.parse(text, importOptions());
+    renderMdResult();
+  }
+
+  /** 读取导入页的选项：学期规则 + 默认单双周 */
+  function importOptions() {
+    var sem = AR.Store.currentSemester();
+    var startEl = $('optSemStart'), nameEl = $('optSemName');
+    var weeksEl = $('optSemWeeks'), parityEl = $('optParity');
+    var weeks = (weeksEl && weeksEl.value) ? Number(weeksEl.value) : ((sem && sem.weekCount) || 20);
+    return {
+      weekCount: weeks,
+      defaultParity: parityEl ? parityEl.value : 'all',
+      semester: {
+        name: (nameEl && nameEl.value) || (sem ? sem.name : ''),
+        startDate: (startEl && startEl.value) || (sem ? sem.startDate : null),
+        weekCount: weeks
+      }
+    };
+  }
+
+  function renderMdResult() {
+    var p = lastParsed;
+    var sum = $('mdSummary');
+    var issues = $('mdIssues');
+    var preview = $('mdPreview');
+    var btn = $('btnApplyMd');
+    if (!p) { sum.innerHTML = ''; issues.innerHTML = ''; preview.innerHTML = ''; btn.disabled = true; return; }
+
+    var s = p.summary;
+    sum.innerHTML = '';
+    sum.appendChild(el('<span class="tag">课程 ' + s.courses + ' 行</span>'));
+    sum.appendChild(el('<span class="tag">节次 ' + s.periods + ' 条</span>'));
+    sum.appendChild(el('<span class="tag">变动 ' + s.overrides + ' 条</span>'));
+    if (s.errors) { sum.appendChild(el('<span class="tag danger">阻断错误 ' + s.errors + '</span>')); }
+    if (s.warnings) { sum.appendChild(el('<span class="tag warn">警告 ' + s.warnings + '</span>')); }
+    if (s.conflicts) { sum.appendChild(el('<span class="tag danger">冲突 ' + s.conflicts + '</span>')); }
+
+    issues.innerHTML = '';
+    var shown = 0;
+    for (var i = 0; i < p.issues.length && shown < 40; i++) {
+      var iss = p.issues[i];
+      var cls = iss.level === 'error' ? 'error' : (iss.level === 'conflict' ? 'error' : (iss.level === 'info' ? 'info' : ''));
+      issues.appendChild(el('<div class="issue ' + cls + '"><span class="code-badge">' + iss.code
+        + '</span><span class="msg">' + esc(iss.message) + '</span></div>'));
+      shown++;
+    }
+
+    // 可修正行：把缺字段的课程行做成内联编辑
+    preview.innerHTML = '';
+    if (p.rows.length) {
+      var fixed = el('<div class="panel" style="margin-top:12px"><div class="panel-head">'
+        + '<h2 class="panel-title">逐条检查</h2><span class="muted">有红点的行需要修正后才能导入</span></div></div>');
+      var listWrap = el('<div></div>');
+      for (var r = 0; r < p.rows.length; r++) {
+        listWrap.appendChild(fixRow(p, r));
+      }
+      fixed.appendChild(listWrap);
+      preview.appendChild(fixed);
+    }
+
+    btn.disabled = (s.errors > 0) || (p.rows.length === 0);
+    if (s.errors > 0) { btn.textContent = '还有 ' + s.errors + ' 处待修正'; }
+    else { btn.textContent = '应用到课表'; }
+  }
+
+  function fixRow(p, index) {
+    var r = p.rows[index];
+    var bad = false;
+    for (var i = 0; i < r.issues.length; i++) { if (r.issues[i].level === 'error') { bad = true; } }
+    var row = el('<div class="fix-row">'
+      + '<input class="input input-sm" data-f="courseName" value="' + esc(r.courseName) + '" placeholder="课程名">'
+      + '<span class="pick-slot" data-slot="fixWeekday"></span>'
+      + '<input class="input input-sm" data-f="periodsRaw" value="' + esc(r.periodsRaw) + '" placeholder="节次 1-2">'
+      + '<input class="input input-sm" data-f="weeksRaw" value="' + esc(r.weeksRaw) + '" placeholder="周次 1-16">'
+      + '</div>');
+    // 星期也用自绘下拉（原生 select 在手机上弹的是系统窗口，和应用不搭）
+    var wslot = row.querySelector('[data-slot="fixWeekday"]');
+    if (wslot && AR.UI.pickerTrigger) {
+      var wopts = weekdayOptions(r.weekday);
+      var wtrig = AR.UI.pickerTrigger({
+        value: r.weekday ? String(r.weekday) : '', options: wopts,
+        title: '星期', placeholder: '星期?', cls: 'input-sm', always: true
+      });
+      wtrig.setAttribute('data-f', 'weekday');
+      wslot.appendChild(wtrig);
+    }
+    if (bad) { row.style.borderLeft = '3px solid var(--danger)'; row.style.paddingLeft = '8px'; }
+    var fields = row.querySelectorAll('[data-f]');
+    for (var f = 0; f < fields.length; f++) {
+      fields[f].addEventListener('change', function (ev) {
+        var name = ev.currentTarget.getAttribute('data-f');
+        var val = ev.currentTarget.value;
+        if (name === 'weekday') {
+          r.weekday = val ? Number(val) : null;
+          r.weekdayRaw = val ? U.WEEKDAY_NAMES[Number(val)] : '';
+        } else {
+          r[name] = val;
+        }
+        // 用「当前解析结果」重建 Markdown，再重新解析（文本始终是唯一真源）
+        $('mdInput').value = serializeParsed(p);
+        parseMd();
+        AR.Bridge.haptic('light', ev.currentTarget);
+      });
+    }
+    return row;
+  }
+
+  /** 星期选项（自绘下拉用）：第一项是"星期?"，对应值缺失 */
+  function weekdayOptions(current) {
+    var out = [{ v: '', t: '星期?' }];
+    for (var i = 1; i <= 7; i++) { out.push({ v: String(i), t: U.WEEKDAY_NAMES[i] }); }
+    return out;
+  }
+
+  /** 把解析结果重新序列化成 MD-1 文本（修正字段后回写用） */
+  function serializeParsed(p) {
+    var lines = ['# Abbey Road 课表导入', '', '<!-- abbeyroad-import: v1 -->', ''];
+    lines.push('## 学期');
+    lines.push('| 学期名称 | 开始日期 | 总周数 |');
+    lines.push('| --- | --- | --- |');
+    lines.push('| ' + ((p.semester && p.semester.name) || '') + ' | '
+      + ((p.semester && p.semester.startDate) || '') + ' | '
+      + ((p.semester && p.semester.weekCount) || '') + ' |');
+    lines.push('');
+    lines.push('## 节次表');
+    lines.push('| 节次 | 开始时间 | 结束时间 |');
+    lines.push('| --- | --- | --- |');
+    var periods = p.periods.length ? p.periods : defaultPeriodRows();
+    for (var i = 0; i < periods.length; i++) {
+      lines.push('| ' + periods[i].index + ' | ' + periods[i].start + ' | ' + periods[i].end + ' |');
+    }
+    lines.push('');
+    lines.push('## 课程');
+    lines.push('| 课程名 | 老师 | 地点 | 星期 | 节次 | 周次 | 单双周 | 备注 |');
+    lines.push('| --- | --- | --- | --- | --- | --- | --- | --- |');
+    for (var r = 0; r < p.rows.length; r++) {
+      var row = p.rows[r];
+      lines.push('| ' + [row.courseName, row.teachersRaw, row.place,
+        row.weekday ? U.WEEKDAY_NAMES[row.weekday] : (row.weekdayRaw || ''),
+        row.periodsRaw, row.weeksRaw, row.parityRaw || '全周', row.note || '-'].join(' | ') + ' |');
+    }
+    lines.push('');
+    lines.push('## 调课与停课');
+    lines.push('| 课程名 | 日期 | 类型 | 新星期 | 新节次 | 新地点 | 原因/备注 |');
+    lines.push('| --- | --- | --- | --- | --- | --- | --- |');
+    for (var o = 0; o < p.overrides.length; o++) {
+      var ov = p.overrides[o];
+      lines.push('| ' + [ov.courseName, ov.date || ov.dateRaw, typeLabel(ov.type) || ov.typeRaw,
+        ov.weekday ? U.WEEKDAY_NAMES[ov.weekday] : '-',
+        ov.periodsRaw || '-', ov.place || '-', ov.reason || '-'].join(' | ') + ' |');
+    }
+    return lines.join('\n');
+  }
+
+  function defaultPeriodRows() {
+    var times = AR.Store.defaultPeriodTimes();
+    var out = [];
+    for (var i = 0; i < times.length; i++) { out.push({ index: i + 1, start: times[i][0], end: times[i][1] }); }
+    return out;
+  }
+
+  function typeLabel(t) {
+    return t === 'move' ? '调课' : (t === 'cancel' ? '停课' : (t === 'makeup' ? '补课' : (t === 'room' ? '换教室' : (t === 'time' ? '换时间' : (t === 'add' ? '加课' : '')))));
+  }
+
+  /* ── 应用 Markdown 导入 ──────────────────────────────────── */
+
+  function applyMd() {
+    ensure();
+    var p = lastParsed;
+    if (!p || p.summary.errors > 0) { return; }
+    var mode = S.settings.schedule.autoMergeConsecutive === 'never' ? 'never' : 'auto';
+    var entities = AR.MdParse.toEntities(p, S, { mergeMode: mode });
+    var res = AR.MdParse.applyEntities(entities, S);
+    AR.Bridge.haptic('medium', $('btnApplyMd'));
+
+    var msg = '导入完成：课程 ' + entities.courses.length + ' 门、时段 ' + entities.blocks.length + ' 条';
+    if (entities.mergedCount) { msg += '，自动合并 ' + entities.mergedCount + ' 组连堂'; }
+    AR.UI.toast(msg);
+    if (res && res.periodsAdded) { toastPeriodsAdded(res.periodsAdded); }
+
+    // 导入成功后自动清空输入区与解析结果，避免误点"再导入一次"
+    $('mdInput').value = '';
+    lastParsed = null;
+    renderMdResult();
+
+    refreshAll();
+
+    // 规划文档 Q4：导入后要求用户设置学期与节次
+    var sem = AR.Store.currentSemester();
+    var needSetup = !p.semester || !p.semester.startDate || !p.periods.length;
+    if (needSetup) { openSemesterSetup(); }
+
+    // 连堂建议（部分匹配）
+    if (entities.suggestions && entities.suggestions.length) {
+      var body = '<p class="panel-sub">下面是「相邻节次但周次不同」的组合，确认后可合并为连堂课。</p>';
+      for (var i = 0; i < entities.suggestions.length; i++) {
+        body += '<div class="list-item"><span class="msg">' + esc(entities.suggestions[i].message) + '</span></div>';
+      }
+      AR.UI.openModal({ title: '连堂课建议', sub: '共 ' + entities.suggestions.length + ' 组', body: body, actions: [{ label: '知道了', kind: 'primary', onClick: function (c) { c(); } }] });
+    }
+  }
+
+  /** 学期与节次设置（导入后弹出；对应 Q4 的决定） */
+  function openSemesterSetup() {
+    ensure();
+    var sem = AR.Store.currentSemester();
+    var periods = AR.Store.periodsOf(sem.id);
+    var body = el('<div></div>');
+    body.appendChild(el('<div class="field"><label class="field-label">学期名称</label>'
+      + '<input class="input" id="setSemName" value="' + esc(sem.name) + '"></div>'));
+    body.appendChild(el('<div class="field"><label class="field-label">开学第一周周一（决定"当前第几周"）</label>'
+      + '<input class="input" id="setSemStart" type="date" value="' + esc(sem.startDate) + '"></div>'));
+    body.appendChild(el('<div class="field"><label class="field-label">总周数</label>'
+      + '<input class="input" id="setSemWeeks" type="number" min="1" max="30" value="' + (sem.weekCount || 20) + '"></div>'));
+    var pbox = el('<div class="field"><label class="field-label">节次作息（可稍后在设置里改）</label>'
+      + '<div class="period-grid">'
+      + '<div class="ph">节次</div><div class="ph">开始</div><div class="ph">结束</div><div></div>'
+      + '</div><div id="periodRows"></div></div>');
+    body.appendChild(pbox);
+    var rows = pbox.querySelector('#periodRows');
+    for (var i = 0; i < periods.length; i++) {
+      var p = periods[i];
+      rows.appendChild(el('<div class="period-grid" data-period="' + p.id + '" style="margin-top:6px">'
+        + '<div class="muted">第 ' + p.index + ' 节</div>'
+        + '<input class="input input-sm" data-f="start" value="' + esc(p.start) + '">'
+        + '<input class="input input-sm" data-f="end" value="' + esc(p.end) + '">'
+        + '<div></div></div>'));
+    }
+    AR.UI.openModal({
+      title: '学期与节次设置',
+      sub: '导入完成，确认这两项后「当前第几周」和上课时间才准确',
+      body: body,
+      actions: [
+        { label: '稍后设置', onClick: function (c) { c(); } },
+        {
+          label: '保存', kind: 'primary', onClick: function (c) {
+            var s = AR.Store.get();
+            var semX = AR.Store.currentSemester();
+            semX.name = $('setSemName').value || semX.name;
+            semX.startDate = $('setSemStart').value || semX.startDate;
+            semX.weekCount = Number($('setSemWeeks').value) || semX.weekCount;
+            semX.updatedAt = new Date().toISOString();
+            var rowNodes = document.querySelectorAll('[data-period]');
+            for (var i2 = 0; i2 < rowNodes.length; i2++) {
+              var pid = rowNodes[i2].getAttribute('data-period');
+              var st = rowNodes[i2].querySelector('[data-f="start"]').value;
+              var en = rowNodes[i2].querySelector('[data-f="end"]').value;
+              for (var j = 0; j < s.periods.length; j++) {
+                if (s.periods[j].id === pid) {
+                  s.periods[j].start = st; s.periods[j].end = en;
+                  s.periods[j].updatedAt = new Date().toISOString();
+                }
+              }
+            }
+            AR.Store.save(true);
+            c();
+            AR.Bridge.haptic('medium', $('zoneNext'));
+            refreshAll();
+            AR.UI.toast('学期与节次已保存');
+          }
+        }
+      ]
+    });
+  }
+
+  /* ── JSON 文本导入 ───────────────────────────────────────── */
+
+  /**
+   * 导入时检测到晚于原节次表的课 → 节次表已自动补足，
+   * 隔一拍再提示（别把「导入完成」的 toast 顶掉），并告诉用户去哪儿改时间。
+   */
+  function toastPeriodsAdded() {
+    var sem = AR.Store.currentSemester();
+    var total = (AR.Store.periodsOf(sem ? sem.id : null) || []).length;
+    setTimeout(function () {
+      AR.UI.toast('有课排在第 12 节之后，节次表已自动扩到 ' + total + ' 节（时间可在 设置 → 课程与课表 里改）');
+    }, 1900);
+  }
+
+  /**
+   * 复制提示词之后：自动切到「2 课表文本」，并在粘贴区闪一下提示框，
+   * 让用户一眼知道下一步该干嘛（不用自己找第二个标签）。
+   */
+  function goToTextStep() {
+    var tab = document.querySelector('[data-tab="md"]');
+    if (tab) { setTimeout(function () { tab.click(); }, 240); }
+    setTimeout(function () {
+      AR.UI.toast('提示词已复制 → 去 DeepSeek / 豆包粘贴并发送课表截图，再把回复整段粘到这里');
+    }, 420);
+    setTimeout(function () {
+      var box = $('mdInput');
+      if (!box) { return; }
+      box.classList.remove('input-flash');
+      void box.offsetWidth;
+      box.classList.add('input-flash');
+      setTimeout(function () { box.classList.remove('input-flash'); }, 2200);
+    }, 560);
+  }
+
+  /* ── 配置文件导入导出 ──────────────────────────────────────
+     v0.2.3 起这块逻辑整体搬到 js/configio.js（AR.ConfigIO）：
+     导出（另存为 / 微信 / 复制）、导入（选择器 / 导出目录 / 粘贴文本）、
+     预览与合并都只有一份实现，这里只留一个旧名字给 boot.js 用。 */
+  function handleJsonText(text, sourceName) {
+    return AR.ConfigIO.importFromText(text, sourceName);
+  }
+
+  /* ══════════════════════════ 设置页 ══════════════════════════ */
+
+  /* ── v0.4.0 设置（B′）：首页 = 分类列表，每条挂几个高频项 ──────────
+     点分类行 → 二级页（该类全部设置）；高频项在首页行内直接可改。
+     改一项只重渲染当前页（不再整页重建），并保住滚动位置 —— 不再跳回顶部。 */
+
+  var settingsCat = null;      // null = 首页；否则是当前分类 key
+  var syncTab = 'sync';        // 「数据与同步」二级页的页内标签
+  var settingsSearchQ = '';
+  var pendingHighlight = '';
+
+  /** 分类列表：固定的 7 个 + 开发者模式开启时追加 1 个独立分类（无高频项） */
+  function settingsCats() {
+    var list = [
+      { key: 'prefs', icon: '🎨', label: '外观与布局', desc: '主题、主题色、流畅模式、布局',
+        quick: quickPrefs, panels: [panelAppearance, panelLayout] },
+      { key: 'widgets', icon: '📱', label: '桌面卡片', desc: '把课表放到手机桌面',
+        panels: [panelWidgets] },
+      { key: 'course', icon: '📚', label: '课程与课表', desc: '学期、作息、配色、提醒',
+        panels: [panelSchedule, panelNotify] },
+      { key: 'work', icon: '📝', label: '作业与日程', desc: '作业开关、任务、日程类型',
+        quick: quickWork, panels: [panelWork, panelTasks] },
+      { key: 'mine', icon: '🧩', label: '我的页面', desc: '模块自由组合',
+        quick: quickMine, panels: [panelMine] },
+      { key: 'syncdata', icon: '💾', label: '数据与同步', desc: '导入、系统集成、备份与清空',
+        quick: quickData, panels: [panelSync, panelIntegration, panelData] },
+      { key: 'about', icon: 'ℹ️', label: '关于与帮助', desc: '版本、引导、反馈',
+        quick: quickAbout, panels: [panelAbout] }
+    ];
+    // 开发者模式：长按底部「设置」开关。开启后作为**独立分类**出现在最后，
+    // 故意不给 quick（首页不放任何高频项），只是多一个入口。
+    if (S.settings.appearance.devMode === true) {
+      list.push({ key: 'dev', icon: '🧪', label: '开发者模式', desc: '过渡动画、弹窗玻璃、调试工具',
+        panels: [panelDev] });
+    }
+    return list;
+  }
+
+  /* ── 首页高频项的小控件 ─────────────────────────────────── */
+
+  function qItem(label, node) {
+    var w = el('<div class="q-item"><span class="q-label">' + esc(label) + '</span></div>');
+    if (node) { w.appendChild(node); }
+    return w;
+  }
+  function qSwitch(checked, onChange) {
+    var s = el('<label class="switch sm"><input type="checkbox"' + (checked ? ' checked' : '') + '>'
+      + '<span class="track"></span><span class="knob"></span></label>');
+    s.querySelector('input').addEventListener('change', function (ev) {
+      AR.Bridge.haptic('light', s);
+      onChange(ev.currentTarget.checked);
+    });
+    return s;
+  }
+  function qBtn(label, onClick) {
+    var b = el('<button class="chip-btn" type="button">' + esc(label) + '</button>');
+    b.addEventListener('click', function () {
+      AR.Bridge.haptic('light', b);
+      onClick(b);
+    });
+    return b;
+  }
+
+  function quickPrefs() {
+    var ap = S.settings.appearance;
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('主题', segmented([
+      { label: '跟随系统', value: 'system' }, { label: '浅色', value: 'light' }, { label: '深色', value: 'dark' }
+    ], ap.theme, function (v) {
+      ap.theme = v; AR.Store.save(true); AR.UI.applyTheme();
+    })));
+    row.appendChild(qItem('流畅模式', segmented([
+      { label: '关闭', value: 'full' }, { label: '标准', value: 'lite' }, { label: '深度', value: 'min' }
+    ], ap.perfMode || 'full', function (v) {
+      ap.perfMode = v; AR.Store.save(true);
+      if (AR.UI.applyPerf) { AR.UI.applyPerf(); } else if (AR.UI.applyMotion) { AR.UI.applyMotion(); }
+    })));
+    // 只用 q-swatches（不带调色板那套 swatches 类，否则被它的宽度规则抢走）
+    var sw = el('<div class="q-swatches"></div>');
+    var pal = AR.Util.PALETTE;
+    for (var i = 0; i < pal.length; i++) {
+      (function (p) {
+        var s = el('<button type="button" class="swatch' + (ap.accent === p.hex ? ' active' : '')
+          + '" title="' + esc(p.name) + '" style="background:' + p.hex + '"></button>');
+        s.addEventListener('click', function () {
+          ap.accent = p.hex;
+          AR.Store.save(true);
+          AR.UI.applyTheme();
+          AR.Bridge.haptic('light', s);
+          var all = sw.querySelectorAll('.swatch');
+          for (var k = 0; k < all.length; k++) { all[k].classList.toggle('active', all[k] === s); }
+        });
+        sw.appendChild(s);
+      })(pal[i]);
+    }
+    row.appendChild(qItem('主题色', sw));
+    return row;
+  }
+
+  function quickWork() {
+    var hw = (S.settings.schedule.homework = S.settings.schedule.homework || { on: true, mode: 'line' });
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('作业功能', qSwitch(hw.on !== false, function (v) {
+      hw.on = v;
+      AR.Store.save(true);
+      refreshAll();
+    })));
+    row.appendChild(qItem('按课程分组', qSwitch(hw.groupByCourse !== false, function (v) {
+      hw.groupByCourse = v;
+      AR.Store.save(true);
+      if (AR.UI.refreshHomeworkPanels) { AR.UI.refreshHomeworkPanels(); }
+    })));
+    row.appendChild(qItem('日程类型', qBtn('管理 ›', function () {
+      if (AR.UI.openTypeManage) { AR.UI.openTypeManage(); }
+    })));
+    return row;
+  }
+
+  function quickMine() {
+    var ct = AR.UI.customTabCfg ? AR.UI.customTabCfg() : null;
+    if (!ct) { return null; }
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('自定义模块页', qSwitch(ct.enabled, function (v) {
+      ct.enabled = v;
+      AR.Store.save(true);
+      if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+      if (!v && AR.UI.currentView && AR.UI.currentView() === 'custom') { AR.UI.show('import'); }
+      AR.UI.toast(v ? '已开启：导入课表后「导入」会换成「我的」' : '已关闭：「导入」恢复');
+    })));
+    row.appendChild(qItem('模块组成', qBtn((ct.modules || []).length + ' 个 ›', function () {
+      openSettingsCat('mine');
+    })));
+    return row;
+  }
+
+  function quickNotify() {
+    var n = S.settings.notifications;
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('课前提醒', qSwitch(n.enabled, function (v) {
+      n.enabled = v; AR.Store.save(true);
+    })));
+    var val = n.defaultOffset || 15;
+    var step = el('<div class="q-step"></div>');
+    var valEl = el('<b>' + val + '</b><span class="muted"> 分</span>');
+    var minus = el('<button class="chip-btn" type="button">−</button>');
+    var plus = el('<button class="chip-btn" type="button">＋</button>');
+    var bump = function (d) {
+      val = Math.max(5, Math.min(60, val + d));
+      valEl.querySelector('b').textContent = val;
+      n.defaultOffset = val;
+      AR.Store.save();
+    };
+    minus.addEventListener('click', function () { bump(-5); AR.Bridge.haptic('light', minus); });
+    plus.addEventListener('click', function () { bump(5); AR.Bridge.haptic('light', plus); });
+    step.appendChild(minus);
+    step.appendChild(valEl);
+    step.appendChild(plus);
+    row.appendChild(qItem('提前量', step));
+    return row;
+  }
+
+  function quickData() {
+    var row = el('<div class="q-row"></div>');
+    var box = el('<div class="q-btns"></div>');
+    box.appendChild(qBtn('导出备份', function (b) { AR.ConfigIO.exportFile(b); }));
+    box.appendChild(qBtn('导出到微信', function (b) { AR.ConfigIO.exportToApp(b); }));
+    row.appendChild(qItem('备份', box));
+    var size = 0;
+    try { size = (JSON.stringify(S).length / 1024).toFixed(1); } catch (e) { }
+    row.appendChild(el('<div class="q-item"><span class="q-label muted">数据约 ' + size + ' KB · 只存本机</span></div>'));
+    return row;
+  }
+
+  function quickAbout() {
+    var row = el('<div class="q-row"></div>');
+    row.appendChild(qItem('版本', el('<span class="q-ver">v' + esc(AR.Const.APP_VERSION) + '</span>')));
+    row.appendChild(qItem('检查更新', qBtn('检查', function () { checkUpdate(true); })));
+    row.appendChild(qItem('引导', qBtn('重新观看', function () {
+      AR.Panels.startOnboarding(true);
+    })));
+    return row;
+  }
+
+  /* ── 检查更新（v0.4.1）：查 GitHub Releases，比较版本号 ──────
+     默认**不自动检查**；打开后可以选每周 / 每月一次（启动时静默查）。
+     网络不通时给一句提示 + 「打开下载页」兜底。 */
+
+  var REPO_API_LATEST = 'https://api.github.com/repos/EtoileZzz/AbbeyRoad----ScheduleApp/releases/latest';
+
+  /** 版本号拆成 数字三段 + 尾字母（0.4.1a / 0.4.1beta 都认） */
+  function verParts(v) {
+    var m = String(v || '').replace(/^v/i, '').match(/^(\d+)\.(\d+)\.(\d+)([a-z]*)$/i);
+    if (!m) { return null; }
+    return { n: [Number(m[1]), Number(m[2]), Number(m[3])], s: String(m[4] || '').toLowerCase() };
+  }
+
+  /** a 是否比 b 新 */
+  function versionNewer(a, b) {
+    var x = verParts(a), y = verParts(b);
+    if (!x || !y) { return false; }
+    for (var i = 0; i < 3; i++) { if (x.n[i] !== y.n[i]) { return x.n[i] > y.n[i]; } }
+    if (x.s === y.s) { return false; }
+    if (y.s === '' && x.s !== '') { return true; }    // 本地正式版 → 远端带字母的小修订算新
+    if (x.s === '' && y.s !== '') { return false; }   // 本地带字母 → 不比正式版新
+    return x.s > y.s;
+  }
+
+  function updateState() {
+    return (S.settings.update = S.settings.update || { auto: false, every: 'week', lastAt: '' });
+  }
+
+  function showUpdateModal(latest, url, note) {
+    AR.UI.openModal({
+      title: '发现新版本 v' + latest,
+      sub: '当前 v' + AR.Const.APP_VERSION,
+      body: '<p class="muted">' + (note ? esc(String(note).slice(0, 200)) : '到发布页可以下载新的安装包（Android APK / Windows 安装版）。') + '</p>',
+      actions: [
+        { label: '稍后', onClick: function (c) { c(); } },
+        {
+          label: '打开下载页', kind: 'primary', onClick: function (c) {
+            c();
+            AR.Bridge.openUrl(url || (REPO_URL + '/releases/latest'));
+          }
+        }
+      ]
+    });
+  }
+
+  /** manual = 用户点的（会有"正在检查 / 已是最新 / 失败"的反馈）；自动检查静默 */
+  function checkUpdate(manual) {
+    var st = updateState();
+    if (typeof fetch !== 'function') {
+      if (manual) { AR.UI.toast('当前环境不支持检查更新'); }
+      return;
+    }
+    if (manual) { AR.UI.toast('正在检查更新…'); }
+    var ctrl = (typeof AbortController === 'function') ? new AbortController() : null;
+    var timer = setTimeout(function () { if (ctrl) { ctrl.abort(); } }, 9000);
+    fetch(REPO_API_LATEST, {
+      headers: { Accept: 'application/vnd.github+json' },
+      cache: 'no-store',
+      signal: ctrl ? ctrl.signal : undefined
+    }).then(function (r) {
+      if (!r.ok) { throw new Error('HTTP ' + r.status); }
+      return r.json();
+    }).then(function (j) {
+      clearTimeout(timer);
+      st.lastAt = new Date().toISOString();
+      AR.Store.save();
+      var latest = String((j && j.tag_name) || '').replace(/^v/i, '');
+      if (latest && versionNewer(latest, AR.Const.APP_VERSION)) {
+        showUpdateModal(latest, (j && j.html_url) || (REPO_URL + '/releases/latest'), j && j.body);
+      } else if (manual) {
+        AR.UI.toast('已是最新版本 v' + AR.Const.APP_VERSION);
+      }
+      if (AR.UI.currentView && AR.UI.currentView() === 'settings') { renderSettings(); }
+    }).catch(function () {
+      clearTimeout(timer);
+      if (manual) {
+        AR.UI.confirmDanger({
+          title: '检查更新失败',
+          text: '网络不通（或访问不到 GitHub）。可以先到发布页看看有没有新版。',
+          okLabel: '打开下载页',
+          onOk: function () { AR.Bridge.openUrl(REPO_URL + '/releases/latest'); }
+        });
+      }
+    });
+  }
+
+  /** 启动时调用：开着自动检查、且距上次超过间隔才查，静默 */
+  function autoCheckUpdate() {
+    var st = updateState();
+    if (!st.auto) { return false; }
+    var span = st.every === 'month' ? 30 * 86400000 : 7 * 86400000;
+    var last = st.lastAt ? Date.parse(st.lastAt) : 0;
+    if (last && (Date.now() - last) < span) { return false; }
+    checkUpdate(false);
+    return true;
+  }
+
+  /* ── 搜索：命中清单（分类 · 项目），点一条直接进二级页并高亮 ── */
+
+  function settingsSearchBox() {
+    var wrap = el('<div class="set-search"></div>');
+    var input = el('<input class="input" id="setSearch" type="search"'
+      + ' placeholder="搜索设置项…（比如 主题 / 提醒 / 备份）">');
+    if (settingsSearchQ) { input.value = settingsSearchQ; }
+    var hits = el('<div class="set-hits" id="setHits"></div>');
+    input.addEventListener('input', function (ev) {
+      settingsSearchQ = ev.currentTarget.value;
+      paintSettingsHits(hits, settingsSearchQ);
+    });
+    wrap.appendChild(input);
+    wrap.appendChild(hits);
+    paintSettingsHits(hits, settingsSearchQ);
+    return wrap;
+  }
+
+  function paintSettingsHits(host, q) {
+    host.innerHTML = '';
+    q = String(q || '').trim().toLowerCase();
+    if (!q) { return; }
+    var cats = settingsCats();
+    var hits = [];
+    for (var i = 0; i < cats.length; i++) {
+      var cat = cats[i];
+      if ((cat.label + ' ' + cat.desc).toLowerCase().indexOf(q) >= 0) {
+        hits.push({ cat: cat, item: cat.label + '（整类）', mode: 'cat' });
+      }
+      for (var p = 0; p < cat.panels.length && hits.length < 24; p++) {
+        var node = cat.panels[p]();
+        var rows = node.querySelectorAll('.setting-row, .field, .slider-row, .widget-card, .lt-set-row, .row.gap');
+        for (var r = 0; r < rows.length; r++) {
+          var txt = (rows[r].textContent || '').replace(/\s+/g, ' ').trim();
+          if (!txt || txt.toLowerCase().indexOf(q) < 0) { continue; }
+          hits.push({ cat: cat, item: txt.slice(0, 22), mode: 'item' });
+          if (hits.length >= 24) { break; }
+        }
+      }
+    }
+    if (!hits.length) {
+      host.appendChild(el('<div class="muted" style="padding:4px 2px">没找到「' + esc(q) + '」相关的设置项。</div>'));
+      return;
+    }
+    for (var h = 0; h < hits.length; h++) {
+      (function (hit) {
+        var b = el('<button class="set-hit" type="button">'
+          + '<span class="hit-cat">' + esc(hit.cat.icon + ' ' + hit.cat.label) + '</span>'
+          + '<span class="hit-item">' + esc(hit.item) + '</span>'
+          + '<span class="set-cat-go">›</span></button>');
+        b.addEventListener('click', function () {
+          pendingHighlight = hit.mode === 'item' ? hit.item : '';
+          settingsSearchQ = '';
+          settingsCat = hit.cat.key;
+          AR.Bridge.haptic('light', b);
+          renderSettings();
+          var bd = $('settingsBody');
+          if (bd) { bd.scrollTop = 0; }
+          playSettingsEnter();
+        });
+        host.appendChild(b);
+      })(hits[h]);
+    }
+  }
+
+  /* ── 首页 / 二级页 ─────────────────────────────────────── */
+
+  /** 首页 ⇄ 二级页：走统一的整块入场（viewIn / listIn），和切页同一套动画 */
+  function playSettingsEnter() {
+    var grid = $('settingsGrid');
+    if (!grid) { return; }
+    if (AR.UI.enterRise) { AR.UI.enterRise(grid); }
+    else if (AR.UI.fadeInList) { AR.UI.fadeInList(grid, '.set-cat, .set-section'); }
+  }
+
+  function openSettingsCat(key) {
+    settingsCat = key;
+    renderSettings();
+    var b = $('settingsBody');
+    if (b) { b.scrollTop = 0; }
+    playSettingsEnter();
+  }
+
+  /** 从二级页回设置首页（返回条 / 返回键 / 侧滑都用它） */
+  function settingsGoHome() {
+    settingsCat = null;
+    renderSettings();
+    var b = $('settingsBody');
+    if (b) { b.scrollTop = 0; }
+    playSettingsEnter();
+  }
+
+  /**
+   * 返回键 / 侧滑：如果正停在设置的二级页，就回设置首页并"吃掉"这次返回
+   * （返回 true）。否则返回 false，交给上层逻辑（回今日页 / 退出）。
+   */
+  function settingsBackStep() {
+    if (!settingsCat) { return false; }
+    settingsGoHome();
+    return true;
+  }
+
+  /** 从别处进设置：回到分类首页（并清掉搜索框） */
+  function resetSettingsHome() {
+    settingsCat = null;
+    settingsSearchQ = '';
+  }
+
+  function renderSettingsHome(grid) {
+    grid.appendChild(settingsSearchBox());
+    var list = el('<div class="set-home"></div>');
+    var cats = settingsCats();
+    for (var i = 0; i < cats.length; i++) {
+      (function (cat) {
+        var card = el('<div class="set-cat" id="set-' + cat.key + '" data-key="' + cat.key + '"></div>');
+        var head = el('<button class="set-cat-head" type="button">'
+          + '<span class="set-cat-ico">' + cat.icon + '</span>'
+          + '<span class="set-cat-main"><b>' + esc(cat.label) + '</b><i>' + esc(cat.desc) + '</i></span>'
+          + '<span class="set-cat-go">进入 ›</span></button>');
+        head.addEventListener('click', function () {
+          AR.Bridge.haptic('light', head);
+          openSettingsCat(cat.key);
+        });
+        card.appendChild(head);
+        if (cat.quick) {
+          var q = cat.quick();
+          if (q) { card.appendChild(q); }
+        }
+        list.appendChild(card);
+      })(cats[i]);
+    }
+    grid.appendChild(list);
+  }
+
+  function renderSettingsDetail(grid) {
+    var cats = settingsCats();
+    var cat = null;
+    for (var i = 0; i < cats.length; i++) { if (cats[i].key === settingsCat) { cat = cats[i]; } }
+    if (!cat) { settingsCat = null; renderSettingsHome(grid); return; }
+    var bar = el('<div class="set-back">'
+      + '<button class="chip-btn" type="button" id="setBackBtn">← 设置</button>'
+      + '<span class="set-crumb">' + cat.icon + ' ' + esc(cat.label) + '</span></div>');
+    bar.querySelector('#setBackBtn').addEventListener('click', function () {
+      AR.Bridge.haptic('light', bar);
+      settingsGoHome();
+    });
+    grid.appendChild(bar);
+    /**
+     * v0.4.1：「数据与同步」不再用顶部滑块切页内标签 ——
+     * 四个面板和别处一样从上到下平铺（导入与同步 / 系统集成 / 数据与备份 / 回收站）。
+     */
+    if (cat.key === 'syncdata') {
+      var host0 = el('<div class="set-detail" id="set-' + cat.key + '"></div>');
+      host0.appendChild(panelSync());
+      host0.appendChild(panelIntegration());
+      host0.appendChild(panelData());
+      host0.appendChild(panelTrash());
+      grid.appendChild(host0);
+    } else {
+      var host = el('<div class="set-detail" id="set-' + cat.key + '"></div>');
+      for (var p = 0; p < cat.panels.length; p++) { host.appendChild(cat.panels[p]()); }
+      grid.appendChild(host);
+    }
+    // 搜索点进来的高亮
+    if (pendingHighlight) {
+      var lab = pendingHighlight.slice(0, 16);
+      var cand = grid.querySelectorAll('.setting-row, .field, .slider-row');
+      for (var c = 0; c < cand.length; c++) {
+        if ((cand[c].textContent || '').indexOf(lab) >= 0) {
+          cand[c].classList.add('set-hit-flash');
+          try { cand[c].scrollIntoView({ block: 'center' }); } catch (e) { }
+          break;
+        }
+      }
+      pendingHighlight = '';
+    }
+  }
+
+  function renderSettings() {
+    ensure();
+    var grid = $('settingsGrid');
+    if (!grid) { return; }
+    var body = $('settingsBody');
+    var keepScroll = (body && !settingsSearchQ) ? body.scrollTop : 0;
+    grid.innerHTML = '';
+    if (settingsCat) { renderSettingsDetail(grid); }
+    else { renderSettingsHome(grid); }
+    // 面板全部插进 DOM 之后再对齐分段控件的滑块
+    if (AR.UI.enhanceSegmented) { AR.UI.enhanceSegmented(grid); }
+    else if (AR.UI.syncSegments) { AR.UI.syncSegments(grid); }
+    // 局部重渲染也要保住滚动位置（不然拨个开关就跳回顶部）
+    if (body) { body.scrollTop = keepScroll; }
+  }
+
+  var SETTINGS_SECTIONS = [
+    { key: 'prefs', label: '外观与布局', icon: '🎨' },
+    { key: 'widgets', label: '桌面卡片', icon: '▦' },
+    { key: 'course', label: '课程与课表', icon: '📚' },
+    { key: 'work', label: '作业与日程', icon: '📝' },
+    { key: 'mine', label: '我的页面', icon: '🧩' },
+    { key: 'syncdata', label: '数据与同步', icon: '💾' },
+    { key: 'about', label: '关于与帮助', icon: 'ℹ️' }
+  ];
+
+  /** v0.4.0：左侧分类栏去掉了 —— 设置只剩「首页分类列表 → 二级页 → 返回」这一条路 */
+  function renderSettingsNav() { /* 保留空实现，避免老调用点报错 */ }
+
+  /**
+   * 开发者模式的总开关（**唯一入口**：长按底部导航的「设置」，800ms）。
+   *
+   * 规则（v0.4.1a 起）：
+   *   · 默认关闭；开启后在设置分类页**多出一个独立的「开发者模式」分类**（无高频项）；
+   *   · 开启 / 关闭都**不跳转**，停在当前页面 —— 分类列表自己会多一项 / 少一项；
+   *   · 再长按一次关闭；若此刻正停在该分类的二级页，退回分类首页（否则会停在已消失的页面上）。
+   *
+   * 绑在底部导航按钮上，而它**不在** renderSettings() 重建的 DOM 里，
+   * 所以这一处监听只需要绑一次（用标记位防重复）。
+   */
+  function bindSettingsLongPress(btn) {
+    if (!btn || btn.__devLongPressBound) { return; }
+    btn.__devLongPressBound = true;
+
+    var timer = null;
+    function cancel() {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+    btn.addEventListener('pointerdown', function (ev) {
+      cancel();
+      var x0 = ev.clientX, y0 = ev.clientY;
+      timer = setTimeout(function () {
+        timer = null;
+        toggleDevMode(btn);
+      }, 800);
+      var move = function (e2) {
+        if (Math.abs(e2.clientX - x0) > 10 || Math.abs(e2.clientY - y0) > 10) { cancel(); }
+      };
+      var up = function () {
+        cancel();
+        btn.removeEventListener('pointermove', move);
+        btn.removeEventListener('pointerup', up);
+        btn.removeEventListener('pointercancel', up);
+      };
+      btn.addEventListener('pointermove', move);
+      btn.addEventListener('pointerup', up);
+      btn.addEventListener('pointercancel', up);
+    });
+    btn.addEventListener('pointerleave', cancel);
+    // 长按在桌面端会弹右键菜单，屏蔽掉
+    btn.addEventListener('contextmenu', function (ev) { ev.preventDefault(); });
+  }
+
+  /** 开 / 关开发者模式（不跳页；关闭时若停在该分类则退回首页） */
+  function toggleDevMode(btn) {
+    var ap = S.settings.appearance;
+    var on = !(ap.devMode === true);
+    ap.devMode = on;
+    AR.Store.save(true);
+    AR.Bridge.haptic('heavy', btn);
+
+    // 关掉时，如果正停在「开发者模式」二级页，这一页马上就不存在了 → 退回分类首页。
+    // 停在别的分类 / 首页时什么都不动，符合"默认不跳转"。
+    if (!on && settingsCat === 'dev') { settingsCat = null; }
+
+    // 只有当前就在设置页时才重渲染；不在设置页的话，下次进入设置自然会带上新分类。
+    if (AR.UI && AR.UI.currentView && AR.UI.currentView() === 'settings') {
+      renderSettings();
+      if (on) {
+        var body = $('settingsBody');
+        if (body) { body.scrollTop = body.scrollHeight; }   // 新分类在列表最后，滚过去看一眼
+        playSettingsEnter();
+      }
+    }
+
+    if (AR.UI && AR.UI.toast) {
+      AR.UI.toast(on
+        ? '开发者模式已开启：设置里多了「开发者模式」分类'
+        : '开发者模式已关闭');
+    }
+  }
+
+  function panel(title, inner, key) {
+    var node = el('<section class="glass panel set-section" id="set-' + key + '" data-key="' + key + '">'
+      + '<header class="panel-head"><h2 class="panel-title">' + esc(title) + '</h2></header></section>');
+    node.appendChild(inner);
+    return node;
+  }
+
+  function rowSwitch(label, desc, checked, onChange) {
+    var node = el('<div class="setting-row"><div class="setting-text"><div class="t">' + esc(label) + '</div>'
+      + '<div class="d">' + esc(desc) + '</div></div>'
+      + '<label class="switch"><input type="checkbox"' + (checked ? ' checked' : '') + '>'
+      + '<span class="track"></span><span class="knob"></span></label></div>');
+    node.querySelector('input').addEventListener('change', function (ev) {
+      AR.Bridge.haptic('light', node);
+      onChange(ev.currentTarget.checked);
+    });
+    return node;
+  }
+
+  function segmented(options, current, onPick) {
+    var box = el('<div class="segmented"></div>');
+    for (var i = 0; i < options.length; i++) {
+      (function (opt) {
+        var b = el('<button class="seg' + (opt.value === current ? ' active' : '') + '" type="button">'
+          + esc(opt.label) + '</button>');
+        b.addEventListener('click', function () {
+          for (var k = 0; k < box.children.length; k++) { box.children[k].classList.remove('active'); }
+          b.classList.add('active');
+          if (AR.UI.syncSegPill) { AR.UI.syncSegPill(box, true); }
+          AR.Bridge.haptic('light', b);
+          onPick(opt.value);
+        });
+        box.appendChild(b);
+      })(options[i]);
+    }
+    return box;
+  }
+
+  /* 1 · 外观 */
+  function panelAppearance() {
+    var ap = S.settings.appearance;
+    var box = el('<div></div>');
+    box.appendChild(el('<div class="field-label">主题</div>'));
+    box.appendChild(segmented([
+      { label: '跟随系统', value: 'system' }, { label: '浅色', value: 'light' }, { label: '深色', value: 'dark' }
+    ], ap.theme, function (v) {
+      ap.theme = v; AR.Store.save(true);
+      AR.Bridge.haptic('medium', $('settingsGrid'));
+      /**
+       * 走整页颜色渐变 + 光效（手动点 = 点击处扩散）。
+       * 以前这里是 applyTheme() + renderSettings()：整页重建会把刚起步的滑块动画
+       * 一起删掉 —— 设置页的胶囊"永远是瞬移"就是这个原因。
+       */
+      var sysDark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      if (AR.UI.themeSwitch) { AR.UI.themeSwitch(v === 'dark' || (v === 'system' && sysDark), 'click'); }
+      else { AR.UI.applyTheme(); }
+    }));
+    box.appendChild(el('<div class="field-label" style="margin-top:14px">主题色</div>'));
+    var sw = el('<div class="swatches"></div>');
+    for (var i = 0; i < U.PALETTE.length; i++) {
+      (function (p) {
+        var node = el('<div class="swatch' + (ap.accent === p.hex ? ' active' : '')
+          + '" title="' + p.name + '" style="background:' + p.hex + '"></div>');
+        node.addEventListener('click', function () {
+          ap.accent = p.hex; AR.Store.save(true); AR.UI.applyTheme();
+          AR.Bridge.haptic('light', node);
+          // 只挪选中态，不重建整页（重建会闪一下，也会打断正在播的主题过渡）
+          for (var k2 = 0; k2 < sw.children.length; k2++) { sw.children[k2].classList.remove('active'); }
+          node.classList.add('active');
+        });
+        sw.appendChild(node);
+      })(U.PALETTE[i]);
+    }
+    box.appendChild(sw);
+    box.appendChild(el('<div class="field-label" style="margin-top:14px">质感模糊效果</div>'));
+    box.appendChild(segmented([
+      { label: '关闭', value: 'off' }, { label: '低', value: 'low' },
+      { label: '中', value: 'medium' }, { label: '高', value: 'high' }
+    ], ap.glassLevel, function (v) {
+      ap.glassLevel = v; AR.Store.save(true); AR.UI.applyGlass();
+      AR.Bridge.haptic('medium', $('settingsGrid'));
+    }));
+    /**
+     * 流畅模式：功能完全不变，只是把开销大的光效 / 动效换便宜的等价物。
+     *   关闭 = 全部效果；标准 = 关质感模糊、光斑模糊、模糊类特效、主题墨滴；
+     *   深度 = 再去掉 3D 翻折与逐条错峰，时长收紧。
+     * 切换立刻生效（applyPerf 重挂 data-perf），存档进配置文件。
+     */
+    box.appendChild(el('<div class="field-label" style="margin-top:14px">流畅模式</div>'));
+    box.appendChild(segmented([
+      { label: '关闭', value: 'full' }, { label: '标准', value: 'lite' }, { label: '深度', value: 'min' }
+    ], { full: 'full', lite: 'lite', min: 'min' }[ap.perfMode] || 'full', function (v) {
+      ap.perfMode = v; AR.Store.save(true);
+      if (AR.UI.applyPerf) { AR.UI.applyPerf(); }
+      AR.Bridge.haptic('medium', $('settingsGrid'));
+      AR.UI.toast(v === 'full' ? '已关闭流畅模式，全部特效恢复'
+        : v === 'lite' ? '流畅模式·标准：已关质感模糊效果与光效，保留全部动画'
+          : '流畅模式·深度：动画与光效已精简，功能不受影响');
+    }));
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0;font-size:12px">'
+      + '降低特效开销，让设备更流畅；功能完全不变，随时可切回。</p>'));
+    if (ap.perfMode === 'lite' || ap.perfMode === 'min') {
+      box.appendChild(el('<p class="muted" style="margin:6px 0 0;font-size:12px">'
+        + '此档下质感模糊效果与主题切换光效暂时失效（设置保留，切回「关闭」即恢复）。</p>'));
+    }
+    box.appendChild(el('<div class="field-label" style="margin-top:14px">动画速度</div>'));
+    box.appendChild(segmented([
+      { label: '0.5×', value: 0.5 }, { label: '1×', value: 1 }, { label: '1.5×', value: 1.5 }
+    ], ap.animationSpeed, function (v) {
+      ap.animationSpeed = v; AR.Store.save(true); AR.UI.applyMotion();
+      AR.Bridge.haptic('medium', $('settingsGrid'));
+    }));
+    box.appendChild(rowSwitch('震动反馈', '重要操作（保存 / 删除 / 导航 / 聚焦）触发震动', S.settings.haptics.enabled, function (v) {
+      S.settings.haptics.enabled = v; AR.Store.save(true);
+      if (v) { AR.Bridge.haptic('heavy', $('settingsGrid')); }
+    }));
+    box.appendChild(el('<div class="field-label" style="margin-top:12px">震动强度</div>'));
+    box.appendChild(segmented([
+      { label: '弱', value: 'weak' }, { label: '中', value: 'medium' }, { label: '强', value: 'strong' }
+    ], S.settings.haptics.intensity, function (v) {
+      S.settings.haptics.intensity = v; AR.Store.save(true);
+      AR.Bridge.haptic('heavy', $('settingsGrid'));
+    }));
+    /**
+     * 磁贴风格：一键把全局进出场动画换成"从点击处翻入"的磁贴翻转。
+     * 开着的时候忽略逐场景的样式选择（但不会清掉它们），关掉就回到各自的选择。
+     */
+    if (AR.Motion) {
+      box.appendChild(rowSwitch('磁贴风格（全局）',
+        '',
+        AR.Motion.tileMode(), function (v) {
+          AR.Motion.setTileMode(v);
+          AR.Bridge.haptic(v ? 'heavy' : 'medium', $('settingsGrid'));
+          AR.UI.toast(v ? '已开启全局磁贴风格' : '已关闭磁贴风格，恢复逐场景设置');
+          if (AR.UI.renderToday) { AR.UI.renderToday(); }
+        }));
+    }
+    // 开发者模式的内容已迁到独立的「开发者模式」分类（panelDev），
+    // 外观页不再挂任何调试项。
+    return panel('外观', box, 'appearance');
+  }
+
+  /* ── 开发者模式 · 独立二级页 ─────────────────────────────── */
+
+  function panelDev() {
+    return panel('开发者模式', devMotionBox(), 'dev');
+  }
+
+  /* ── 开发者模式：逐场景挑选过渡动画 ───────────────────────── */
+
+  /**
+   * 每个场景一行：场景名 + 样式下拉 + 「试放」。
+   * 样式表来自 AR.Motion（曲线、时长、位移、缩放、旋转、模糊都在里面描述），
+   * 选中即生效并落盘，不用重启。
+   */
+  function devMotionBox() {
+    var box = el('<div class="dev-motion"></div>');
+    box.appendChild(el('<div class="dev-badge">开发者模式</div>'));
+    box.appendChild(el('<p class="muted" style="margin:6px 0 10px">'
+      + '这里改的是全局过渡动画，改完立刻生效，每个场景可以先「试放」看一眼。'
+      + '要退出开发者模式：再长按一次底部的「设置」。'
+      + '（关闭后这个分类会消失，设过的样式保留。）</p>'));
+
+    var order = AR.Motion.order;
+    for (var i = 0; i < order.length; i++) {
+      (function (key) {
+        var sc = AR.Motion.table[key];
+        if (!sc) { return; }
+        var cur = AR.Motion.get(key);
+        var row = el('<div class="dev-row"><div class="dev-name">' + esc(sc.name) + '</div></div>');
+        var sopts = [];
+        for (var j = 0; j < sc.styles.length; j++) {
+          sopts.push({ v: sc.styles[j].k, t: sc.styles[j].name });
+        }
+        var sel = el('<div class="dev-select"></div>');
+        if (AR.UI.pickerTrigger) {
+          sel.appendChild(AR.UI.pickerTrigger({
+            value: cur ? cur.k : '', options: sopts, title: sc.name,
+            sub: '选中立刻生效，可以先「试放」看一眼', always: true,
+            onPick: function (v, o) {
+              AR.Motion.set(key, v);
+              AR.UI.toast(sc.name + ' → ' + ((o && o.t) || v));
+            }
+          }));
+        } else {
+          // 兜底：万一 ui.js 没提供自绘下拉，退回原生 select（至少功能可用）
+          var raw = el('<select class="input input-sm"></select>');
+          for (var k2 = 0; k2 < sopts.length; k2++) {
+            raw.appendChild(el('<option value="' + sopts[k2].v + '"'
+              + (cur && cur.k === sopts[k2].v ? ' selected' : '') + '>'
+              + esc(sopts[k2].t) + '</option>'));
+          }
+          raw.addEventListener('change', function (ev) {
+            AR.Motion.set(key, ev.target.value);
+            AR.Bridge.haptic('light', raw);
+          });
+          sel.appendChild(raw);
+        }
+        row.appendChild(sel);
+        var play = el('<button class="chip-btn" type="button">试放</button>');
+        play.addEventListener('click', function () { previewMotion(key); });
+        row.appendChild(play);
+        box.appendChild(row);
+      })(order[i]);
+    }
+
+    var foot = el('<div class="row gap" style="margin-top:12px"></div>');
+    var reset = el('<button class="btn" type="button">全部恢复默认</button>');
+    reset.addEventListener('click', function () {
+      AR.Motion.reset();
+      AR.Bridge.haptic('medium', reset);
+      AR.UI.toast('过渡动画已恢复默认');
+      renderSettings();
+    });
+    foot.appendChild(reset);
+    box.appendChild(foot);
+
+    /* ── 弹窗玻璃（0.4.1 定稿参数，开发者可微调）─────────────── */
+    box.appendChild(el('<div class="dev-sub">弹窗玻璃</div>'));
+    var gs = S.settings.appearance;
+    if (gs.modalCardA == null) { gs.modalCardA = 0.9; }
+    if (gs.modalBarA == null) { gs.modalBarA = 0.2; }
+    if (gs.modalBarBlur == null) { gs.modalBarBlur = 11; }
+    box.appendChild(el('<p class="muted" style="margin:0 0 6px;font-size:12px">'
+      + '内容层 / 覆盖层不透明度与覆盖层高斯模糊，改完立刻生效；'
+      + '流畅模式·标准 / 深度 下覆盖层自动改为不透明（不模糊）。</p>'));
+    box.appendChild(slider('内容层（弹窗卡片）不透明度', 40, 100, Math.round(gs.modalCardA * 100), '%', function (v) {
+      S.settings.appearance.modalCardA = v / 100; AR.Store.save(true); AR.UI.applyModalTuning();
+    }));
+    box.appendChild(slider('覆盖层（标题带/按钮条）不透明度', 0, 100, Math.round(gs.modalBarA * 100), '%', function (v) {
+      S.settings.appearance.modalBarA = v / 100; AR.Store.save(true); AR.UI.applyModalTuning();
+    }));
+    box.appendChild(slider('覆盖层高斯模糊', 0, 40, Number(gs.modalBarBlur) || 0, 'px', function (v) {
+      S.settings.appearance.modalBarBlur = v; AR.Store.save(true); AR.UI.applyModalTuning();
+    }));
+
+    /* ── 开发者工具：随时开关，关掉立刻恢复原样 ─────────────── */
+    box.appendChild(el('<div class="dev-sub">开发者工具</div>'));
+    var flags = AR.UI.devFlags();
+    var tools = [
+      { k: 'fps', t: '帧率悬浮窗', d: '左上角显示实时帧率，低于 50fps 会变红' },
+      { k: 'ripple', t: '点按涟漪', d: '每次点按在落点画一个涟漪，检查热区与命中位置' },
+      { k: 'grid', t: '8px 基线网格', d: '给整页铺一层淡网格，用来对齐间距' },
+      { k: 'outline', t: '布局描边', d: '给所有盒子描一层边，看布局边界' },
+      { k: 'slow', t: '动画慢放 0.25×', d: '把全局动画速度调到 1/4，逐帧看曲线' }
+    ];
+    for (var ti = 0; ti < tools.length; ti++) {
+      (function (tool) {
+        var on = (tool.k === 'slow')
+          ? (Number(S.settings.appearance.animationSpeed) === 0.25)
+          : (flags[tool.k] === true);
+        box.appendChild(rowSwitch(tool.t, tool.d, on, function (v) {
+          if (tool.k === 'slow') {
+            S.settings.appearance.animationSpeed = v ? 0.25 : 1;
+            AR.Store.save(true);
+            AR.UI.applyMotion();
+          } else {
+            flags[tool.k] = v;
+            AR.UI.devApply(true);
+          }
+          AR.Bridge.haptic('light', $('settingsGrid'));
+        }));
+      })(tools[ti]);
+    }
+    var dRow = el('<div class="row gap" style="margin-top:10px"></div>');
+    var copyDiag = el('<button class="btn" type="button">复制诊断信息</button>');
+    copyDiag.addEventListener('click', function () { AR.UI.devDiagnostics(); });
+    var closeAll = el('<button class="btn" type="button">关闭全部开发者工具</button>');
+    closeAll.addEventListener('click', function () {
+      var f = AR.UI.devFlags();
+      for (var k in f) { if (Object.prototype.hasOwnProperty.call(f, k)) { f[k] = false; } }
+      S.settings.appearance.animationSpeed = 1;
+      AR.Store.save(true);
+      AR.UI.devApply(true);
+      AR.UI.applyMotion();
+      AR.Bridge.haptic('medium', closeAll);
+      AR.UI.toast('开发者工具已全部关闭');
+      renderSettings();
+    });
+    dRow.appendChild(copyDiag);
+    dRow.appendChild(closeAll);
+    box.appendChild(dRow);
+
+    return box;
+  }
+
+  /**
+   * 试放：按场景挑一个最贴近的实时预览。
+   *
+   * 场景键必须和 AR.Motion 的注册表一致：`zoneFocus / contentIn / dateSwitch /
+   * modal / viewIn / listIn`。以前这里还写着 zoneExpand / zoneCollapse /
+   * modalIn / modalOut 这些**早就合并掉的旧键**，于是"今日页聚焦"和"弹窗"两行
+   * 的试放按钮点了完全没反应 —— 这就是"试放不能用"。
+   */
+  function previewMotion(key) {
+    var host = $('settingsBody') || document.body;
+    // 今日页聚焦放大 / 缩小：直接让真正的今日页动一次，观感最准
+    if (key === 'zoneFocus' || key === 'contentIn') {
+      AR.UI.show('today');
+      var zone = document.getElementById('zoneNext');
+      setTimeout(function () {
+        if (zone && !zone.classList.contains('expanded')) { zone.click(); }
+      }, 300);
+      setTimeout(function () {
+        if (zone && zone.classList.contains('expanded')) { zone.querySelector('.zone-toggle').click(); }
+      }, 1500);
+      return;
+    }
+    if (key === 'dateSwitch') {
+      // 切换日期：真的按一次「后一天」再按回来，看的就是今日页那套过渡
+      AR.UI.show('today');
+      setTimeout(function () { var b = $('btnNextDay'); if (b) { b.click(); } }, 320);
+      setTimeout(function () { var b = $('btnPrevDay'); if (b) { b.click(); } }, 1500);
+      return;
+    }
+    if (key === 'modal') {
+      var card = el('<div class="dev-preview-card">弹窗动画预览</div>');
+      host.appendChild(card);
+      card.style.position = 'fixed';
+      card.style.left = '50%'; card.style.top = '50%';
+      card.style.marginLeft = '-110px'; card.style.marginTop = '-40px';
+      AR.UI.popIn(card, 'in');
+      setTimeout(function () {
+        AR.UI.popIn(card, 'out');
+        setTimeout(function () { if (card.parentNode) { card.parentNode.removeChild(card); } }, 460);
+      }, 760);
+      return;
+    }
+    if (key === 'viewIn') {
+      var panel = host.querySelector('.set-section');
+      if (panel) { AR.UI.enterRise(panel.parentNode || host); }
+      return;
+    }
+    if (key === 'listIn') {
+      var items = host.querySelectorAll('.set-section .row, .set-section .slider-row');
+      if (items.length) {
+        var wrap = items[0].parentNode;
+        AR.UI.fadeInList(wrap, '.row, .slider-row');
+      }
+    }
+  }
+
+  /* 2 · 布局与尺寸（滑块 + 实时预览） */
+  function panelLayout() {
+    var box = el('<div></div>');
+    // 只保留两种布局：左右（左上本周概览 / 左下今日日程 / 右最近的课）与上中下。
+    // 旧的「自动」「左中右」在数据迁移里会统一折算成「左右」，直板机上也不会再被三栏挤压。
+    var preset = S.settings.layout.preset;
+    if (preset !== 'stacked-vertical') { preset = 'dual-horizontal'; }
+    box.appendChild(segmented([
+      { label: '左右', value: 'dual-horizontal' },
+      { label: '上中下', value: 'stacked-vertical' }
+    ], preset, function (v) {
+      S.settings.layout.preset = v;
+      AR.Store.save(true);
+      AR.UI.setPreset(v, true);
+      renderSettings();
+    }));
+
+    var preview = el('<div class="layout-preview" id="layoutPreview">'
+      + '<div class="pv pv-week"><span>本周</span></div>'
+      + '<div class="pv pv-today"><span>今日</span></div>'
+      + '<div class="pv pv-next"><span>最近</span></div></div>');
+    box.appendChild(preview);
+    requestAnimationFrame(function () { drawPreview(); });
+
+    /**
+     * 左手模式：只对「左右」布局有意义。
+     * 打开后整块版图左右镜像 —— 常用的大卡片（最近的课）落在左手边，
+     * 拇指够得到；「上中下」没有左右之分，这里给一句说明免得以为坏了。
+     */
+    var isDual = preset === 'dual-horizontal';
+    var leftHandRow = rowSwitch('左手模式',
+      isDual
+        ? '把「最近的课」和「本周概览 + 今日日程」左右对调，常用卡片落在左手边'
+        : '「上中下」布局没有左右之分；切到「左右」后即可生效',
+      !!S.settings.layout.leftHand,
+      function (v) {
+        S.settings.layout.leftHand = v;
+        AR.Store.save(true);
+        AR.UI.applyLayout(true);
+        drawPreview();
+        AR.UI.toast(v ? '已开启左手模式' : '已关闭左手模式');
+      });
+    if (!isDual) { leftHandRow.classList.add('disabled-row'); }
+    box.appendChild(leftHandRow);
+
+    /**
+     * 今日日程的卡片密度。默认紧凑：一节课一条长卡片，课多的时候
+     * 不用滑很久；关掉就回到"每节课 6 个信息格"的详细版（可以逐格点开改）。
+     */
+    box.appendChild(rowSwitch('今日日程用紧凑卡片',
+      '每节课只占一条（时间 / 课名 / 地点 / 老师），一天能一眼看完；关掉后每节课展开成信息格，可逐格点开编辑',
+      S.settings.appearance.todayCompact !== false,
+      function (v) {
+        S.settings.appearance.todayCompact = v;
+        AR.Store.save(true);
+        AR.UI.renderToday();
+        AR.UI.toast(v ? '今日日程：紧凑卡片' : '今日日程：详细信息格');
+      }));
+
+    var bp = AR.UI.breakpointKey(document.documentElement.clientWidth);
+    var resolved = AR.UI.layoutState.preset;
+    box.appendChild(el('<div class="muted" style="margin-bottom:8px">当前断点：'
+      + (bp === 'wide' ? '宽屏' : (bp === 'medium' ? '中屏' : '窄屏')) + ' · 生效布局：' + presetName(resolved) + '</div>'));
+
+    var week = AR.UI.sizeOf('week'), next = AR.UI.sizeOf('next');
+    if (resolved === 'dual-horizontal') {
+      box.appendChild(slider('右栏「最近的课」宽度', 28, 62, next.w, '%', function (v) {
+        AR.UI.setSize('next', 'w', v); drawPreview();
+      }));
+      box.appendChild(slider('左上「本周概览」高度', 18, 46, week.h, '%', function (v) {
+        AR.UI.setSize('week', 'h', v); drawPreview();
+      }));
+    } else {
+      box.appendChild(slider('上栏「本周概览」高度', 14, 38, week.h, '%', function (v) {
+        AR.UI.setSize('week', 'h', v); drawPreview();
+      }));
+      box.appendChild(slider('下栏「最近的课」高度', 14, 38, next.h, '%', function (v) {
+        AR.UI.setSize('next', 'h', v); drawPreview();
+      }));
+    }
+    box.appendChild(el('<p class="muted" style="margin-top:8px">'
+      + '宽高都是「占屏幕的比例」，所以同一套设置在任意手机上都不会挤压错位；'
+      + '尺寸按屏幕宽度分别记忆，不会互相覆盖。</p>'));
+
+    var btns = el('<div class="row" style="margin-top:10px"><button class="btn" id="btnResetLayout">恢复默认</button></div>');
+    btns.querySelector('#btnResetLayout').addEventListener('click', function () {
+      var key = AR.UI.breakpointKey(document.documentElement.clientWidth);
+      var defaults = AR.UI.defaultProfiles()[key];
+      AR.UI.layoutState.profiles[key].week = { w: defaults.week.w, h: defaults.week.h };
+      AR.UI.layoutState.profiles[key].next = { w: defaults.next.w, h: defaults.next.h };
+      AR.UI.saveProfiles();
+      AR.UI.applyLayout(true);
+      AR.Bridge.haptic('medium', $('settingsGrid'));
+      renderSettings();
+    });
+    box.appendChild(btns);
+    return panel('布局与尺寸', box, 'layout');
+  }
+
+  function presetName(v) {
+    return v === 'stacked-vertical' ? '上中下' : '左右';
+  }
+
+  /* 0.4.2 · 桌面卡片「每种尺寸的功能显示预设」选择器 */
+  function widgetPresets() {
+    var S = AR.Store.get();
+    S.settings.widgets = S.settings.widgets || {};
+    return S.settings.widgets.presets || (S.settings.widgets.presets = {});
+  }
+  function presetRow(key, title, opts) {
+    var row = el('<div class="wg-preset"></div>');
+    row.appendChild(el('<div class="wg-preset-t">' + esc(title) + ' · 显示内容</div>'));
+    row.appendChild(segmented(opts.map(function (o) { return { label: o[1], value: o[0] }; }),
+      widgetPresets()[key] || 'A', function (v) {
+        widgetPresets()[key] = v;
+        AR.Store.save(true);
+        if (AR.WidgetData && AR.WidgetData.sync) { AR.WidgetData.sync(true); }
+        AR.Bridge.haptic('light');
+        AR.UI.toast('桌面卡片已按新预设更新');
+      }));
+    return row;
+  }
+
+  /* 0.4.1c · 桌面卡片：自由勾选要显示的元素（功能层，不动外观） */
+  function widgetHidden() {
+    var S = AR.Store.get();
+    S.settings.widgets = S.settings.widgets || {};
+    return S.settings.widgets.hidden || (S.settings.widgets.hidden = {});
+  }
+  function elementChips(key, title) {
+    var items = (AR.WidgetData && AR.WidgetData.ELEMENTS && AR.WidgetData.ELEMENTS[key]) || [];
+    if (!items.length) { return null; }
+    var hid = widgetHidden();
+    var row = el('<div class="wg-els"></div>');
+    row.appendChild(el('<span class="wg-els-t">' + esc(title) + ' 显示元素</span>'));
+    var wrap = el('<div class="wg-els-row"></div>');
+    for (var i = 0; i < items.length; i++) {
+      (function (it) {
+        var on = !hid[it.k];
+        var chip = el('<button class="chip-btn wg-el' + (on ? ' active' : '') + '" type="button">'
+          + (on ? '✓ ' : '') + esc(it.t) + '</button>');
+        chip.addEventListener('click', function () {
+          var cur = !widgetHidden()[it.k];
+          widgetHidden()[it.k] = cur;              // 点一下切换显示/隐藏
+          AR.Store.save(true);
+          if (AR.WidgetData && AR.WidgetData.sync) { AR.WidgetData.sync(true); }
+          AR.Bridge.haptic('light', chip);
+          chip.classList.toggle('active', !cur);
+          chip.textContent = (cur ? '' : '✓ ') + it.t;
+        });
+        wrap.appendChild(chip);
+      })(items[i]);
+    }
+    row.appendChild(wrap);
+    return row;
+  }
+
+  /* 2b · 桌面卡片（5 种样式 + 添加教程） */
+  function panelWidgets() {
+    var box = el('<div></div>');
+    var payload = (AR.WidgetData && AR.WidgetData.build) ? AR.WidgetData.build() : null;
+    var p = payload || {};
+
+    box.appendChild(el('<p class="muted">把课表放到手机桌面，不用打开 App 就能看。'
+      + '数据只放在本机，卡片显示的永远是最新导入的课表。</p>'));
+
+    var list = el('<div class="widget-list"></div>');
+
+    // ① 今日头
+    list.appendChild(widgetCard('今日头 · 4×1', '日期、周次、今天几节课一秒看完', 'w-head',
+      '<div class="wg-line"><b>' + esc(p.dateText || '9月14日 周一') + '</b>'
+      + '<span class="wg-chip">' + esc(p.todayBadge || '08:00') + '</span></div>'
+      + '<div class="wg-sub">第 ' + (p.weekNo || 1) + ' 周 · ' + esc(p.todaySub || '今天没有课') + '</div>'));
+    list.appendChild(presetRow('head', '今日头 4×1', [['A', '今天节数'], ['B', '下一节倒计时'], ['C', '剩余节数']]));
+    (function () { var e = elementChips('head', '今日头'); if (e) { list.appendChild(e); } })();
+
+    // ② 下一节课
+    list.appendChild(widgetCard('下一节课 · 2×2', '课程、时间、地点、还有多久上课', 'w-next',
+      '<div class="wg-line"><span class="wg-dim">' + esc(p.nextLabel || '下一节课') + '</span>'
+      + '<span class="wg-chip">' + esc(p.nextIn || '') + '</span></div>'
+      + '<div class="wg-title">' + esc(p.nextName || '最近没有安排') + '</div>'
+      + '<div class="wg-sub">' + esc(p.nextTime || '导入课表后显示下一节课') + '</div>'
+      + '<div class="wg-sub">' + esc(p.nextPlace || '') + '</div>'));
+    list.appendChild(presetRow('next', '下一节课 2×2', [['A', '课名·时间·地点'], ['B', '加周次'], ['C', '极简·倒计时']]));
+    (function () { var e = elementChips('next', '下一节课'); if (e) { list.appendChild(e); } })();
+
+    // ③ 今日课程清单
+    var rows = '';
+    var today = p.today || [];
+    for (var i = 0; i < Math.min(today.length, 3); i++) {
+      rows += '<div class="wg-row"><i style="background:' + esc(today[i].color || '#5B8DEF') + '"></i>'
+        + '<span class="wg-row-name">' + esc(today[i].name) + '</span>'
+        + '<span class="wg-row-time">' + esc(today[i].time) + '</span></div>';
+    }
+    if (!rows) { rows = '<div class="wg-sub">今天没有课，好好休息 ☕</div>'; }
+    list.appendChild(widgetCard('今日课程清单 · 4×2', '最多 4 条，上课地点一起看', 'w-today',
+      '<div class="wg-line"><b>今天 · ' + esc(U.WEEKDAY_NAMES[U.weekdayOf(new Date())]) + '</b>'
+      + '<span class="wg-dim">' + today.length + ' 节课</span></div>' + rows));
+    list.appendChild(presetRow('today', '今日课程清单 4×2', [['A', '全部'], ['B', '只显示没上完'], ['C', '只看时间·课名']]));
+    (function () { var e = elementChips('today', '今日清单'); if (e) { list.appendChild(e); } })();
+
+    // ④ 本周迷你课表
+    var grid = '';
+    var cells = {};
+    var wk = p.week || [];
+    for (var c = 0; c < wk.length; c++) {
+      for (var r = Math.max(1, wk[c].s); r <= Math.max(wk[c].s, Math.min(wk[c].e, 6)); r++) {
+        cells[r + '_' + wk[c].d] = wk[c].color || '#5B8DEF';
+      }
+    }
+    for (var rr = 1; rr <= 5; rr++) {
+      grid += '<div class="wg-grid-row">';
+      for (var dd = 1; dd <= 7; dd++) {
+        var col = cells[rr + '_' + dd];
+        grid += '<span class="wg-cell"' + (col ? ' style="background:' + esc(col) + '"' : '') + '></span>';
+      }
+      grid += '</div>';
+    }
+    list.appendChild(presetRow('week', '本周迷你课表 4×3', [['A', '周一到周五'], ['B', '含周末'], ['C', '今天起两天']]));
+    (function () { var e = elementChips('week', '本周课表'); if (e) { list.appendChild(e); } })();
+    list.appendChild(widgetCard('本周迷你课表 · 4×3', '日期在上、节次在左，和「周表」同构', 'w-week',
+      '<div class="wg-line"><b>第 ' + (p.weekNo || 1) + ' 周</b><span class="wg-dim">'
+      + esc(p.weekRange || '') + '</span></div>'
+      + '<div class="wg-grid-head">' + (p.dates || ['一', '二', '三', '四', '五', '六', '日'])
+        .map(function (d) { return '<span>' + esc(d) + '</span>'; }).join('') + '</div>'
+      + grid));
+
+    // ⑤ 快捷入口
+    list.appendChild(widgetCard('快捷入口 · 4×1', '今日 / 周表 / 导入 / 设置，一键直达', 'w-shortcut',
+      '<div class="wg-line"><b>' + esc(p.dateText || '今天') + '</b></div>'
+      + '<div class="wg-btns"><span>今日</span><span>周表</span><span>导入</span><span>设置</span></div>'));
+
+    box.appendChild(list);
+
+    var tips = el('<div class="widget-tips">'
+      + '<b>怎么加到桌面</b>'
+      + '<ol class="steps"><li>回到手机桌面，长按空白处 → 选择「卡片 / 小组件」。</li>'
+      + '<li>在列表里找到 <b>Abbey Road</b>，就能看到上面这 5 种样式。</li>'
+      + '<li>拖到桌面上即可；长按卡片还能调整大小（2×2 / 4×2 / 4×3 都支持）。</li></ol>'
+      + '<p class="muted">ColorOS / 一加：长按桌面空白处 → 左上角「+ 卡片」→ 找到 Abbey Road。'
+      + '如果找不到，先随便打开一次 App（卡片数据会在打开时刷新）。</p></div>');
+    box.appendChild(tips);
+
+    var row = el('<div class="row gap" style="margin-top:10px">'
+      + '<button class="btn primary" type="button" id="btnWidgetSync">立即刷新卡片数据</button></div>');
+    row.querySelector('#btnWidgetSync').addEventListener('click', function () {
+      if (AR.WidgetData && AR.WidgetData.sync) { AR.WidgetData.sync(true); }
+      AR.Bridge.haptic('medium', row);
+      AR.UI.toast('已把最新课表同步给桌面卡片');
+    });
+    box.appendChild(row);
+    return panel('桌面卡片', box, 'widgets');
+  }
+
+  function widgetCard(title, sub, cls, inner) {
+    var node = el('<div class="widget-preview ' + cls + '">'
+      + '<div class="wp-head"><span class="wp-title">' + esc(title) + '</span>'
+      + '<span class="wp-sub">' + esc(sub) + '</span></div>'
+      + '<div class="wp-body">' + inner + '</div></div>');
+    return node;
+  }
+
+  /**
+   * 滑块（设置里的尺寸 / 分钟数都用它）。
+   *
+   * 老版本是一行三列的 grid：标签 76px + 轨道 + 数值 54px。在直板手机上
+   * 标签会折成两三行、轨道只剩一百来像素 —— 34 档挤在 100px 里，一格 3px，
+   * 手指根本捏不准，这才是"滑块不好用"的真正原因。现在：
+   *   ① 标签与数值合并成一行放上面，轨道独占一整行（长了一倍多，精度跟着翻倍）；
+   *   ② 两端加 − / + 微调按钮，点一下 1%，长按连续（420ms 后每 90ms 一跳），
+   *      想精确调的时候不用再跟手指较劲；
+   *   ③ 拇指加大到 24px、轨道 6px，并且已填充部分用主题色画出来，一眼看出当前比例；
+   *   ④ touch-action: none —— 在滑块上横向拖动不会再被设置页的纵向滚动抢走；
+   *   ⑤ 拖动时按帧（rAF）提交，避免每一帧里塞好几次重排。
+   */
+  function slider(label, min, max, value, unit, onInput) {
+    var node = el('<div class="slider-row">'
+      + '<div class="sld-head"><span class="lbl">' + esc(label) + '</span>'
+      + '<span class="val">' + value + unit + '</span></div>'
+      + '<div class="sld-body">'
+      + '<button class="sld-step" type="button" data-step="-1" aria-label="减小">−</button>'
+      + '<input type="range" min="' + min + '" max="' + max + '" step="1" value="' + value + '">'
+      + '<button class="sld-step" type="button" data-step="1" aria-label="增大">＋</button>'
+      + '</div></div>');
+    var range = node.querySelector('input');
+    var val = node.querySelector('.val');
+    var lo = Number(min), hi = Number(max);
+    var rafId = 0;
+
+    /** 只刷新"显示层"：数值文案 + 轨道填充比例（不动布局） */
+    function paint() {
+      var v = Number(range.value) || 0;
+      val.textContent = v + unit;
+      var pct = hi > lo ? ((v - lo) / (hi - lo)) * 100 : 0;
+      range.style.setProperty('--fill', pct.toFixed(1) + '%');
+    }
+
+    function commit(v) {
+      var next = Math.max(lo, Math.min(hi, Math.round(v)));
+      if (next === Number(range.value)) { return; }
+      range.value = String(next);
+      paint();
+      onInput(next);
+    }
+
+    /**
+     * 手指落在滑块上"纵向"滚设置页时，WebView 仍会先按触点的横坐标改一次值
+     * （页面滚走了、值却被改花了）。这里记下按下时的值，一旦判断是纵向手势，
+     * 或者浏览器接管平移发了 pointercancel，就把值还原回去。
+     */
+    var down = null, suppressClick = false;
+    function isVertical(ev) {
+      return !!down && Math.abs(ev.clientY - down.y) > Math.abs(ev.clientX - down.x) + 6;
+    }
+    function restoreTo(v) {
+      if (Number(range.value) !== v) { range.value = String(v); paint(); }
+    }
+    /** 浏览器内部的滑块状态会在手势结束时再写一次值，所以延后一拍再还原 */
+    function restoreLater(v) { setTimeout(function () { restoreTo(v); }, 0); }
+    range.addEventListener('pointerdown', function (ev) {
+      down = { x: ev.clientX, y: ev.clientY, v: Number(range.value) };
+    });
+    range.addEventListener('pointermove', function (ev) {
+      if (isVertical(ev)) { restoreTo(down.v); }
+    });
+    range.addEventListener('input', function (ev) {
+      if (isVertical(ev)) { restoreTo(down.v); return; }   // 纵向手势 = 滚页面，不是调值
+      paint();
+      if (rafId) { return; }                 // 同一帧里只提交一次
+      rafId = requestAnimationFrame(function () { rafId = 0; onInput(Number(range.value)); });
+    });
+    function endTouch(ev, cancelled) {
+      if (!down) { return; }
+      if (cancelled || isVertical(ev)) {
+        var v = down.v;
+        suppressClick = true;
+        restoreTo(v);
+        restoreLater(v);
+      }
+      down = null;
+    }
+    range.addEventListener('pointerup', function (ev) { endTouch(ev, false); });
+    range.addEventListener('pointercancel', function (ev) { endTouch(ev, true); });
+    range.addEventListener('change', function () { AR.Bridge.haptic('light', node); });
+    /**
+     * 点轨道任意位置直接跳到那个值。
+     * 原生 range 在"点轨道"上的行为各家 WebView 不一致（有的跳、有的只挪一点点、
+     * 有的完全不动），这里按坐标自己算一次，保证点哪儿到哪儿；
+     * 拖动结束时浏览器也会补一次 click，那时算出来的值和当前值一样，commit 会直接跳过。
+     */
+    range.addEventListener('click', function (ev) {
+      var r = range.getBoundingClientRect();
+      if (!r.width) { return; }
+      // 纵向滚页面之后浏览器可能补一次 click：别拿它改值
+      if (suppressClick) { suppressClick = false; return; }
+      var thumb = 26;                        // 拇指宽度，可用轨道要扣掉它
+      var usable = Math.max(1, r.width - thumb);
+      var ratio = (ev.clientX - r.left - thumb / 2) / usable;
+      commit(lo + Math.max(0, Math.min(1, ratio)) * (hi - lo));
+      AR.Bridge.haptic('light', range);
+    });
+
+    // − / + 微调：点一下 1%，按住连续走
+    var stepBtns = node.querySelectorAll('.sld-step');
+    for (var si = 0; si < stepBtns.length; si++) {
+      (function (btn) {
+        var delta = Number(btn.getAttribute('data-step')) || 0;
+        var holdTimer = null, repeatTimer = null;
+        function bump() { commit(Number(range.value) + delta); }
+        function stop() {
+          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+          if (repeatTimer) { clearInterval(repeatTimer); repeatTimer = null; }
+        }
+        btn.addEventListener('pointerdown', function (ev) {
+          ev.preventDefault();
+          AR.Bridge.haptic('light', btn);
+          bump();
+          stop();
+          holdTimer = setTimeout(function () { repeatTimer = setInterval(bump, 90); }, 420);
+        });
+        btn.addEventListener('pointerup', stop);
+        btn.addEventListener('pointercancel', stop);
+        btn.addEventListener('pointerleave', stop);
+      })(stepBtns[si]);
+    }
+    paint();
+    return node;
+  }
+
+  /** 设置页里的实时预览（不重排真实界面） */
+  function drawPreview() {
+    var box = $('layoutPreview');
+    if (!box) { return; }
+    var st = AR.UI.layoutState;
+    var preset = st.preset === 'stacked-vertical' ? 'stacked-vertical' : 'dual-horizontal';
+    var W = box.clientWidth, H = box.clientHeight, gap = 4;
+    var week = AR.UI.sizeOf('week'), next = AR.UI.sizeOf('next');
+    var a, b, c;
+    if (preset === 'dual-horizontal') {
+      var wNext2 = Math.max(24, Math.min(W * next.w / 100, W * 0.7));
+      var hWeek = Math.max(16, Math.min(H * week.h / 100, H * 0.6));
+      a = { l: 0, t: 0, w: W - wNext2 - gap, h: hWeek };
+      b = { l: 0, t: hWeek + gap, w: W - wNext2 - gap, h: H - hWeek - gap };
+      c = { l: W - wNext2, t: 0, w: wNext2, h: H };
+      // 左手模式：预览也跟着镜像，开关一拨就能看出左右对调
+      if (S.settings.layout.leftHand) {
+        a.l = W - a.l - a.w;
+        b.l = W - b.l - b.w;
+        c.l = W - c.l - c.w;
+      }
+    } else {
+      var hWeek3 = Math.max(14, Math.min(H * week.h / 100, H * 0.45));
+      var hNext3 = Math.max(14, Math.min(H * next.h / 100, H * 0.45));
+      a = { l: 0, t: 0, w: W, h: hWeek3 };
+      b = { l: 0, t: hWeek3 + gap, w: W, h: H - hWeek3 - hNext3 - gap * 2 };
+      c = { l: 0, t: H - hNext3, w: W, h: hNext3 };
+    }
+    setPreview('pv-week', a);
+    setPreview('pv-today', b);
+    setPreview('pv-next', c);
+  }
+
+  function setPreview(cls, box) {
+    var node = document.querySelector('.' + cls);
+    if (!node) { return; }
+    node.style.left = box.l + 'px';
+    node.style.top = box.t + 'px';
+    node.style.width = Math.max(box.w, 12) + 'px';
+    node.style.height = Math.max(box.h, 12) + 'px';
+  }
+
+  /* 3 · 课程与课表 */
+  function panelSchedule() {
+    var sem = AR.Store.currentSemester();
+    var box = el('<div></div>');
+    var na = S.settings.nextAlert || (S.settings.nextAlert = {
+      enabled: true, nearMin: 15, soonMin: 30, thickBorder: true,
+      colors: { near: '#E5484D', soon: '#D9A22B', live: '#5B8DEF' }
+    });
+    if (!sem) {
+      box.appendChild(el('<p class="muted">还没有学期数据，导入课表后会自动创建。</p>'));
+      return panel('课程与课表', box, 'schedule');
+    }
+    box.appendChild(el('<div class="field"><label class="field-label">学期名称</label>'
+      + '<input class="input" id="semName" value="' + esc(sem.name) + '"></div>'));
+    box.appendChild(el('<div class="field"><label class="field-label">开学第一周周一</label>'
+      + '<input class="input" id="semStart" type="date" value="' + esc(sem.startDate) + '"></div>'));
+    box.appendChild(el('<div class="field"><label class="field-label">总周数</label>'
+      + '<input class="input" id="semWeeks" type="number" min="1" max="30" value="' + (sem.weekCount || 20) + '"></div>'));
+    var wk = AR.Schedule.weekNumber(new Date(), sem);
+    box.appendChild(el('<p class="muted">今天：' + U.dateKey(new Date()) + ' · 当前第 ' + Math.max(wk, 1) + ' 周'
+      + (wk < 1 ? '（学期还没开始）' : (wk > sem.weekCount ? '（学期已结束）' : '')) + '</p>'));
+    box.appendChild(rowSwitch('周表页显示月视图', '打开后周表页顶部多一个「周视图 / 月视图」开关，可以按整月看课',
+      !(S.settings.schedule && S.settings.schedule.weekMonthView === false), function (v) {
+        S.settings.schedule.weekMonthView = v;
+        AR.Store.save(true);
+        AR.UI.renderWeek();
+        renderSettings();
+      }));
+
+    /**
+     * 课程配色：课表里是"彩色底 + 白字"，所以预置方案里的颜色都压过亮度，
+     * 保证白字读得清；同一类型的课取同一色系、靠深浅区分。
+     */
+    if (AR.Palette) {
+      var schemeNow = (S.settings.schedule && S.settings.schedule.colorScheme) || 'classic';
+      box.appendChild(el('<div class="field-label" style="margin-top:14px">课程配色方案</div>'));
+      box.appendChild(segmented(AR.Palette.schemeList().map(function (s) {
+        return { label: s.name.replace('（默认）', ''), value: s.key };
+      }), schemeNow, function (v) {
+        S.settings.schedule.colorScheme = v;
+        AR.Store.save(true);
+        renderSettings();
+      }));
+      var desc = AR.Palette.schemes[schemeNow];
+      box.appendChild(el('<p class="muted" style="margin:8px 0 0">' + esc(desc ? desc.desc : '') + '</p>'));
+      var pv = el('<div class="scheme-preview"></div>');
+      var demo = AR.Palette.schemes.tracks.map;
+      var showList = desc && desc.map ? desc.map : demo;
+      ['science', 'arts', 'general', 'pe', 'water'].forEach(function (tk) {
+        var arr = showList[tk] || [];
+        for (var i = 0; i < Math.min(arr.length, 2); i++) {
+          pv.appendChild(el('<i style="background:' + arr[i] + '"></i>'));
+        }
+      });
+      box.appendChild(pv);
+      var applyRow = el('<div class="row gap" style="margin-top:10px"></div>');
+      var applyBtn = el('<button class="btn primary" type="button">按这个方案重排全部课程颜色</button>');
+      applyBtn.addEventListener('click', function () {
+        var res = AR.Palette.applyScheme(schemeNow);
+        AR.Bridge.haptic('medium', applyBtn);
+        if (!res.ok) { AR.UI.toast(res.message || '应用失败'); return; }
+        var parts = [];
+        for (var tk in res.stats) {
+          if (Object.prototype.hasOwnProperty.call(res.stats, tk)) {
+            parts.push(AR.Palette.trackLabel(tk) + ' ' + res.stats[tk]);
+          }
+        }
+        AR.UI.toast('已重排 ' + res.changed + ' 门课的颜色' + (parts.length ? '（' + parts.join(' · ') + '）' : ''));
+        AR.UI.renderToday();
+        AR.UI.renderWeek();
+        renderSettings();
+      });
+      applyRow.appendChild(applyBtn);
+      box.appendChild(applyRow);
+      box.appendChild(el('<p class="muted" style="margin-top:8px">类型按课程名自动识别（数学/物理→理科，'
+        + '文学/历史→文科，思政/通识→公共，体育→体育）；「水课」请在课程编辑器里手动指定。</p>'));
+    }
+
+    box.appendChild(el('<div class="field-label" style="margin-top:14px">连堂课自动合并</div>'));
+    box.appendChild(segmented([
+      { label: '自动合并', value: 'auto' }, { label: '从不合并', value: 'never' }
+    ], S.settings.schedule.autoMergeConsecutive || 'auto', function (v) {
+      S.settings.schedule.autoMergeConsecutive = v; AR.Store.save(true);
+      AR.Bridge.haptic('medium', $('settingsGrid'));
+      renderSettings();
+    }));
+
+    /* 「最近的课」按时间切状态色：阈值与颜色都能改 */
+    box.appendChild(el('<div class="field-label" style="margin-top:16px">「最近的课」状态色</div>'));
+    box.appendChild(rowSwitch('按离上课时间变色', '越接近上课，卡片边框越醒目；不满足条件时用课程原色',
+      na.enabled !== false, function (v) {
+        na.enabled = v; AR.Store.save(true);
+        AR.UI.renderToday();
+        renderSettings();
+      }));
+    if (na.enabled !== false) {
+      box.appendChild(el('<div class="field-label" style="margin-top:10px">马上上课（分钟以内，红色档）</div>'));
+      box.appendChild(slider('距上课', 1, 60, na.nearMin || 15, ' 分钟', function (v) {
+        na.nearMin = Math.min(v, na.soonMin || 30); AR.Store.save(); AR.UI.renderToday();
+      }));
+      box.appendChild(el('<div class="field-label" style="margin-top:6px">即将上课（分钟以内，黄色档）</div>'));
+      box.appendChild(slider('距上课', 2, 180, na.soonMin || 30, ' 分钟', function (v) {
+        na.soonMin = Math.max(v, na.nearMin || 15); AR.Store.save(); AR.UI.renderToday();
+      }));
+      var colorRows = [
+        { key: 'near', label: '马上上课（默认红）' },
+        { key: 'soon', label: '即将上课（默认黄）' },
+        { key: 'live', label: '正在上课（默认蓝）' }
+      ];
+      for (var cr = 0; cr < colorRows.length; cr++) {
+        (function (row) {
+          box.appendChild(el('<div class="field-label" style="margin-top:10px">' + row.label + '</div>'));
+          var sw = el('<div class="swatches"></div>');
+          for (var pi = 0; pi < U.PALETTE.length; pi++) {
+            (function (p) {
+              var node = el('<div class="swatch' + (na.colors[row.key] === p.hex ? ' active' : '')
+                + '" title="' + p.name + '" style="background:' + p.hex + '"></div>');
+              node.addEventListener('click', function () {
+                na.colors[row.key] = p.hex;
+                AR.Store.save(true);
+                AR.Bridge.haptic('light', node);
+                AR.UI.renderToday();
+                renderSettings();
+              });
+              sw.appendChild(node);
+            })(U.PALETTE[pi]);
+          }
+          box.appendChild(sw);
+        })(colorRows[cr]);
+      }
+      box.appendChild(rowSwitch('状态色加粗边框', '红 / 黄 / 蓝三档把卡片边框加粗到 2px',
+        na.thickBorder !== false, function (v) {
+          na.thickBorder = v; AR.Store.save(true); AR.UI.renderToday(); renderSettings();
+        }));
+    }
+
+    box.appendChild(el('<div class="field-label" style="margin-top:14px">节次作息</div>'));
+    var periods = AR.Store.periodsOf(sem.id);
+    var list = el('<div></div>');
+    for (var i = 0; i < periods.length; i++) {
+      (function (p) {
+        var node = el('<div class="period-grid" style="margin-bottom:6px">'
+          + '<div class="muted">第 ' + p.index + ' 节</div>'
+          + '<input class="input input-sm" data-f="start" value="' + esc(p.start) + '">'
+          + '<input class="input input-sm" data-f="end" value="' + esc(p.end) + '">'
+          + '<button class="icon-btn" type="button" title="删除">✕</button></div>');
+        var ins = node.querySelectorAll('input');
+        for (var k = 0; k < ins.length; k++) {
+          ins[k].addEventListener('change', function () {
+            p.start = node.querySelector('[data-f="start"]').value;
+            p.end = node.querySelector('[data-f="end"]').value;
+            p.updatedAt = new Date().toISOString();
+            AR.Store.save(true);
+            AR.UI.renderToday();
+            AR.UI.renderWeek();
+            AR.Bridge.haptic('medium', node);
+          });
+        }
+        node.querySelector('.icon-btn').addEventListener('click', function () {
+          S.periods = S.periods.filter(function (x) { return x.id !== p.id; });
+          AR.Store.save(true);
+          renderSettings();
+          AR.Bridge.haptic('warn', node);
+        });
+        list.appendChild(node);
+      })(periods[i]);
+    }
+    box.appendChild(list);
+    var addBtn = el('<button class="btn" type="button">＋ 增加一节</button>');
+    addBtn.addEventListener('click', function () {
+      var maxIdx = 0;
+      for (var i = 0; i < S.periods.length; i++) { if (S.periods[i].index > maxIdx) { maxIdx = S.periods[i].index; } }
+      S.periods.push({
+        id: U.uid(), semesterId: sem.id, index: maxIdx + 1, label: '第' + (maxIdx + 1) + '节',
+        start: '08:00', end: '08:45', updatedAt: new Date().toISOString()
+      });
+      AR.Store.save(true);
+      renderSettings();
+      AR.Bridge.haptic('medium', addBtn);
+    });
+    box.appendChild(el('<div style="margin-top:10px"></div>')).appendChild(addBtn);
+
+    var save = el('<div class="row end" style="margin-top:12px"><button class="btn primary" type="button">保存学期设置</button></div>');
+    save.querySelector('button').addEventListener('click', function () {
+      sem.name = $('semName').value || sem.name;
+      sem.startDate = $('semStart').value || sem.startDate;
+      sem.weekCount = Number($('semWeeks').value) || sem.weekCount;
+      sem.updatedAt = new Date().toISOString();
+      AR.Store.save(true);
+      AR.Bridge.haptic('medium', save);
+      renderSettings();
+      refreshAll();
+      AR.UI.toast('学期设置已保存');
+    });
+    box.appendChild(save);
+
+    return panel('课程与课表', box, 'schedule');
+  }
+
+  /**
+   * 作业与日程（v0.4.0 新分类）：之前挤在「课程与课表」里的作业开关搬到这里，
+   * 再挂上长期任务和日程类型管理 —— "跟学习任务有关的"都在这一页。
+   */
+  function panelWork() {
+    var box = el('<div></div>');
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '作业从「本次备注」里自动识别；长期任务、日程类型也在这里管。</p>'));
+    /* ── 作业功能（v0.3.4）────────────────────────────────────
+       识别方式两档：一行算一条（所见即所得）/ 智能识别（只收列表符号或关键词行）。 */
+    box.appendChild(el('<h3 class="set-sub">作业</h3>'));
+    var hw = (S.settings.schedule.homework = S.settings.schedule.homework || { on: true, mode: 'line' });
+    box.appendChild(rowSwitch('作业功能',
+      '把「本次备注」里的每一行识别成作业，显示在今日日程底部与最近的课卡片里',
+      hw.on !== false, function (v) {
+        hw.on = v;
+        AR.Store.save(true);
+        AR.Bridge.haptic('light', $('settingsGrid'));
+        refreshAll();
+      }));
+    var modeSeg = el('<div class="segmented" id="hwMode" style="margin-top:6px"></div>');
+    var modes = [
+      { k: 'line', t: '一行算一条' },
+      { k: 'smart', t: '智能识别' }
+    ];
+    for (var hm = 0; hm < modes.length; hm++) {
+      (function (mo) {
+        var b = el('<button class="seg' + ((hw.mode === 'smart' ? 'smart' : 'line') === mo.k ? ' active' : '')
+          + '" type="button" data-hw="' + mo.k + '">' + mo.t + '</button>');
+        b.addEventListener('click', function () {
+          hw.mode = mo.k;
+          AR.Store.save(true);
+          AR.Bridge.haptic('light', b);
+          renderSettings();
+          refreshAll();
+          AR.UI.toast(mo.k === 'smart' ? '作业识别：只收列表符号 / 关键词行' : '作业识别：一行算一条');
+        });
+        modeSeg.appendChild(b);
+      })(modes[hm]);
+    }
+    box.appendChild(modeSeg);
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '「一行算一条」= 备注里每个非空行都是一条作业；'
+      + '「智能识别」= 只收「- 、1. 、[ ] 、①」这类列表行，或含"作业 / 练习 / 报告 / 复习 / 提交"等关键词的行。</p>'));
+    if (AR.UI.syncSegPill) { AR.UI.syncSegPill(modeSeg, true); }
+    box.appendChild(rowSwitch('作业按课程分组',
+      '今日页的未完成作业按课程归类，每组显示课程色点和条数；关掉就是一条条平铺',
+      hw.groupByCourse !== false, function (v) {
+        hw.groupByCourse = v;
+        AR.Store.save(true);
+        AR.Bridge.haptic('light', $('settingsGrid'));
+        if (AR.UI.refreshHomeworkPanels) { AR.UI.refreshHomeworkPanels(); }
+      }));
+    // 作业概况 + 作业记录（跟着作业走）
+    (function () {
+      var all = AR.Store.taskList ? AR.Store.taskList() : (AR.Store.get().tasks || []);
+      var weekAgo = U.dateKey(U.addDays(new Date(), -6));
+      var openN = 0, doneN = 0, doneWeek = 0;
+      for (var i = 0; i < all.length; i++) {
+        if (!all[i].done) { openN++; continue; }
+        doneN++;
+        var d = AR.Store.taskDoneDay ? AR.Store.taskDoneDay(all[i]) : '';
+        if (d && d >= weekAgo) { doneWeek++; }
+      }
+      var rate = all.length ? Math.round(doneN / all.length * 100) : 0;
+      box.appendChild(el('<div class="hw-overview">'
+        + '<div class="hwo-stats">'
+        + '<div class="hwo-item"><b>' + openN + '</b><span>未完成</span></div>'
+        + '<div class="hwo-item"><b>' + doneN + '</b><span>已完成</span></div>'
+        + '<div class="hwo-item"><b>' + rate + '%</b><span>完成率</span></div>'
+        + '</div>'
+        + '<div class="hwo-bar"><i style="width:' + rate + '%"></i></div>'
+        + '<div class="hwo-foot">本周完成 ' + doneWeek + ' 条 · 共 ' + all.length + ' 条</div></div>'));
+    })();
+    var logBtn = el('<button class="btn" type="button" style="margin-top:10px">作业记录…</button>');
+    logBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('light', logBtn);
+      if (AR.UI.openTaskLog) { AR.UI.openTaskLog(); }
+    });
+    box.appendChild(logBtn);
+
+    /**
+     * v0.4.1b：刷新作业（重建条目）。
+     * 按当前识别规则重扫所有「本次备注」——把漏掉的条目补回来；
+     * 已经存在的条目按 (课, 日期, 文字) 复用，划掉的状态不会重置。
+     */
+    var rebBtn = el('<button class="btn" type="button" style="margin-top:8px">刷新作业</button>');
+    rebBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('medium', rebBtn);
+      var r = AR.Store.rebuildTasks ? AR.Store.rebuildTasks() : { scanned: 0, created: 0, total: 0 };
+      refreshAll();
+      AR.UI.toast('已按现有备注刷新：扫描 ' + r.scanned + ' 条备注、补上 ' + r.created + ' 条作业');
+    });
+    box.appendChild(rebBtn);
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '把「本次备注」里识别过的作业按当前规则重扫一遍：漏掉的会补上，已经划掉的不会被重置。</p>'));
+
+    /* ── 日程类型（v0.4.0）：考试 / 讲座 / 活动 / 其他 + 自建类型 ── */
+    var tList = AR.Store.typeList ? AR.Store.typeList() : [];
+    box.appendChild(el('<h3 class="set-sub">日程类型</h3>'));
+    var tags = el('<div class="row gap" style="flex-wrap:wrap"></div>');
+    for (var ti = 0; ti < tList.length; ti++) {
+      tags.appendChild(el('<span class="cm-tag" style="background:' + esc(tList[ti].hex) + '">'
+        + esc(tList[ti].label) + '</span>'));
+    }
+    box.appendChild(tags);
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '日程上的类型由你说了算：在添加日程时「＋ 新类型」就能加「社团 / DDL / 面试」这种；'
+      + '筛选条会按你用到的类型自动出现。</p>'));
+    var typeBtn = el('<button class="btn" type="button" style="margin-top:10px">管理类型…</button>');
+    typeBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('light', typeBtn);
+      if (AR.UI.openTypeManage) { AR.UI.openTypeManage(); }
+    });
+    box.appendChild(typeBtn);
+    return panel('作业与日程', box, 'work');
+  }
+
+  /**
+   * 我的页面（v0.4.0：从开发者选项搬出来，单独一个分类）。
+   * 导入过课表后，「导入」标签会换成自由组合的「我的」页。
+   */
+  function panelMine() {
+    var box = el('<div></div>');
+    var ct = AR.UI.customTabCfg ? AR.UI.customTabCfg() : null;
+    if (!ct) { return panel('我的页面', box, 'mine'); }
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '导入过课表之后，底栏的「导入」会变成「我的」—— 里面按你自己排的顺序显示这些模块。</p>'));
+    box.appendChild(rowSwitch('自定义模块页',
+      '导入课表后把「导入」换成「我的」，模块自由组合',
+      ct.enabled, function (v) {
+        ct.enabled = v;
+        AR.Store.save(true);
+        if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+        if (!v && AR.UI.currentView && AR.UI.currentView() === 'custom') { AR.UI.show('import'); }
+        AR.Bridge.haptic('medium', $('settingsGrid'));
+        AR.UI.toast(v ? '已开启：导入课表后「导入」会换成「我的」' : '已关闭：「导入」恢复');
+        renderSettings();
+      }));
+    var modBox = el('<div class="dev-modules"></div>');
+    modBox.appendChild(el('<div class="field-label" style="margin-top:8px">模块组成（按显示顺序）</div>'));
+    var avail = AR.UI.CUSTOM_MODULES || [];
+    var byKey = {};
+    for (var mi = 0; mi < avail.length; mi++) { byKey[avail[mi].k] = avail[mi]; }
+    var chosen = ct.modules || [];
+    for (var ci = 0; ci < chosen.length; ci++) {
+      (function (key, idx) {
+        var meta = byKey[key] || { t: key, d: '' };
+        var row = el('<div class="dev-row"><div class="dev-name">' + esc(meta.t)
+          + '<div class="muted" style="font-size:11px;font-weight:400">' + esc(meta.d) + '</div></div></div>');
+        var acts = el('<div class="row gap"></div>');
+        var up = el('<button class="chip-btn" type="button" title="上移">↑</button>');
+        up.disabled = idx === 0;
+        up.addEventListener('click', function () {
+          var m = ct.modules;
+          m.splice(idx, 1); m.splice(idx - 1, 0, key);
+          AR.Store.save(true); AR.Bridge.haptic('light', up); renderSettings();
+        });
+        var down = el('<button class="chip-btn" type="button" title="下移">↓</button>');
+        down.disabled = idx === chosen.length - 1;
+        down.addEventListener('click', function () {
+          var m = ct.modules;
+          m.splice(idx, 1); m.splice(idx + 1, 0, key);
+          AR.Store.save(true); AR.Bridge.haptic('light', down); renderSettings();
+        });
+        var rm = el('<button class="chip-btn" type="button">移除</button>');
+        rm.addEventListener('click', function () {
+          ct.modules.splice(idx, 1);
+          AR.Store.save(true); AR.Bridge.haptic('light', rm);
+          if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+          renderSettings();
+        });
+        acts.appendChild(up); acts.appendChild(down); acts.appendChild(rm);
+        row.appendChild(acts);
+        modBox.appendChild(row);
+      })(chosen[ci], ci);
+    }
+    if (!chosen.length) {
+      modBox.appendChild(el('<p class="muted" style="margin:6px 0 0">至少选一个模块，不然「我的」页是空的。</p>'));
+    }
+    var rest = [];
+    for (var ri = 0; ri < avail.length; ri++) {
+      if (chosen.indexOf(avail[ri].k) < 0) { rest.push(avail[ri]); }
+    }
+    if (rest.length) {
+      modBox.appendChild(el('<div class="field-label" style="margin-top:8px">可添加</div>'));
+      var addRow = el('<div class="row gap" style="flex-wrap:wrap"></div>');
+      for (var ai = 0; ai < rest.length; ai++) {
+        (function (meta) {
+          var b = el('<button class="chip-btn" type="button">＋ ' + esc(meta.t) + '</button>');
+          b.addEventListener('click', function () {
+            ct.modules.push(meta.k);
+            AR.Store.save(true); AR.Bridge.haptic('light', b);
+            if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+            renderSettings();
+          });
+          addRow.appendChild(b);
+        })(rest[ai]);
+      }
+      modBox.appendChild(addRow);
+    }
+    box.appendChild(modBox);
+    return panel('我的页面', box, 'mine');
+  }
+
+  /**
+   * 长期任务（独立设置面板，v0.3.8b：不再和作业挤在「课程与课表」里）。
+   * 志愿时长、阅读量这类"攒进度"的目标：各自统计（今日 / 近 7 天 / 累计），
+   * 每条单独决定要不要在今日页以独立卡片出现。数据进配置文件。
+   */
+  function panelTasks() {
+  var box = el('<div></div>');
+  box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+    + '任务可以只打卡，也可以设「目标」（攒到多少）和「计划」（每天/每周做几次）。'
+    + '设了计划的会显示今天进度，做满折进「已完成」。</p>'));
+  var host = el('<div class="lt-list" id="tkSetList"></div>');
+  box.appendChild(host);
+  renderTaskList(host);
+  var add = el('<button class="btn" type="button" style="margin-top:10px">＋ 新建任务</button>');
+  add.addEventListener('click', function () {
+    AR.Bridge.haptic('light', add);
+    if (AR.UI.openTaskEdit) { AR.UI.openTaskEdit(null); }
+  });
+  box.appendChild(add);
+  return panel('任务', box, 'tasks');
+}
+
+/**
+ * 设置页里的任务清单。每条一行：
+ *   色点 + 名称 + 计划 + 进度条 + 「今天 x/y 次 · 累计 a/b 单位 · 完成率 n%」+ 划一下 / 编辑 / 删除。
+ * 传 host 时渲染到指定容器，不传就找页面上的 #tkSetList（保存后局部刷新用）。
+ */
+function renderTaskList(host) {
+  var box = host || document.getElementById('tkSetList');
+  if (!box) { return; }
+  var S = AR.Store;
+  var list = S.todoList ? S.todoList() : [];
+  box.innerHTML = '';
+  if (!list.length) {
+    box.appendChild(el('<div class="muted">还没有任务。比如「背单词 · 每天 3 次」或「志愿时长 · 目标 20 小时」。</div>'));
+    return;
+  }
+  var d = new Date();
+  for (var i = 0; i < list.length; i++) {
+    (function (t) {
+      var p = S.todoProgress(t, d);
+      var color = AR.Util.colorHex(t.colorKey || '#5B8DEF');
+      var num = function (n) { return String(Math.round((Number(n) || 0) * 100) / 100); };
+      var plan = (AR.UI.tkPlanText ? AR.UI.tkPlanText(t) : '') || '只打卡';
+      var pct = p.hasGoal ? p.percent : (p.periodGoal > 0 ? Math.round(Math.min(1, p.periodDone / p.periodGoal) * 100) : 0);
+      var sub = '';
+      if (p.periodGoal > 0) { sub += p.periodUnit + ' ' + p.periodDone + '/' + p.periodGoal + ' 次'; }
+      if (p.hasGoal) {
+        sub += (sub ? ' · ' : '') + '累计 ' + num(p.total) + ' / ' + num(p.target) + ' ' + esc(t.goal.unit || '');
+        sub += ' · 完成率 ' + p.percent + '%';
+      } else if (!p.periodGoal) {
+        sub += '累计 ' + num(p.total) + ' 次';
+      }
+      var barW = p.hasGoal ? Math.round(p.rate * 100) : (p.periodGoal > 0 ? Math.round(Math.min(1, p.periodDone / p.periodGoal) * 100) : 0);
+      var row = el('<div class="lt-set-row">'
+        + '<span class="lt-dot" style="background:' + color + '"></span>'
+        + '<span class="lt-main">'
+        + '<span class="lt-name">' + esc(t.text || '未命名') + '</span>'
+        + '<span class="lt-bar"><i style="width:' + barW + '%;background:' + color + '"></i></span>'
+        + '<span class="lt-sub">' + esc(plan) + (sub ? ' · ' + esc(sub) : '') + '</span>'
+        + '</span>'
+        + '<span class="lt-actions"></span></div>');
+      var acts = row.querySelector('.lt-actions');
+      var plus = el('<button class="chip-btn" type="button" title="记一次">+1</button>');
+      plus.addEventListener('click', function () {
+        S.todoAddEntry(t.id, 1, '', { src: 'panel' });
+        AR.Bridge.haptic('light', plus);
+        AR.UI.toast('已记 +1：' + (t.text || ''));
+        renderTaskList();
+        if (AR.UI.refreshTasks) { AR.UI.refreshTasks(); }
+      });
+      acts.appendChild(plus);
+      var edit = el('<button class="chip-btn" type="button">编辑</button>');
+      edit.addEventListener('click', function () {
+        if (AR.UI.openTaskEdit) { AR.UI.openTaskEdit(t); }
+      });
+      acts.appendChild(edit);
+      var del = el('<button class="chip-btn" type="button">删除</button>');
+      del.addEventListener('click', function () {
+        if (!AR.UI.confirmDanger) { return; }
+        AR.UI.confirmDanger({
+          title: '删除这条任务？', sub: esc(t.text || ''),
+          text: '任务会进回收站（可恢复），记录也一并保留。',
+          okLabel: '删除',
+          onOk: function () {
+            S.todoRemove(t.id);
+            AR.UI.toast('已删除：' + (t.text || ''));
+            renderTaskList();
+            if (AR.UI.refreshTasks) { AR.UI.refreshTasks(); }
+          }
+        });
+      });
+      acts.appendChild(del);
+      box.appendChild(row);
+    })(list[i]);
+  }
+}
+
+function panelLongTasks() {
+    var box = el('<div></div>');
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '志愿时长、阅读量这种要一点点攒的目标：进度各自算，'
+      + '每条单独决定要不要显示在今日页（独立的「长期任务」卡片，和作业分开统计）。</p>'));
+    var ltHost = el('<div class="lt-list" id="hwLongTasks"></div>');
+    box.appendChild(ltHost);
+    renderLongTaskList(ltHost);
+    var ltAdd = el('<button class="btn" type="button" style="margin-top:10px">＋ 新建长期任务</button>');
+    ltAdd.addEventListener('click', function () {
+      AR.Bridge.haptic('light', ltAdd);
+      if (AR.UI.openLongTaskEdit) { AR.UI.openLongTaskEdit(null); }
+    });
+    box.appendChild(ltAdd);
+    return panel('长期任务', box, 'longtasks');
+  }
+
+  /**
+   * 设置页里的长期任务清单。
+   * 每条一行：色点 + 名称 + 进度条 + 「x / y 单位 · 完成率」+ 今日页开关 + 快捷记一笔 / 编辑。
+   * 传 host 时渲染到指定容器，不传就找页面上的 #hwLongTasks（保存后局部刷新用，不整页重建）。
+   */
+
+    function list0HasLiveLongTasks() {
+  var raw = (AR.Store.longTaskRaw ? AR.Store.longTaskRaw() : []) || [];
+  for (var i = 0; i < raw.length; i++) {
+    if (raw[i] && !raw[i].deletedAt && !raw[i].archived) { return true; }
+  }
+  return false;
+  }
+
+function renderLongTaskList(host) {
+  /* 老「长期任务」已并入「任务」：没有未归档的老记录时说明一下，别给空列表 */
+  if (!list0HasLiveLongTasks()) {
+    host.innerHTML = '<p class="muted" style="padding:8px 2px;font-size:12.5px">' +
+      '长期任务已并入「任务」，在这里统一管理。</p>';
+    return;
+  }
+    var box = host || document.getElementById('hwLongTasks');
+    if (!box) { return; }
+    var list = AR.Store.longTaskList ? AR.Store.longTaskList() : [];
+    var todayK = AR.Util.dateKey(new Date());
+    box.innerHTML = '';
+    if (!list.length) {
+      box.appendChild(el('<div class="muted">还没有长期任务。比如「志愿时长 · 目标 20 小时」。</div>'));
+      return;
+    }
+    for (var i = 0; i < list.length; i++) {
+      (function (t) {
+        var s = AR.Store.longTaskStats(t, todayK);
+        var color = AR.Util.colorHex(t.colorKey || '#5B8DEF');
+        var num = function (n) { return String(Math.round((Number(n) || 0) * 100) / 100); };
+        var row = el('<div class="lt-set-row">'
+          + '<span class="lt-dot" style="background:' + color + '"></span>'
+          + '<span class="lt-main">'
+          + '<span class="lt-name">' + esc(t.name || '未命名') + '</span>'
+          + '<span class="lt-bar"><i style="width:' + Math.round(s.rate * 100) + '%;background:' + color + '"></i></span>'
+          + '<span class="lt-sub">' + num(s.total) + ' / ' + num(s.target) + ' ' + esc(t.unit || '')
+          + ' · 完成率 ' + s.percent + '%'
+          + (s.today ? ' · 今日 +' + num(s.today) : '') + '</span>'
+          + '</span>'
+          + '<span class="lt-actions"></span></div>');
+        var acts = row.querySelector('.lt-actions');
+        var plus = el('<button class="chip-btn" type="button" title="记一笔">+1</button>');
+        plus.addEventListener('click', function () {
+          AR.Store.longTaskAddEntry(t.id, 1, '');
+          AR.Bridge.haptic('light', plus);
+          AR.UI.toast('已记 +1 ' + (t.unit || ''));
+          renderLongTaskList();
+          if (AR.UI.refreshHomework) { AR.UI.refreshHomework(); }
+        });
+        acts.appendChild(plus);
+        var edit = el('<button class="chip-btn" type="button">编辑</button>');
+        edit.addEventListener('click', function () {
+          if (AR.UI.openLongTaskEdit) { AR.UI.openLongTaskEdit(t); }
+        });
+        acts.appendChild(edit);
+        // 每条一个「今日页显示」开关
+        var sw = el('<label class="switch sm" title="在今日页显示"><input type="checkbox"'
+          + (t.showInToday !== false ? ' checked' : '') + '><span class="track"></span><span class="knob"></span></label>');
+        sw.querySelector('input').addEventListener('change', function (ev) {
+          AR.Store.longTaskUpsert({ id: t.id, showInToday: ev.currentTarget.checked });
+          AR.Bridge.haptic('light', ev.currentTarget);
+          AR.UI.toast(ev.currentTarget.checked ? '已在今日页显示' : '已从今日页隐藏');
+          if (AR.UI.refreshHomework) { AR.UI.refreshHomework(); }
+        });
+        acts.appendChild(sw);
+        box.appendChild(row);
+      })(list[i]);
+    }
+  }
+
+  /* 4 · 提醒与通知 */
+  function panelNotify() {
+    var box = el('<div></div>');
+    var n = S.settings.notifications;
+    box.appendChild(rowSwitch('课前提醒', '在每节课开始前提醒（需要系统通知权限）', n.enabled, function (v) {
+      n.enabled = v; AR.Store.save(true);
+    }));
+    box.appendChild(el('<div class="field-label" style="margin-top:12px">提前量</div>'));
+    box.appendChild(slider('提前分钟', 5, 60, n.defaultOffset || 15, ' 分', function (v) {
+      n.defaultOffset = v; AR.Store.save();
+    }));
+    box.appendChild(el('<p class="muted">提醒依赖系统日历 / 通知；在 OPPO 等机型上需要在系统设置里允许后台运行。</p>'));
+    return panel('提醒与通知', box, 'notify');
+  }
+
+  /* 5 · 导入与同步 */
+  function panelSync() {
+    var box = el('<div></div>');
+    box.appendChild(el('<p class="muted">导出一份配置文件，在另一台设备上导入即可同步。App 会在合并前给出预览，'
+      + '冲突逐条确认，并在应用前自动保留一份备份。</p>'));
+    var row = el('<div class="row gap"><button class="btn primary" type="button" id="stExport">导出配置文件</button>'
+      + '<button class="btn" type="button" id="stWechat">导出到微信</button>'
+      + '<button class="btn" type="button" id="stImport">导入配置文件</button>'
+      + '<button class="btn" type="button" id="stFromExports">从导出目录导入</button>'
+      + '<button class="btn" type="button" id="stCopy">复制配置文本</button></div>');
+    box.appendChild(row);
+    row.querySelector('#stExport').addEventListener('click', function () {
+      AR.UI.show('import');
+      setTimeout(function () { document.querySelector('[data-tab="json"]').click(); $('btnExportJson').click(); }, 120);
+    });
+    row.querySelector('#stImport').addEventListener('click', function () {
+      AR.UI.show('import');
+      setTimeout(function () { document.querySelector('[data-tab="json"]').click(); $('btnImportJson').click(); }, 120);
+    });
+    row.querySelector('#stWechat').addEventListener('click', function () {
+      AR.ConfigIO.exportToApp(row.querySelector('#stWechat'));
+    });
+    row.querySelector('#stFromExports').addEventListener('click', function () {
+      AR.UI.show('import');
+      setTimeout(function () { document.querySelector('[data-tab="json"]').click(); AR.ConfigIO.openFromExports(); }, 140);
+    });
+    row.querySelector('#stCopy').addEventListener('click', function () {
+      AR.ConfigIO.copyText(row.querySelector('#stCopy'));
+    });
+    box.appendChild(el('<p class="muted">上次导出：' + (S.exportedAt ? esc(S.exportedAt.replace('T', ' ').slice(0, 16)) : '还没导出过')
+      + ' · 提示词版本 ' + esc(AR.Prompt.version) + '</p>'));
+    return panel('导入与同步', box, 'sync');
+  }
+
+  /* 6 · 系统集成 */
+  function panelIntegration() {
+    var box = el('<div></div>');
+    var it = S.settings.integration;
+    box.appendChild(el('<div class="field"><label class="field-label">大学名称</label>'
+      + '<input class="input" id="uniName" value="' + esc(it.university) + '" placeholder="例如：XX大学"></div>'));
+    box.appendChild(el('<div class="field"><label class="field-label">默认校区</label>'
+      + '<input class="input" id="uniCampus" value="' + esc(it.campus) + '" placeholder="例如：东校区"></div>'));
+    box.appendChild(el('<div class="field"><label class="field-label">所在城市</label>'
+      + '<input class="input" id="uniCity" value="' + esc(it.city) + '" placeholder="例如：北京市"></div>'));
+    box.appendChild(el('<div class="field-label">导航偏好</div>'));
+    box.appendChild(segmented([
+      { label: '系统地图', value: 'system' }, { label: '高德', value: 'amap' }, { label: '百度', value: 'baidu' }
+    ], it.navApp, function (v) {
+      it.navApp = v; AR.Store.save(true);
+      AR.Bridge.haptic('medium', $('settingsGrid'));
+      renderSettings();
+    }));
+    box.appendChild(rowSwitch('裁剪教室号', '导航时去掉「305教室」这类细节', it.trimRoom, function (v) {
+      it.trimRoom = v; AR.Store.save(true); renderSettings();
+    }));
+    box.appendChild(rowSwitch('缺大学名时自动补全', '「信息楼305」→「XX大学 信息楼」', it.autoPrependUniversity, function (v) {
+      it.autoPrependUniversity = v; AR.Store.save(true); renderSettings();
+    }));
+    box.appendChild(rowSwitch('线上课程不导航', '腾讯会议 / 钉钉等改为复制信息', it.onlineTreatAsNoNav, function (v) {
+      it.onlineTreatAsNoNav = v; AR.Store.save(true); renderSettings();
+    }));
+
+    /**
+     * 闹钟 / 系统日历的提前量。默认 15 分钟：上课前十几分钟响，
+     * 才有时间从宿舍走到教室；填 0 就按上课时间本身。
+     */
+    box.appendChild(el('<p class="muted" style="margin:14px 0 4px">'
+      + '用「设置闹钟 / 添加到系统日历」时，按上课时间往前推这么多分钟写入：</p>'));
+    box.appendChild(slider('提前', 0, 30, it.earlyMinutes != null ? Number(it.earlyMinutes) : 15, ' 分钟', function (v) {
+      it.earlyMinutes = v;
+      AR.Store.save(true);
+    }));
+    box.appendChild(el('<p class="muted" style="margin:-6px 0 10px">'
+      + '例如 8:00 的课、提前 15 分钟 → 闹钟和日历事件都从 <b>7:45</b> 开始，'
+      + '日历事件仍然跨到下课时间。</p>'));
+
+    // 实时示例
+    var sampleRaw = 'XX大学 信息楼 305教室';
+    var nav = AR.Location.navQuery(sampleRaw, S.settings);
+    box.appendChild(el('<div class="list-item" style="margin-top:10px"><span class="code-badge">示例</span>'
+      + '<span class="msg">' + esc(sampleRaw) + ' → <b>' + esc(nav.trimmed) + '</b></span></div>'));
+
+    var save = el('<div class="row end" style="margin-top:12px"><button class="btn primary" type="button">保存</button></div>');
+    save.querySelector('button').addEventListener('click', function () {
+      it.university = $('uniName').value;
+      it.campus = $('uniCampus').value;
+      it.city = $('uniCity').value;
+      AR.Store.save(true);
+      AR.Bridge.haptic('medium', save);
+      renderSettings();
+      AR.UI.toast('系统集成设置已保存');
+    });
+    box.appendChild(save);
+    return panel('系统集成', box, 'integration');
+  }
+
+  /* 7 · 数据与备份 */
+  /**
+   * 回收站（v0.4.1）：所有软删除的东西都在这里，任何一项都能恢复原样。
+   * 「清空回收站」才是真删（墓碑保留，所以旧存档导入回来也不会复活）。
+   */
+  function panelTrash() {
+    var box = el('<div></div>');
+    /* 打开时按保留期限顺手清一次过期的（默认 90 天） */
+    if (AR.Store.pruneTrash) { AR.Store.pruneTrash(); }
+    var list = AR.Store.trashList ? AR.Store.trashList() : [];
+    box.appendChild(el('<p class="muted">删掉的课程、时段、日程、作业、长期任务、速记、类型都在这儿，'
+      + '每一项都能恢复原样。只有清空或过期清理之后才真的没了。</p>'));
+    /* 保留期限：默认 90 天自动清理，也可以选"不自动"（纯手动） */
+    var tr = (S.settings.trash = S.settings.trash || { keepDays: 90 });
+    box.appendChild(el('<div class="field-label" style="margin-top:12px">自动清理超过</div>'));
+    box.appendChild(segmented([
+      { label: '30 天', value: '30' }, { label: '90 天', value: '90' },
+      { label: '180 天', value: '180' }, { label: '不自动', value: '0' }
+    ], String(tr.keepDays == null ? 90 : tr.keepDays), function (v) {
+      tr.keepDays = Number(v) || 0;
+      AR.Store.save(true);
+      AR.Bridge.haptic('light', $('settingsGrid'));
+      renderSettings();
+      AR.UI.toast(tr.keepDays ? ('超过 ' + tr.keepDays + ' 天的会自动清理') : '已改为不自动清理（只能手动清）');
+    }));
+    box.appendChild(el('<p class="muted" style="margin:6px 0 0">'
+      + '「自动清理」会在打开这一页时顺手清掉过期的：回收站记录真删、墓碑也一起清（不影响还在用的数据）。</p>'));
+    if (!list.length) {
+      box.appendChild(el('<p class="muted" style="margin-top:8px">回收站是空的。</p>'));
+      return panel('回收站', box, 'trash');
+    }
+    var host = el('<div class="trash-list"></div>');
+    for (var i = 0; i < list.length; i++) {
+      (function (it) {
+        var when = String(it.deletedAt || '').slice(5, 16).replace('T', ' ');
+        var row = el('<div class="cm-line">'
+          + '<span class="cm-tag trash-tag">' + esc(it.label) + '</span>'
+          + '<span class="cm-name">' + esc(it.title || '')
+          + '<span class="cm-sub">' + esc(it.sub || '') + (when ? (it.sub ? ' · ' : '') + '删于 ' + when : '') + '</span></span>'
+          + '<button class="chip-btn trash-back" type="button">恢复</button></div>');
+        row.querySelector('.trash-back').addEventListener('click', function () {
+          AR.Store.restore(it.entity, it.id, it.parentId);
+          AR.Bridge.haptic('medium', row);
+          AR.UI.toast('已恢复：' + (it.title || ''));
+          refreshAll();
+          renderSettings();
+        });
+        host.appendChild(row);
+      })(list[i]);
+    }
+    box.appendChild(host);
+    var clear = el('<button class="btn danger" type="button" style="margin-top:10px">清空回收站</button>');
+    clear.addEventListener('click', function () {
+      AR.UI.confirmDanger({
+        title: '清空回收站？',
+        text: '里面的记录会被彻底删除，之后无法恢复（墓碑留着，也不会被旧存档导入回来）。',
+        okLabel: '确认清空',
+        onOk: function () {
+          AR.Store.emptyTrash();
+          refreshAll();
+          renderSettings();
+          AR.UI.toast('回收站已清空');
+        }
+      });
+    });
+    box.appendChild(clear);
+    return panel('回收站', box, 'trash');
+  }
+
+  function panelData() {
+    var box = el('<div></div>');
+    var size = 0;
+    try { size = (JSON.stringify(S).length / 1024).toFixed(1); } catch (e) { }
+    /* v0.4.1：这里的数字只算"还活着的"，回收站里的不算 */
+    var liveCourses = AR.Store.courseList ? AR.Store.courseList().length : S.courses.length;
+    var liveBlocks = (AR.Store.liveOnly ? AR.Store.liveOnly(S.blocks) : S.blocks).length;
+    var liveOv = (AR.Store.liveOnly ? AR.Store.liveOnly(S.overrides) : S.overrides).length;
+    var trashN = (AR.Store.trashList ? AR.Store.trashList() : []).length;
+    box.appendChild(el('<p class="muted">课程 ' + liveCourses + ' 门 · 时段 ' + liveBlocks
+      + ' 条 · 变动 ' + liveOv + ' 条 · 数据量约 ' + size + ' KB（只存在本机）'
+      + (trashN ? ' · 回收站里还有 ' + trashN + ' 项' : '') + '</p>'));
+    var row = el('<div class="row gap">'
+      + '<button class="btn" type="button" id="stDemo">载入演示课表</button>'
+      + '<button class="btn" type="button" id="stBackup">导出备份</button>'
+      + '<button class="btn" type="button" id="stBackupWechat">导出到微信</button>'
+      + '<button class="btn danger" type="button" id="stReset">清空所有数据</button></div>');
+    box.appendChild(row);
+    row.querySelector('#stDemo').addEventListener('click', function () {
+      var ent = AR.MdParse.demoEntities(S);
+      AR.MdParse.applyEntities(ent, S);
+      AR.Bridge.haptic('medium', row);
+      refreshAll();
+      AR.UI.toast('已载入演示课表');
+    });
+    row.querySelector('#stBackup').addEventListener('click', function () {
+      AR.ConfigIO.exportFile(row.querySelector('#stBackup'));
+    });
+    row.querySelector('#stBackupWechat').addEventListener('click', function () {
+      AR.ConfigIO.exportToApp(row.querySelector('#stBackupWechat'));
+    });
+    row.querySelector('#stReset').addEventListener('click', function () { openResetHoldModal(); });
+    return panel('数据与备份', box, 'data');
+  }
+
+  /**
+   * 清空所有数据：二道确认 —— 必须**按住 3 秒**才会执行，中途松手立刻取消。
+   * （单击不行、连点也不行，避免误触把课表清掉。）
+   */
+  function openResetHoldModal() {
+    var HOLD_MS = 3000;
+    var body = el('<div>'
+      + '<p class="muted">清空后课程、作息、设置都会恢复初始状态，且无法撤销。'
+      + '建议先在「导入与同步」里导出一份配置文件再操作。</p>'
+      + '<button class="hold-btn" type="button" id="resetHold">'
+      + '<span class="hold-fill"></span><span class="hold-label">按住 3 秒清空</span></button>'
+      + '<p class="muted" id="resetHoldTip">按住不放，进度条走满才会执行；中途松手自动取消。</p>'
+      + '</div>');
+    AR.UI.openModal({
+      title: '清空所有数据？', sub: '需要长按 3 秒二次确认',
+      body: body,
+      actions: [{ label: '取消', onClick: function (c) { c(); } }]
+    });
+
+    var btn = $('resetHold');
+    var label = btn.querySelector('.hold-label');
+    var tip = body.querySelector('#resetHoldTip');
+    var raf = null;
+    var startAt = 0;
+    var fired = false;
+
+    function paint(p) {
+      btn.style.setProperty('--hold', (p * 100).toFixed(1) + '%');
+      var left = Math.max(0, Math.ceil((HOLD_MS * (1 - p)) / 1000));
+      label.textContent = p >= 1 ? '正在清空…' : ('按住 3 秒清空' + (p > 0 ? '（' + left + '）' : ''));
+    }
+    function tick() {
+      var p = Math.min(1, (Date.now() - startAt) / HOLD_MS);
+      paint(p);
+      if (p >= 1) {
+        if (!fired) { fired = true; doReset(); }
+        return;
+      }
+      raf = requestAnimationFrame(tick);
+    }
+    function start(ev) {
+      if (fired) { return; }
+      if (ev && ev.preventDefault) { ev.preventDefault(); }
+      startAt = Date.now();
+      btn.classList.add('holding');
+      if (tip) { tip.textContent = '松开就会取消，坚持按住 3 秒…'; }
+      if (raf) { cancelAnimationFrame(raf); }
+      raf = requestAnimationFrame(tick);
+      AR.Bridge.haptic('light', btn);
+    }
+    function stop() {
+      if (fired) { return; }
+      if (raf) { cancelAnimationFrame(raf); raf = null; }
+      btn.classList.remove('holding');
+      paint(0);
+      if (tip) { tip.textContent = '已取消，数据没有变动。可以再按住 3 秒重新确认。'; }
+    }
+    function doReset() {
+      btn.classList.remove('holding');
+      paint(1);
+      AR.Bridge.haptic('warn', btn);
+      AR.Store.reset(true);
+      AR.UI.applyTheme(); AR.UI.applyGlass(); AR.UI.applyMotion();
+      AR.UI.closeModal();
+      renderSettings();
+      refreshAll();
+      AR.UI.toast('已清空所有数据');
+    }
+
+    btn.addEventListener('pointerdown', start);
+    btn.addEventListener('pointerup', stop);
+    btn.addEventListener('pointerleave', stop);
+    btn.addEventListener('pointercancel', stop);
+    // 老 WebView 兜底：没有 Pointer Events 时用 touch/mouse
+    if (!window.PointerEvent) {
+      btn.addEventListener('touchstart', start);
+      btn.addEventListener('touchend', stop);
+      btn.addEventListener('touchcancel', stop);
+      btn.addEventListener('mousedown', start);
+      btn.addEventListener('mouseup', stop);
+      btn.addEventListener('mouseleave', stop);
+    }
+    // 键盘可达性：空格/回车按住也算
+    btn.addEventListener('keydown', function (ev) { if ((ev.key === ' ' || ev.key === 'Enter') && !fired && !raf) { start(ev); } });
+    btn.addEventListener('keyup', function (ev) { if (ev.key === ' ' || ev.key === 'Enter') { stop(); } });
+  }
+
+  /* 8 · 关于与帮助 */
+  function panelAbout() {
+    var box = el('<div></div>');
+    var plat = AR.Bridge.platform();
+    box.appendChild(el('<p class="muted">Abbey Road v' + AR.Const.APP_VERSION + ' · '
+      + (plat === 'android' ? 'Android' : (plat === 'windows' ? 'Windows' : '浏览器预览'))
+      + (AR.Bridge.deviceName() ? ' · ' + esc(AR.Bridge.deviceName()) : '')
+      + (AR.Bridge.sdkInt() ? ' · API ' + AR.Bridge.sdkInt() : '') + '</p>'));
+    box.appendChild(el('<p class="muted">数据格式 v' + AR.Const.SCHEMA_VERSION
+      + ' · 导入格式 ' + AR.MdParse.PARSE_VERSION + ' · 提示词 ' + AR.Prompt.version + '</p>'));
+    var row = el('<div class="row gap">'
+      + '<button class="btn" type="button" id="stOnboarding">重新观看引导</button>'
+      + '<button class="btn" type="button" id="stPrompt">查看固定提示词</button></div>');
+    box.appendChild(row);
+    row.querySelector('#stOnboarding').addEventListener('click', function () { AR.Panels.startOnboarding(true); });
+    row.querySelector('#stPrompt').addEventListener('click', function () {
+      AR.UI.show('import');
+      setTimeout(function () { document.querySelector('[data-tab="prompt"]').click(); }, 100);
+    });
+
+    /**
+     * 开源地址：项目已发布在 GitHub，这里给一个可点的入口
+     * （Android 交给系统浏览器，Windows 交给默认浏览器）。
+     */
+    var REPO_URL = 'https://github.com/EtoileZzz/AbbeyRoad----ScheduleApp';
+    var repoBox = el('<div class="repo-box">'
+      + '<div class="repo-title">项目已开源</div>'
+      + '<div class="repo-url">' + esc(REPO_URL) + '</div>'
+      + '<div class="row gap" style="margin-top:10px">'
+      + '<button class="btn primary" type="button" id="stRepo">在浏览器中打开</button>'
+      + '<button class="btn" type="button" id="stRepoCopy">复制地址</button></div></div>');
+    box.appendChild(repoBox);
+    repoBox.querySelector('#stRepo').addEventListener('click', function () {
+      AR.Bridge.haptic('light', repoBox.querySelector('#stRepo'));
+      AR.Bridge.openUrl(REPO_URL);
+    });
+    repoBox.querySelector('#stRepoCopy').addEventListener('click', function () {
+      AR.Bridge.copy(REPO_URL);
+    });
+    // 地址本身也可以直接点
+    repoBox.querySelector('.repo-url').addEventListener('click', function () {
+      AR.Bridge.haptic('light', repoBox);
+      AR.Bridge.openUrl(REPO_URL);
+    });
+
+    /* ── 更新（v0.4.1）：默认不自动检查 ───────────────────── */
+    var ust = updateState();
+    box.appendChild(el('<h3 class="set-sub">更新</h3>'));
+    box.appendChild(el('<p class="muted" style="margin:0 0 6px">当前版本 v' + esc(AR.Const.APP_VERSION)
+      + ' · 上次检查：' + (ust.lastAt ? esc(String(ust.lastAt).slice(0, 16).replace('T', ' ')) : '还没检查过') + '</p>'));
+    box.appendChild(rowSwitch('自动检查更新',
+      '默认关闭。打开后按下面的频率，在启动时静默检查一次（发现新版才提示）',
+      !!ust.auto, function (v) {
+        ust.auto = v;
+        AR.Store.save(true);
+        AR.Bridge.haptic('light', $('settingsGrid'));
+        renderSettings();
+      }));
+    if (ust.auto) {
+      box.appendChild(el('<div class="field-label" style="margin-top:10px">检查频率</div>'));
+      box.appendChild(segmented([
+        { label: '每周', value: 'week' }, { label: '每月', value: 'month' }
+      ], ust.every || 'week', function (v) {
+        ust.every = v;
+        AR.Store.save(true);
+        AR.Bridge.haptic('light', $('settingsGrid'));
+        renderSettings();
+      }));
+    }
+    var chkBtn = el('<button class="btn primary" type="button" id="stCheckUpdate" style="margin-top:10px">检查更新</button>');
+    chkBtn.addEventListener('click', function () {
+      AR.Bridge.haptic('light', chkBtn);
+      checkUpdate(true);
+    });
+    box.appendChild(chkBtn);
+
+    box.appendChild(el('<p class="muted" style="margin-top:10px">本应用平时不联网、不收集数据；'
+      + '只有你点「检查更新」或打开上面的自动检查时，才会去查一次发布页。'
+      + '所有内容保存在本机，导出的配置文件和备份由你自己保管。</p>'));
+    return panel('关于与帮助', box, 'about');
+  }
+
+  /* ══════════════════════════ 首次引导 ══════════════════════════ */
+
+  var obStep = 0;
+  var OB_STEPS = 6;
+
+  function startOnboarding(force) {
+    ensure();
+    if (!force && S.settings.onboardingCompletedAt) { return; }
+    obStep = 0;
+    $('onboarding').hidden = false;
+    renderOnboarding();
+    // 和弹窗用同一套进场动画（同一个关键帧 / 曲线 / 时长）
+    if (AR.UI.popIn) { AR.UI.popIn($('obCard'), 'in'); }
+  }
+
+  function renderOnboarding() {
+    var card = $('obCard');
+    card.innerHTML = '';
+    var html = obStepHtml(obStep);
+
+    var dots = '<div class="ob-dots">';
+    for (var i = 0; i < OB_STEPS; i++) { dots += '<i class="' + (i === obStep ? 'on' : '') + '"></i>'; }
+    dots += '</div>';
+
+    // 底部操作条固定在卡片右下角（内容再长也不用滚到底才能点「下一步」）
+    var foot = '<div class="ob-foot">' + dots
+      + '<div class="ob-actions">'
+      + (obStep > 0 ? '<button class="btn" type="button" id="obPrev">上一步</button>' : '')
+      + '<button class="btn primary" type="button" id="obNext">' + (obStep === OB_STEPS - 1 ? '开始使用' : '下一步') + '</button>'
+      + '</div></div>';
+
+    card.innerHTML = '<div class="ob-scroll">' + html + '</div>' + foot;
+    bindOnboarding();
+  }
+
+  /** 每一步的正文：说清楚"是什么、怎么用"，一句话一件事 */
+  function obStepHtml(step) {
+    if (step === 0) {
+      return '<h2 class="ob-step-title">欢迎使用 Abbey Road</h2>'
+        + '<p class="ob-step-sub">本地优先的课表与日程管理。数据只保存在你自己的设备上：'
+        + '没有账号、也没有云同步，换设备时导出一份配置文件带过去就行。</p>'
+        + '<div class="ob-features">'
+        + '<div class="ob-feature"><div class="icon">📅</div><div class="t">今日一屏</div><div class="d">本周概览、今日日程、最近的课，每一块点击都会放大看详情</div></div>'
+        + '<div class="ob-feature"><div class="icon">🤖</div><div class="t">AI 帮你排课</div><div class="d">复制固定提示词，交给 DeepSeek / 豆包整理，再把结果粘回来</div></div>'
+        + '<div class="ob-feature"><div class="icon">🧭</div><div class="t">一键导航</div><div class="d">自动去掉教室号、补上大学名，直接跳到地图或导航 App</div></div>'
+        + '<div class="ob-feature"><div class="icon">🔔</div><div class="t">系统日历与闹钟</div><div class="d">把课程写进手机自带的日历、时钟，按时提醒</div></div>'
+        + '</div>';
+    }
+    if (step === 1) {
+      return '<h2 class="ob-step-title">四个入口</h2>'
+        + '<p class="ob-step-sub">手机上在底部、电脑上在左侧，切换页面用的都是下面这四个按钮。</p>'
+        + '<div class="ob-features">'
+        + '<div class="ob-feature"><div class="icon">🕘</div><div class="t">今日</div><div class="d">点任意一块放大；再点位置 / 时间 / 老师 / 备注，弹出质感模糊的详情窗</div></div>'
+        + '<div class="ob-feature"><div class="icon">🗓</div><div class="t">周表</div><div class="d">一整周的课表，可切换周次与月视图，自动检测时间冲突</div></div>'
+        + '<div class="ob-feature"><div class="icon">📥</div><div class="t">导入</div><div class="d">粘贴 AI 整理好的课表文本、手动添加课程、导入配置文件</div></div>'
+        + '<div class="ob-feature"><div class="icon">⚙️</div><div class="t">设置</div><div class="d">外观、布局与尺寸、课程与课表、提醒、系统集成、数据备份</div></div>'
+        + '</div>';
+    }
+    if (step === 2) {
+      return '<h2 class="ob-step-title">先填三项基本信息</h2>'
+        + '<p class="ob-step-sub">这三项决定「今天是第几周」和导航能不能用；之后随时可以在设置里修改。</p>'
+        + '<div class="field"><label class="field-label">大学名称</label>'
+        + '<input class="input" id="obUni" value="' + esc(S.settings.integration.university) + '" placeholder="例如：XX大学"></div>'
+        + '<div class="field"><label class="field-label">所在城市</label>'
+        + '<input class="input" id="obCity" value="' + esc(S.settings.integration.city) + '" placeholder="例如：北京市"></div>'
+        + '<div class="field"><label class="field-label">开学第一周周一</label>'
+        + '<input class="input" id="obStart" type="date" value="' + esc(AR.Store.currentSemester().startDate) + '"></div>';
+    }
+    if (step === 3) {
+      return '<h2 class="ob-step-title">选一个顺手的布局</h2>'
+        + '<p class="ob-step-sub">点一下先试试效果；宽高也能在「设置 → 布局与尺寸」里用滑块微调。</p>'
+        + '<div class="preset-cards" id="obPresets">'
+        + presetCard('dual-horizontal', '左右', '左上是本周概览、左下是今日日程，右边是最近的课（推荐）')
+        + presetCard('stacked-vertical', '上中下', '从上到下依次是本周概览、今日日程、最近的课')
+        + '</div>'
+        + '<div class="layout-preview" style="height:110px;margin-top:14px" id="obPreview">'
+        + '<div class="pv pv-week"><span>本周</span></div><div class="pv pv-today"><span>今日</span></div>'
+        + '<div class="pv pv-next"><span>最近</span></div></div>';
+    }
+    if (step === 4) {
+      return '<h2 class="ob-step-title">把课表装进来</h2>'
+        + '<p class="ob-step-sub">最省事的流程：复制提示词 → 连同课表截图发给手机上的 AI → '
+        + '把 AI 的完整回复粘贴到「导入 → 课表文本」→ 点右下角「应用到课表」。</p>'
+        + '<div class="mini-nav">'
+        + '<button class="btn primary" type="button" id="obCopyPrompt">复制提示词</button>'
+        + '<button class="btn" type="button" id="obGoImport">去导入页</button>'
+        + '<button class="btn" type="button" id="obDemo">先看演示课表</button>'
+        + '</div>'
+        + '<p class="muted" style="margin-top:12px">不想用 AI 也行：在导入页切到「手动添加」逐门录入，'
+        + '或者让同学发你一份配置文件直接导入。</p>';
+    }
+    return '<h2 class="ob-step-title">可以开始用了</h2>'
+      + '<p class="ob-step-sub">几个常用入口，忘了也不怕，设置里都能找到。</p>'
+      + '<div class="ob-features">'
+      + '<div class="ob-feature"><div class="icon">🎨</div><div class="t">外观</div><div class="d">深浅色、主题色、质感模糊效果、动画速度、震动反馈都在「设置 → 外观」</div></div>'
+      + '<div class="ob-feature"><div class="icon">🔄</div><div class="t">换设备</div><div class="d">「导入 → 配置文件」导出，在另一台设备导入即可</div></div>'
+      + '<div class="ob-feature"><div class="icon">🎓</div><div class="t">考试 / 讲座</div><div class="d">在「导入 → 手动添加」登记，本周概览会用特殊颜色标出来</div></div>'
+      + '<div class="ob-feature"><div class="icon">❔</div><div class="t">随时回看</div><div class="d">设置 → 关于与帮助 → 重新观看引导</div></div>'
+      + '</div>';
+  }
+
+  function presetCard(value, name, desc) {
+    var cur = S.settings.layout.preset;
+    var norm = (cur === 'stacked-vertical') ? 'stacked-vertical' : 'dual-horizontal';
+    var active = (norm === value);
+    var thumb = (value === 'stacked-vertical')
+      ? '<div class="preset-thumb col">'
+        + '<div class="tb" style="flex:1"></div><div class="tb" style="flex:1.8"></div><div class="tb" style="flex:1"></div></div>'
+      : '<div class="preset-thumb">'
+        + '<div class="tb-col"><div class="tb" style="flex:1"></div><div class="tb" style="flex:1.6"></div></div>'
+        + '<div class="tb" style="flex:1.2"></div></div>';
+    return '<div class="preset-card' + (active ? ' active' : '') + '" data-preset="' + value + '">'
+      + thumb
+      + '<div class="name">' + esc(name) + '</div><div class="desc">' + esc(desc) + '</div></div>';
+  }
+
+  function bindOnboarding() {
+    var card = $('obCard');
+    var prev = card.querySelector('#obPrev');
+    if (prev) { prev.addEventListener('click', function () { obStep--; renderOnboarding(); }); }
+    var next = card.querySelector('#obNext');
+    if (next) {
+      var pressTimer = null;
+      var didSkip = false;
+      var cancelPress = function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } };
+      // 长按「下一步」直接跳过整套引导（隐藏手势：界面上没有跳过按钮，也不做任何提示）
+      next.addEventListener('pointerdown', function () {
+        didSkip = false;
+        cancelPress();
+        pressTimer = setTimeout(function () {
+          pressTimer = null;
+          didSkip = true;
+          AR.Bridge.haptic('heavy', next);
+          finishOnboarding(true);
+        }, 620);
+      });
+      next.addEventListener('pointerup', cancelPress);
+      next.addEventListener('pointerleave', cancelPress);
+      next.addEventListener('pointercancel', cancelPress);
+      next.addEventListener('click', function () {
+        if (didSkip) { didSkip = false; return; }   // 长按跳过之后紧跟的那次 click 不再前进一步
+        saveOnboardingStep();
+        AR.Bridge.haptic('light', next);
+        if (obStep >= OB_STEPS - 1) { finishOnboarding(false); return; }
+        obStep++;
+        renderOnboarding();
+      });
+    }
+    // 第 4 步：布局卡片
+    var cards = card.querySelectorAll('.preset-card');
+    for (var i = 0; i < cards.length; i++) {
+      cards[i].addEventListener('click', function (ev) {
+        var v = ev.currentTarget.getAttribute('data-preset');
+        S.settings.layout.preset = v;
+        AR.Store.save(true);
+        AR.UI.setPreset(v, true);
+        for (var j = 0; j < cards.length; j++) { cards[j].classList.remove('active'); }
+        ev.currentTarget.classList.add('active');
+        AR.Bridge.haptic('medium', ev.currentTarget);
+        drawObPreview();
+      });
+    }
+    // 第 5 步：动作
+    var cp = card.querySelector('#obCopyPrompt');
+    if (cp) { cp.addEventListener('click', function () { AR.Bridge.copy(AR.Prompt.text); }); }
+    var gi = card.querySelector('#obGoImport');
+    if (gi) {
+      gi.addEventListener('click', function () {
+        finishOnboarding(false);
+        AR.UI.show('import');
+      });
+    }
+    var dm = card.querySelector('#obDemo');
+    if (dm) {
+      dm.addEventListener('click', function () {
+        var st = AR.Store.get();
+        var ent = AR.MdParse.demoEntities(st);
+        AR.MdParse.applyEntities(ent, st);
+        refreshAll();
+        AR.UI.toast('已载入演示课表');
+      });
+    }
+    if (obStep === 3) { requestAnimationFrame(function () { drawObPreview(); }); }
+  }
+
+  function drawObPreview() {
+    var box = $('obPreview');
+    if (!box) { return; }
+    var preset = S.settings.layout.preset;
+    if (preset !== 'stacked-vertical') { preset = 'dual-horizontal'; }
+    var W = box.clientWidth, H = box.clientHeight, gap = 4;
+    var a, b, c;
+    if (preset === 'dual-horizontal') {
+      a = { l: 0, t: 0, w: W * 0.62, h: H * 0.42 };
+      b = { l: 0, t: H * 0.42 + gap, w: W * 0.62, h: H * 0.58 - gap };
+      c = { l: W * 0.64, t: 0, w: W * 0.36, h: H };
+    } else {
+      a = { l: 0, t: 0, w: W, h: H * 0.26 };
+      b = { l: 0, t: H * 0.26 + gap, w: W, h: H * 0.44 - gap * 2 };
+      c = { l: 0, t: H * 0.72, w: W, h: H * 0.28 };
+    }
+    setPreview('pv-week', a);
+    setPreview('pv-today', b);
+    setPreview('pv-next', c);
+  }
+
+  function saveOnboardingStep() {
+    if (obStep === 2) {
+      var s = AR.Store.get();
+      if ($('obUni')) { s.settings.integration.university = $('obUni').value; }
+      if ($('obCity')) { s.settings.integration.city = $('obCity').value; }
+      if ($('obStart')) {
+        var sem = AR.Store.currentSemester();
+        sem.startDate = $('obStart').value || sem.startDate;
+      }
+      AR.Store.save(true);
+    }
+  }
+
+  function finishOnboarding(skipped) {
+    saveOnboardingStep();
+    S = AR.Store.get();
+    S.settings.onboardingCompletedAt = new Date().toISOString();
+    AR.Store.save(true);
+    $('onboarding').hidden = true;
+    AR.Bridge.haptic('medium', $('zoneNext'));
+    AR.UI.applyTheme();
+    AR.UI.applyLayout(true);
+    AR.UI.renderToday();
+    if (!skipped) { AR.UI.toast('欢迎使用 Abbey Road'); }
+  }
+
+  /* ── 通用刷新 ─────────────────────────────────────────────── */
+
+  function refreshAll() {
+    ensure();
+    if (AR.UI.syncCustomTabNav) { AR.UI.syncCustomTabNav(); }
+    AR.UI.renderToday();
+    AR.UI.renderWeek();
+    if (AR.UI.currentView() === 'settings') { renderSettings(); }
+    if (AR.UI.currentView() === 'import') { renderEventList(); }
+    if (AR.UI.currentView() === 'custom' && AR.UI.renderCustom) { AR.UI.renderCustom(); }
+  }
+
+  AR.Panels = {
+    renderImport: renderImport,
+    renderSettings: renderSettings,
+    resetSettingsHome: resetSettingsHome,
+    settingsBackStep: settingsBackStep,
+    settingsGoHome: settingsGoHome,
+    /** 长按底部导航「设置」→ 开 / 关开发者模式（ui.js 启动时绑一次） */
+    bindSettingsLongPress: bindSettingsLongPress,
+    checkUpdate: checkUpdate,
+    autoCheckUpdate: autoCheckUpdate,
+    versionNewer: versionNewer,
+    startOnboarding: startOnboarding,
+    openSemesterSetup: openSemesterSetup,
+    handleJsonText: handleJsonText,
+    serializeParsed: serializeParsed,
+    quickAddCourse: quickAddCourse,
+    quickAddEvent: quickAddEvent,
+    renderTaskList: renderTaskList,
+  renderLongTaskList: renderLongTaskList,
+    refreshAll: refreshAll
+  };
+})();
