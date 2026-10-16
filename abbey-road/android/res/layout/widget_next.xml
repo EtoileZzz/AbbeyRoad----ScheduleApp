@@ -1,0 +1,69 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 卡片样式 ②：下一节课（课程名 + 时间 + 地点 + 倒计时），2×2 -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/n_root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@drawable/widget_bg"
+    android:padding="12dp">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center_vertical">
+
+        <TextView
+            android:id="@+id/n_label"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:textSize="11sp"
+            android:textColor="@color/widget_dim"
+            android:maxLines="1"
+            android:ellipsize="end"
+            android:text="下一节课" />
+
+        <TextView
+            android:id="@+id/n_in"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:textSize="10sp"
+            android:textColor="@color/accent"
+            android:maxLines="1"
+            android:text="2 小时后" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/n_name"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:textSize="15sp"
+        android:textStyle="bold"
+        android:maxLines="2"
+        android:textColor="@color/widget_title"
+        android:text="高等数学A" />
+
+    <TextView
+        android:id="@+id/n_time"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textSize="12sp"
+        android:textColor="@color/accent"
+        android:maxLines="1"
+        android:ellipsize="end"
+        android:text="08:00 – 09:40 · 1-2节" />
+
+    <TextView
+        android:id="@+id/n_place"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="2dp"
+        android:textSize="11sp"
+        android:textColor="@color/widget_text"
+        android:maxLines="2"
+        android:text="XX大学 信息楼 305教室" />
+</LinearLayout>
